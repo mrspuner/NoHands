@@ -1,10 +1,11 @@
 import AVFoundation
 import Foundation
 
-public enum RecordingError: Error, LocalizedError {
+public enum RecordingError: Error, Equatable, LocalizedError {
     case noInputDevice
     case unsupportedFormat
     case engineFailed(String)
+    case writeFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -14,6 +15,8 @@ public enum RecordingError: Error, LocalizedError {
             return "Cannot convert the input format to 16 kHz mono"
         case .engineFailed(let reason):
             return "Audio engine failed: \(reason)"
+        case .writeFailed(let reason):
+            return "Failed to write audio to file: \(reason)"
         }
     }
 }
@@ -44,12 +47,14 @@ public actor MicrophoneRecorder {
             throw RecordingError.unsupportedFormat
         }
 
-        // The tap closure runs on a real-time audio thread and captures both of these.
-        // Neither AVAudioFile nor AVAudioConverter is Sendable, and Swift 6 rejects the
-        // capture without an explicit opt-out. Safe here because the tap is the only writer
-        // and it is removed before this function returns.
-        nonisolated(unsafe) let file = try AVAudioFile(forWriting: url, settings: targetFormat.settings)
-        nonisolated(unsafe) let sharedConverter = converter
+        // The tap closure runs on a real-time audio thread and captures these. AVAudioFile and
+        // AVAudioConverter are themselves Sendable on this SDK, so they need no opt-out.
+        // `writeError` is a plain `Error?` written from that audio thread; it is read on this
+        // thread only after `input.removeTap` has returned in the `defer` below, which is why
+        // `nonisolated(unsafe)` is applied to it alone.
+        let file = try AVAudioFile(forWriting: url, settings: targetFormat.settings)
+        let sharedConverter = converter
+        nonisolated(unsafe) var writeError: Error?
 
         input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
             let ratio = targetFormat.sampleRate / inputFormat.sampleRate
@@ -71,7 +76,15 @@ public actor MicrophoneRecorder {
             }
 
             guard conversionError == nil, converted.frameLength > 0 else { return }
-            try? file.write(from: converted)
+            do {
+                try file.write(from: converted)
+            } catch {
+                // Keep the first failure; later writes fail the same way and would only
+                // overwrite the more informative one.
+                if writeError == nil {
+                    writeError = error
+                }
+            }
         }
 
         do {
@@ -81,9 +94,18 @@ public actor MicrophoneRecorder {
             throw RecordingError.engineFailed(error.localizedDescription)
         }
 
+        // Guarantees teardown on every exit past this point — normal completion, a write
+        // failure thrown below, or the sleep being cancelled — so the engine and tap never
+        // outlive this call.
+        defer {
+            engine.stop()
+            input.removeTap(onBus: 0)
+        }
+
         try await Task.sleep(for: .seconds(seconds))
 
-        engine.stop()
-        input.removeTap(onBus: 0)
+        if let writeError {
+            throw RecordingError.writeFailed(writeError.localizedDescription)
+        }
     }
 }
