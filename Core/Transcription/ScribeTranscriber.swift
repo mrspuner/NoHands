@@ -32,8 +32,10 @@ public actor ScribeTranscriber: Transcriber {
         self.keyterms = keyterms
     }
 
+    /// A keychain that refuses the query throws out of `Keychain.password` with its status;
+    /// only a genuinely absent item becomes `apiKeyMissing`.
     public static func fromKeychain(language: String? = nil, keyterms: [String] = []) throws -> ScribeTranscriber {
-        guard let key = Keychain.password(
+        guard let key = try Keychain.password(
             service: Keychain.elevenLabsService,
             account: Keychain.elevenLabsAccount
         ) else {
@@ -43,9 +45,7 @@ public actor ScribeTranscriber: Transcriber {
     }
 
     public func transcribe(audio url: URL) async throws -> String {
-        guard FileManager.default.isReadableFile(atPath: url.path) else {
-            throw TranscriptionError.fileNotReadable(url)
-        }
+        try TranscriberChecks.validateReadable(url)
         let fileData = try Data(contentsOf: url)
 
         var body = MultipartBody()
@@ -80,12 +80,7 @@ public actor ScribeTranscriber: Transcriber {
             throw TranscriptionError.requestFailed(status: http.statusCode, message: message)
         }
 
-        let parsed = try ScribeResponse.decode(data)
-        let text = parsed.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else {
-            throw TranscriptionError.emptyResult
-        }
-        return text
+        return try TranscriberChecks.nonEmpty(ScribeResponse.decode(data).text)
     }
 
     private static func contentType(for url: URL) -> String {
