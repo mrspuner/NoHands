@@ -28,6 +28,7 @@ Mac mini M4, 16 ГБ памяти, 256 ГБ SSD. Микрофон внешний
 App/          точка входа, менюбар, окно настроек
 Core/
   Audio/          запись микрофона и системного звука
+  Comparison/     сверка расшифровок, только фаза 0
   Transcription/  протокол Transcriber и его реализации
   Secrets/        обёртка над Keychain
   Diarization/    FluidAudio, кластеризация, база отпечатков
