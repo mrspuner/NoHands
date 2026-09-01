@@ -27,5 +27,10 @@ let package = Package(
             dependencies: ["Core"],
             path: "Tests/CoreTests"
         ),
+        .testTarget(
+            name: "CLITests",
+            dependencies: ["CLI"],
+            path: "Tests/CLITests"
+        ),
     ]
 )

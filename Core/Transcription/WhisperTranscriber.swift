@@ -18,28 +18,62 @@ public actor WhisperTranscriber: Transcriber {
     private let pipe: WhisperKit
     private let language: String?
     private let modelName: String
+    private let useVAD: Bool
+    private let relaxedThresholds: Bool
 
-    private init(pipe: WhisperKit, language: String?, modelName: String) {
+    /// Spike into whether WhisperKit's default decoding thresholds are what causes the model
+    /// to drop uncertain-sounding fragments (see the tuning report). Defaults are
+    /// `noSpeechThreshold: 0.6`, `logProbThreshold: -1.0`, `compressionRatioThreshold: 2.4`;
+    /// these are looser but not disabled outright (`nil` would turn the check off entirely,
+    /// which trades every dropped fragment for a hallucination risk instead of measuring one).
+    static let relaxedNoSpeechThreshold: Float = 0.9
+    static let relaxedLogProbThreshold: Float = -2.0
+    static let relaxedCompressionRatioThreshold: Float = 3.0
+
+    private init(
+        pipe: WhisperKit,
+        language: String?,
+        modelName: String,
+        useVAD: Bool,
+        relaxedThresholds: Bool
+    ) {
         self.pipe = pipe
         self.language = language
         self.modelName = modelName
+        self.useVAD = useVAD
+        self.relaxedThresholds = relaxedThresholds
     }
 
-    /// Downloads the model on first call (about 600 MB) and loads it into memory.
-    /// - Parameter language: ISO-639-1 code such as "ru". Passing nil turns on WhisperKit's
-    ///   own language detection; leaving it to the library's default would instead prefill an
-    ///   English token and transcribe Russian speech as English, without saying so.
+    /// Downloads the model on first call (hundreds of MB, varies by build) and loads it into memory.
+    /// - Parameters:
+    ///   - language: ISO-639-1 code such as "ru". Passing nil turns on WhisperKit's
+    ///     own language detection; leaving it to the library's default would instead prefill an
+    ///     English token and transcribe Russian speech as English, without saying so.
+    ///   - useVAD: Chunk the audio at detected speech boundaries (`ChunkingStrategy.vad`)
+    ///     instead of blind 30-second windows. Uses WhisperKit's bundled energy-based VAD —
+    ///     no extra model download.
+    ///   - relaxedThresholds: Loosen `noSpeechThreshold`, `logProbThreshold` and
+    ///     `compressionRatioThreshold` so fewer fragments get silently dropped as "no speech"
+    ///     or "low confidence".
     /// - Throws: `TranscriptionError.languageNotSupported` if the code is not one Whisper
     ///   knows — checked before the download, so a mistyped flag costs no traffic.
     public static func load(
         model: String = WhisperTranscriber.defaultModel,
-        language: String? = nil
+        language: String? = nil,
+        useVAD: Bool = false,
+        relaxedThresholds: Bool = false
     ) async throws -> WhisperTranscriber {
         try validateLanguage(language)
         do {
             let config = WhisperKitConfig(model: model)
             let pipe = try await WhisperKit(config)
-            return WhisperTranscriber(pipe: pipe, language: language, modelName: model)
+            return WhisperTranscriber(
+                pipe: pipe,
+                language: language,
+                modelName: model,
+                useVAD: useVAD,
+                relaxedThresholds: relaxedThresholds
+            )
         } catch {
             throw TranscriptionError.modelUnavailable("\(model): \(error.localizedDescription)")
         }
@@ -63,7 +97,15 @@ public actor WhisperTranscriber: Transcriber {
 
         // `detectLanguage` defaults to `!usePrefillPrompt`, i.e. false, so without this a nil
         // language means "English", not "decide for yourself".
-        let options = DecodingOptions(language: language, detectLanguage: language == nil)
+        var options = DecodingOptions(language: language, detectLanguage: language == nil)
+        if relaxedThresholds {
+            options.noSpeechThreshold = Self.relaxedNoSpeechThreshold
+            options.logProbThreshold = Self.relaxedLogProbThreshold
+            options.compressionRatioThreshold = Self.relaxedCompressionRatioThreshold
+        }
+        if useVAD {
+            options.chunkingStrategy = .vad
+        }
         let results = try await pipe.transcribe(audioPath: url.path, decodeOptions: options)
 
         return try TranscriberChecks.nonEmpty(results.map(\.text).joined(separator: " "))

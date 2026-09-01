@@ -7,9 +7,13 @@ nohands — инструмент прогонов фазы 0
 nohands compare <наша-расшифровка.txt> <эталон.txt>
     Сверяет два текста пословно и печатает расхождения.
 
-nohands transcribe <файл> --engine whisper [--language ru]
+nohands transcribe <файл> --engine whisper [--language ru] [--model <имя>] [--vad] [--relaxed-thresholds]
     Распознаёт файл локальной моделью Whisper и печатает текст.
     Код языка двухбуквенный, ISO-639-1: ru, en. Без --language язык определяет модель.
+    --model задаёт сборку модели, по умолчанию \(WhisperTranscriber.defaultModel).
+    --vad нарезает аудио по обнаруженной речи вместо слепых 30-секундных окон.
+    --relaxed-thresholds ослабляет пороги отбраковки неуверенных фрагментов.
+    Все три флага только для whisper, у scribe таких параметров нет.
 
 nohands transcribe <файл> --engine scribe [--language rus] [--keyterms "термин,термин"]
     Распознаёт файл через ElevenLabs Scribe v2 и печатает текст.
@@ -87,53 +91,28 @@ struct NoHands {
     }
 
     static func runTranscribe(_ arguments: [String]) async throws {
-        guard arguments.count >= 2 else {
-            fail("Использование: nohands transcribe <файл> --engine whisper|scribe [--language <код>] [--keyterms \"термин,термин\"]")
+        let parsed: TranscribeArguments
+        do {
+            parsed = try TranscribeArguments.parse(arguments)
+        } catch TranscribeArguments.ParseError.message(let message) {
+            fail(message)
         }
-        let url = URL(fileURLWithPath: arguments[1])
-
-        var engine = "whisper"
-        var language: String? = nil
-        var keyterms: [String] = []
-        var keytermsGiven = false
-        var index = 2
-        while index < arguments.count {
-            switch arguments[index] {
-            case "--engine":
-                guard index + 1 < arguments.count else { fail("--engine без значения") }
-                engine = arguments[index + 1]
-                index += 2
-            case "--language":
-                guard index + 1 < arguments.count else { fail("--language без значения") }
-                language = arguments[index + 1]
-                index += 2
-            case "--keyterms":
-                guard index + 1 < arguments.count else { fail("--keyterms без значения") }
-                keytermsGiven = true
-                keyterms = arguments[index + 1]
-                    .split(separator: ",")
-                    .map { $0.trimmingCharacters(in: .whitespaces) }
-                    .filter { !$0.isEmpty }
-                index += 2
-            default:
-                fail("Неизвестный аргумент: \(arguments[index])")
-            }
-        }
+        let url = parsed.url
 
         let started = Date()
         let transcriber: any Transcriber
-        switch engine {
+        switch parsed.engine {
         case "whisper":
-            // Whisper has no keyterm prompting at all; accepting the flag and dropping it
-            // would leave the owner reading a run they think was biased and wasn't.
-            if keytermsGiven {
-                fail("--keyterms поддерживается только движком scribe, у whisper такого параметра нет")
-            }
-            transcriber = try await WhisperTranscriber.load(language: language)
+            transcriber = try await WhisperTranscriber.load(
+                model: parsed.model ?? WhisperTranscriber.defaultModel,
+                language: parsed.language,
+                useVAD: parsed.useVAD,
+                relaxedThresholds: parsed.relaxedThresholds
+            )
         case "scribe":
-            transcriber = try ScribeTranscriber.fromKeychain(language: language, keyterms: keyterms)
+            transcriber = try ScribeTranscriber.fromKeychain(language: parsed.language, keyterms: parsed.keyterms)
         default:
-            fail("Неизвестный движок: \(engine). Поддерживаются whisper и scribe")
+            fail("Неизвестный движок: \(parsed.engine). Поддерживаются whisper и scribe")
         }
         let ready = Date()
         let text = try await transcriber.transcribe(audio: url)
