@@ -28,3 +28,6 @@ Meetings/
 
 # macOS
 .DS_Store
+
+# Рабочие файлы skill-процесса
+.superpowers/
