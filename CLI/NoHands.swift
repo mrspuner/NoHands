@@ -10,6 +10,7 @@ func printUsage() {
 
     nohands transcribe <файл> --engine whisper [--language ru]
         Распознаёт файл локальной моделью и печатает текст.
+    nohands transcribe <файл> --engine whisper|scribe [--language ru|rus] [--keyterms "термин,термин"]
     """)
 }
 
@@ -56,13 +57,13 @@ struct NoHands {
 
         case "transcribe":
             guard arguments.count >= 2 else {
-                fail("Использование: nohands transcribe <файл> --engine whisper [--language ru]")
+                fail("Использование: nohands transcribe <файл> --engine whisper|scribe [--language ru|rus] [--keyterms \"термин,термин\"]")
             }
-            let path = arguments[1]
-            let url = URL(fileURLWithPath: path)
+            let url = URL(fileURLWithPath: arguments[1])
 
             var engine = "whisper"
             var language: String? = nil
+            var keyterms: [String] = []
             var index = 2
             while index < arguments.count {
                 switch arguments[index] {
@@ -74,24 +75,35 @@ struct NoHands {
                     guard index + 1 < arguments.count else { fail("--language без значения") }
                     language = arguments[index + 1]
                     index += 2
+                case "--keyterms":
+                    guard index + 1 < arguments.count else { fail("--keyterms без значения") }
+                    keyterms = arguments[index + 1]
+                        .split(separator: ",")
+                        .map { $0.trimmingCharacters(in: .whitespaces) }
+                        .filter { !$0.isEmpty }
+                    index += 2
                 default:
                     fail("Неизвестный аргумент: \(arguments[index])")
                 }
             }
 
-            guard engine == "whisper" else {
-                fail("Пока поддерживается только --engine whisper")
-            }
-
             let started = Date()
-            let transcriber = try await WhisperTranscriber.load(language: language)
-            let loaded = Date()
+            let transcriber: any Transcriber
+            switch engine {
+            case "whisper":
+                transcriber = try await WhisperTranscriber.load(language: language)
+            case "scribe":
+                transcriber = try ScribeTranscriber.fromKeychain(language: language, keyterms: keyterms)
+            default:
+                fail("Неизвестный движок: \(engine). Поддерживаются whisper и scribe")
+            }
+            let ready = Date()
             let text = try await transcriber.transcribe(audio: url)
             let finished = Date()
 
             FileHandle.standardError.write(Data("""
-            модель загружена за \(String(format: "%.1f", loaded.timeIntervalSince(started))) с
-            распознавание заняло \(String(format: "%.1f", finished.timeIntervalSince(loaded))) с
+            движок готов за \(String(format: "%.1f", ready.timeIntervalSince(started))) с
+            распознавание заняло \(String(format: "%.1f", finished.timeIntervalSince(ready))) с
 
             """.utf8))
             print(text)
