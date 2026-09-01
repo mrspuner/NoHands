@@ -29,14 +29,17 @@ App/          точка входа, менюбар, окно настроек
 Core/
   Audio/          запись микрофона и системного звука
   Transcription/  протокол Transcriber и его реализации
+  Secrets/        обёртка над Keychain
   Diarization/    FluidAudio, кластеризация, база отпечатков
   LLM/            клиент Anthropic, промпты
   Storage/        запись markdown, ротация аудио
 Features/
   Dictation/      хоткей, буфер, вставка текста
   Meetings/       запись созвонов, фоновая очередь
+CLI/            программа для прогонов, только фаза 0
 Tests/
 docs/
+  superpowers/specs/  спецификации, согласованные до реализации
 ```
 
 ## Язык
