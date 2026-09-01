@@ -20,7 +20,7 @@ struct TranscribeArguments {
     }
 
     static let usage = """
-    Использование: nohands transcribe <файл> --engine whisper|scribe [--language <код>] \
+    Использование: nohands transcribe <файл> --engine whisper|scribe|parakeet [--language <код>] \
     [--keyterms "термин,термин"] [--model <имя>] [--vad] [--relaxed-thresholds]
     """
 
@@ -64,16 +64,18 @@ struct TranscribeArguments {
             }
         }
 
-        // Whisper has no keyterm prompting at all; accepting the flag and dropping it would
-        // leave the owner reading a run they think was biased and wasn't.
-        if result.engine == "whisper", result.keytermsGiven {
-            throw ParseError.message("--keyterms поддерживается только движком scribe, у whisper такого параметра нет")
+        // Keyterm prompting is a Scribe API feature; neither local engine has anything like it.
+        // Accepting the flag and dropping it would leave the owner reading a run they think was
+        // biased and wasn't.
+        if result.engine != "scribe", result.keytermsGiven {
+            throw ParseError.message("--keyterms поддерживается только движком scribe, у \(result.engine) такого параметра нет")
         }
-        // Symmetric check: --model, --vad and --relaxed-thresholds only mean something for the
-        // local Whisper pipeline. Scribe is a hosted API with none of these knobs.
-        if result.engine == "scribe", result.model != nil || result.useVAD || result.relaxedThresholds {
+        // Symmetric check: --model, --vad and --relaxed-thresholds tune WhisperKit's decoding
+        // and model choice specifically. Scribe is a hosted API with none of these knobs, and
+        // Parakeet is a different local model with its own (currently fixed) configuration.
+        if result.engine != "whisper", result.model != nil || result.useVAD || result.relaxedThresholds {
             throw ParseError.message(
-                "--model, --vad и --relaxed-thresholds поддерживаются только движком whisper, у scribe таких параметров нет"
+                "--model, --vad и --relaxed-thresholds поддерживаются только движком whisper, у \(result.engine) таких параметров нет"
             )
         }
 

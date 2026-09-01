@@ -79,3 +79,39 @@ import Testing
     #expect(parsed.useVAD == true)
     #expect(parsed.relaxedThresholds == true)
 }
+
+// Parakeet added for the FluidAudio spike: it takes `--language` (like whisper, but validated
+// against FluidAudio's own closed list) but none of the other four flags — no keyterm
+// prompting like whisper, and no WhisperKit decoding knobs like scribe.
+
+@Test func parakeetEngineAcceptsLanguage() throws {
+    let parsed = try TranscribeArguments.parse(["transcribe", "audio.wav", "--engine", "parakeet", "--language", "ru"])
+    #expect(parsed.engine == "parakeet")
+    #expect(parsed.language == "ru")
+}
+
+@Test func keytermsIsRejectedWithParakeetEngine() {
+    #expect(throws: TranscribeArguments.ParseError.self) {
+        try TranscribeArguments.parse(["transcribe", "audio.wav", "--engine", "parakeet", "--keyterms", "термин"])
+    }
+}
+
+@Test func tuningFlagsAreRejectedWithParakeetEngine() {
+    for flags in [["--model", "x"], ["--vad"], ["--relaxed-thresholds"]] {
+        #expect(throws: TranscribeArguments.ParseError.self) {
+            try TranscribeArguments.parse(["transcribe", "audio.wav", "--engine", "parakeet"] + flags)
+        }
+    }
+}
+
+@Test func parakeetTuningFlagRejectionNamesTheEngine() {
+    do {
+        _ = try TranscribeArguments.parse(["transcribe", "audio.wav", "--engine", "parakeet", "--vad"])
+        Issue.record("--vad with --engine parakeet should have been rejected")
+    } catch TranscribeArguments.ParseError.message(let message) {
+        #expect(message.contains("parakeet"))
+        #expect(message.contains("whisper"))
+    } catch {
+        Issue.record("unexpected error type: \(error)")
+    }
+}

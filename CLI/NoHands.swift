@@ -20,6 +20,12 @@ nohands transcribe <файл> --engine scribe [--language rus] [--keyterms "те
     Код языка трёхбуквенный, ISO-639-3: rus, eng. Без --language язык определяет сервис.
     --keyterms работает только с этим движком.
 
+nohands transcribe <файл> --engine parakeet [--language ru]
+    Распознаёт файл локальной моделью Parakeet TDT v3 (FluidAudio) и печатает текст.
+    Код языка двухбуквенный, ISO-639-1: ru, en. Влияет только на выбор письменности среди
+    похожих кандидатов при декодировании, а не на выбор языка модели — та многоязычная всегда.
+    --keyterms, --model, --vad и --relaxed-thresholds к этому движку не относятся.
+
 nohands record <секунд> <выход.wav>
     Пишет микрофон в WAV 16 кГц моно. Печатает устройство и формат перед записью.
 """
@@ -111,8 +117,10 @@ struct NoHands {
             )
         case "scribe":
             transcriber = try ScribeTranscriber.fromKeychain(language: parsed.language, keyterms: parsed.keyterms)
+        case "parakeet":
+            transcriber = try await ParakeetTranscriber.load(language: parsed.language)
         default:
-            fail("Неизвестный движок: \(parsed.engine). Поддерживаются whisper и scribe")
+            fail("Неизвестный движок: \(parsed.engine). Поддерживаются whisper, scribe и parakeet")
         }
         let ready = Date()
         let text = try await transcriber.transcribe(audio: url)
