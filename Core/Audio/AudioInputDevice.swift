@@ -1,0 +1,68 @@
+import CoreAudio
+import Foundation
+
+/// The current default input device, as CoreAudio sees it.
+///
+/// Printed before every recording. A Mac mini has no built-in microphone, and if nothing is
+/// plugged in the system may fall back to a leftover virtual device — recording into which
+/// yields silence that looks like a recognition failure.
+public struct AudioInputDevice: Sendable {
+    public let name: String
+    public let sampleRate: Double
+    public let channelCount: UInt32
+
+    public static func current() -> AudioInputDevice? {
+        guard let deviceID = defaultInputDeviceID(),
+              let name = deviceName(deviceID),
+              let format = streamFormat(deviceID)
+        else {
+            return nil
+        }
+        return AudioInputDevice(
+            name: name,
+            sampleRate: format.mSampleRate,
+            channelCount: format.mChannelsPerFrame
+        )
+    }
+
+    private static func defaultInputDeviceID() -> AudioDeviceID? {
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID
+        )
+        guard status == noErr, deviceID != kAudioObjectUnknown else { return nil }
+        return deviceID
+    }
+
+    private static func deviceName(_ deviceID: AudioDeviceID) -> String? {
+        var name: CFString = "" as CFString
+        var size = UInt32(MemoryLayout<CFString>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioObjectPropertyName,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &name)
+        guard status == noErr else { return nil }
+        return name as String
+    }
+
+    private static func streamFormat(_ deviceID: AudioDeviceID) -> AudioStreamBasicDescription? {
+        var format = AudioStreamBasicDescription()
+        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamFormat,
+            mScope: kAudioDevicePropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &format)
+        guard status == noErr else { return nil }
+        return format
+    }
+}

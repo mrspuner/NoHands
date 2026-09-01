@@ -11,6 +11,8 @@ func printUsage() {
     nohands transcribe <файл> --engine whisper [--language ru]
         Распознаёт файл локальной моделью и печатает текст.
     nohands transcribe <файл> --engine whisper|scribe [--language ru|rus] [--keyterms "термин,термин"]
+    nohands record <секунд> <выход.wav>
+        Пишет микрофон в WAV 16 кГц моно. Печатает устройство и формат перед записью.
     """)
 }
 
@@ -107,6 +109,25 @@ struct NoHands {
 
             """.utf8))
             print(text)
+
+        case "record":
+            guard arguments.count == 3, let seconds = Double(arguments[1]) else {
+                fail("Использование: nohands record <секунд> <выход.wav>")
+            }
+            let output = URL(fileURLWithPath: arguments[2])
+
+            guard let device = AudioInputDevice.current() else {
+                fail("Устройство ввода не найдено. У Mac mini нет встроенного микрофона — подключите внешний")
+            }
+            print("устройство: \(device.name)")
+            print("формат входа: \(Int(device.sampleRate)) Гц, каналов \(device.channelCount)")
+            if device.sampleRate < 32000 {
+                print("ВНИМАНИЕ: частота ниже 32 кГц — это узкополосный режим, качество распознавания будет заниженным")
+            }
+            print("пишу \(Int(seconds)) с…")
+
+            try await MicrophoneRecorder().record(seconds: seconds, to: output)
+            print("готово: \(output.path)")
 
         default:
             printUsage()
