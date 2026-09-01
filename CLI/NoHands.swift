@@ -7,6 +7,9 @@ func printUsage() {
 
     nohands compare <наша-расшифровка.txt> <эталон.txt>
         Сверяет два текста пословно и печатает расхождения.
+
+    nohands transcribe <файл> --engine whisper [--language ru]
+        Распознаёт файл локальной моделью и печатает текст.
     """)
 }
 
@@ -50,6 +53,48 @@ struct NoHands {
                 candidate: TextNormalizer.words(from: ours)
             )
             print(ComparisonReport.render(result))
+
+        case "transcribe":
+            guard arguments.count >= 2 else {
+                fail("Использование: nohands transcribe <файл> --engine whisper [--language ru]")
+            }
+            let path = arguments[1]
+            let url = URL(fileURLWithPath: path)
+
+            var engine = "whisper"
+            var language: String? = nil
+            var index = 2
+            while index < arguments.count {
+                switch arguments[index] {
+                case "--engine":
+                    guard index + 1 < arguments.count else { fail("--engine без значения") }
+                    engine = arguments[index + 1]
+                    index += 2
+                case "--language":
+                    guard index + 1 < arguments.count else { fail("--language без значения") }
+                    language = arguments[index + 1]
+                    index += 2
+                default:
+                    fail("Неизвестный аргумент: \(arguments[index])")
+                }
+            }
+
+            guard engine == "whisper" else {
+                fail("Пока поддерживается только --engine whisper")
+            }
+
+            let started = Date()
+            let transcriber = try await WhisperTranscriber.load(language: language)
+            let loaded = Date()
+            let text = try await transcriber.transcribe(audio: url)
+            let finished = Date()
+
+            FileHandle.standardError.write(Data("""
+            модель загружена за \(String(format: "%.1f", loaded.timeIntervalSince(started))) с
+            распознавание заняло \(String(format: "%.1f", finished.timeIntervalSince(loaded))) с
+
+            """.utf8))
+            print(text)
 
         default:
             printUsage()
