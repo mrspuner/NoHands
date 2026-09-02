@@ -8,6 +8,7 @@ let package = Package(
         .library(name: "Core", targets: ["Core"]),
         .library(name: "Dictation", targets: ["Dictation"]),
         .executable(name: "nohands", targets: ["CLI"]),
+        .executable(name: "NoHandsApp", targets: ["App"]),
     ],
     dependencies: [
         .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.14.8"),
@@ -29,6 +30,14 @@ let package = Package(
             name: "CLI",
             dependencies: ["Core", "Dictation"],
             path: "CLI"
+        ),
+        .executableTarget(
+            name: "App",
+            dependencies: ["Core", "Dictation"],
+            path: "App",
+            // Info.plist belongs to the bundle the script assembles, not to the binary; without
+            // this SwiftPM treats it as an unhandled resource and warns on every build.
+            exclude: ["Info.plist"]
         ),
         .testTarget(
             name: "CoreTests",
