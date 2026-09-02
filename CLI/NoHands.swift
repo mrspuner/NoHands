@@ -1,4 +1,5 @@
 import Core
+import Dictation
 import Foundation
 
 let usage = """
@@ -20,6 +21,10 @@ nohands transcribe <файл> --engine parakeet [--language ru]
 
 nohands record <секунд> <выход.wav>
     Пишет микрофон в WAV 16 кГц моно. Печатает устройство и формат перед записью.
+
+nohands dictate [--raw]
+    Диктовка целиком: запись микрофона до Enter, распознавание Parakeet,
+    чистка через DeepSeek, вывод текста. --raw печатает текст без чистки.
 """
 
 func fail(_ message: String) -> Never {
@@ -74,6 +79,8 @@ struct NoHands {
                 try await runTranscribe(arguments)
             case "record":
                 try await runRecord(arguments)
+            case "dictate":
+                try await runDictate(arguments)
             default:
                 fail("Неизвестная команда: \(command)\n\n\(usage)")
             }
@@ -153,5 +160,57 @@ struct NoHands {
 
         try await MicrophoneRecorder().record(seconds: seconds, to: output)
         print("готово: \(output.path)")
+    }
+
+    static func runDictate(_ arguments: [String]) async throws {
+        let parsed: DictateArguments
+        do {
+            parsed = try DictateArguments.parse(arguments)
+        } catch DictateArguments.ParseError.message(let message) {
+            fail(message)
+        }
+
+        let config = try DictationConfig.loadOrCreate()
+        guard let device = AudioInputDevice.current() else {
+            fail("Устройство ввода не найдено. У Mac mini нет встроенного микрофона — подключите внешний")
+        }
+        print("устройство: \(device.name)")
+        if let warning = narrowbandWarning(sampleRate: device.sampleRate) {
+            print(warning)
+        }
+
+        // The model is loaded before recording starts, the way the application will hold it
+        // resident — otherwise the load time would land inside the measured latency and make
+        // dictation look slower than it is.
+        let loadStarted = Date()
+        let transcriber = try await ParakeetTranscriber.load(language: config.language)
+        note("модель готова за \(String(format: "%.1f", Date().timeIntervalSince(loadStarted))) с")
+
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("nohands-dictate-\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let recorder = MicrophoneRecorder()
+        try await recorder.start(to: url)
+        print("пишу… Enter — стоп")
+        _ = readLine()
+        let file = try await recorder.stop()
+
+        let recognitionStarted = Date()
+        let rawText = try await transcriber.transcribe(audio: file)
+        let recognized = Date()
+        note("распознавание \(String(format: "%.2f", recognized.timeIntervalSince(recognitionStarted))) с")
+
+        guard !parsed.raw else {
+            print(rawText)
+            return
+        }
+
+        let client = try DeepSeekClient.fromKeychain(
+            model: config.model, prompt: config.prompt, timeout: config.timeoutSeconds
+        )
+        let cleaned = try await client.clean(rawText)
+        note("чистка \(String(format: "%.2f", Date().timeIntervalSince(recognized))) с")
+        print(cleaned)
     }
 }

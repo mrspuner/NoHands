@@ -27,7 +27,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "CLI",
-            dependencies: ["Core"],
+            dependencies: ["Core", "Dictation"],
             path: "CLI"
         ),
         .testTarget(
