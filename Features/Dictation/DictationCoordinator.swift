@@ -147,10 +147,16 @@ public final class DictationCoordinator {
                 }
             }
 
-        case .insert(let text, _, _):
-            inserter.copy(text)
+        case .insert(let text, let target, _):
             discardAudioFile()
-            apply(.inserted)
+            run { [inserter] in
+                do {
+                    try await inserter.insert(text, into: target)
+                    return .inserted
+                } catch {
+                    return .insertionFailed(error.localizedDescription)
+                }
+            }
 
         case .show(let state):
             showPanel(state)
