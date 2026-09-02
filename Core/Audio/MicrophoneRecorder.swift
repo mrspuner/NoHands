@@ -7,6 +7,8 @@ public enum RecordingError: Error, Equatable, LocalizedError {
     case engineFailed(String)
     case writeFailed(String)
     case noAudioCaptured
+    case alreadyRecording
+    case notRecording
 
     public var errorDescription: String? {
         switch self {
@@ -21,6 +23,10 @@ public enum RecordingError: Error, Equatable, LocalizedError {
         case .noAudioCaptured:
             return "No audio was captured — the app likely lacks microphone permission; " +
                 "check System Settings > Privacy & Security > Microphone"
+        case .alreadyRecording:
+            return "A recording is already in progress"
+        case .notRecording:
+            return "No recording is in progress"
         }
     }
 }
@@ -72,12 +78,17 @@ enum RecordingChecks {
 /// Records the default input into a 16 kHz mono WAV file — the format both engines accept
 /// without resampling.
 public actor MicrophoneRecorder {
+    /// Called on the audio thread, thinned out to 20 times a second. The receiver is
+    /// responsible for hopping to whatever thread it needs.
+    public typealias LevelHandler = @Sendable (Float) -> Void
+
+    private var session: RecordingSession?
+
     public init() {}
 
-    public func record(seconds: TimeInterval, to url: URL) async throws {
-        guard AudioInputDevice.current() != nil else {
-            throw RecordingError.noInputDevice
-        }
+    public func start(to url: URL, onLevel: LevelHandler? = nil) throws {
+        guard session == nil else { throw RecordingError.alreadyRecording }
+        guard AudioInputDevice.current() != nil else { throw RecordingError.noInputDevice }
 
         let engine = AVAudioEngine()
         let input = engine.inputNode
@@ -95,24 +106,17 @@ public actor MicrophoneRecorder {
             throw RecordingError.unsupportedFormat
         }
 
-        // From here on `url` may exist on disk (AVAudioFile below creates it). Any error past
-        // this point is routed through the outer `catch` so it removes what this call created
-        // instead of leaving a header-only WAV that looks like a successful, silent recording —
-        // see RecordingError.noAudioCaptured. Checked before the file is created, so a file that
-        // already existed at `url` is never touched.
+        // From here on `url` may exist on disk. Checked before the file is created, so a file
+        // that was already there is never removed by a failure of this call.
         let fileExistedBefore = FileManager.default.fileExists(atPath: url.path)
 
         do {
-            // The tap closure runs on a real-time audio thread and captures these. AVAudioFile
-            // and AVAudioConverter are themselves Sendable on this SDK, so they need no opt-out.
-            // `writeError` and `framesWritten` are plain vars written from that audio thread;
-            // `nonisolated(unsafe)` opts them out of Swift 6's capture check. They are only safe
-            // to read once the tap can no longer fire, which is why every read goes through
-            // `tearDown()` first — see below.
             let file = try RecordingChecks.openForWriting(url, targetFormat: targetFormat)
+            let live = RecordingSession(
+                engine: engine, input: input, file: file, url: url, fileExistedBefore: fileExistedBefore
+            )
             let sharedConverter = converter
-            nonisolated(unsafe) var writeError: Error?
-            nonisolated(unsafe) var framesWritten: AVAudioFrameCount = 0
+            let counters = live.counters
 
             input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
                 let ratio = targetFormat.sampleRate / inputFormat.sampleRate
@@ -136,13 +140,13 @@ public actor MicrophoneRecorder {
                 guard conversionError == nil, converted.frameLength > 0 else { return }
                 do {
                     try file.write(from: converted)
-                    framesWritten += converted.frameLength
+                    counters.addFrames(converted.frameLength)
                 } catch {
-                    // Keep the first failure; later writes fail the same way and would only
-                    // overwrite the more informative one.
-                    if writeError == nil {
-                        writeError = error
-                    }
+                    counters.recordWriteFailure(error)
+                }
+
+                if let onLevel, counters.shouldEmitLevel(at: ProcessInfo.processInfo.systemUptime, interval: 0.05) {
+                    onLevel(AudioLevel.normalized(buffer: converted))
                 }
             }
 
@@ -153,33 +157,53 @@ public actor MicrophoneRecorder {
                 throw RecordingError.engineFailed(error.localizedDescription)
             }
 
-            // Idempotent so it can run both on the normal path (explicitly, before writeError is
-            // read below) and from `defer` on every other exit (cancellation, or a throw from this
-            // function) without double-removing the tap.
-            var isTornDown = false
-            func tearDown() {
-                guard !isTornDown else { return }
-                isTornDown = true
-                engine.stop()
-                input.removeTap(onBus: 0)
-            }
-            defer { tearDown() }
-
-            try await Task.sleep(for: .seconds(seconds))
-
-            // Tear down before reading writeError or framesWritten: the tap must be guaranteed
-            // to no longer be able to fire, or a buffer delivered in the gap between the sleep
-            // returning and this check could write a value that's never read. Calling tearDown()
-            // here, ahead of the defer, closes that window on the normal path.
-            tearDown()
-
-            if let writeError {
-                throw RecordingError.writeFailed(writeError.localizedDescription)
-            }
-            try RecordingChecks.validateCaptured(frameCount: framesWritten)
+            session = live
         } catch {
             RecordingChecks.removeIfOwned(url, existedBefore: fileExistedBefore)
             throw error
         }
+    }
+
+    /// - Returns: the file that was written.
+    /// - Throws: `noAudioCaptured` when the tap never delivered a buffer — which is what a
+    ///   denied microphone permission looks like, since the engine starts and the tap installs
+    ///   without complaint. The file is removed in that case.
+    public func stop() throws -> URL {
+        guard let live = session else { throw RecordingError.notRecording }
+        session = nil
+        live.tearDown()
+
+        let outcome = live.counters.outcome()
+        do {
+            if let writeError = outcome.writeError {
+                throw RecordingError.writeFailed(writeError.localizedDescription)
+            }
+            try RecordingChecks.validateCaptured(frameCount: outcome.frames)
+        } catch {
+            RecordingChecks.removeIfOwned(live.url, existedBefore: live.fileExistedBefore)
+            throw error
+        }
+        return live.url
+    }
+
+    /// Stops without producing anything: the file this call created is removed. Used when the
+    /// owner cancels, and when a hold turns out to be too short to have been meant.
+    public func discard() {
+        guard let live = session else { return }
+        session = nil
+        live.tearDown()
+        RecordingChecks.removeIfOwned(live.url, existedBefore: live.fileExistedBefore)
+    }
+
+    /// Fixed-duration recording, kept for the phase 0 `nohands record` command.
+    public func record(seconds: TimeInterval, to url: URL) async throws {
+        try start(to: url)
+        do {
+            try await Task.sleep(for: .seconds(seconds))
+        } catch {
+            discard()
+            throw error
+        }
+        _ = try stop()
     }
 }
