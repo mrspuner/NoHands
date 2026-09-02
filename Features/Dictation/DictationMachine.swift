@@ -10,7 +10,7 @@ import Foundation
 /// Failure is not a state. Any failure returns the machine to `idle` and emits the effects
 /// that report it, because a resting failure state would need an explicit way out, and a
 /// missing way out means dictation stops working until the app is restarted.
-public struct DictationMachine {
+public struct DictationMachine: Sendable {
     public struct Limits: Equatable, Sendable {
         public var minimumHold: TimeInterval
         public var maximumRecording: TimeInterval
@@ -29,6 +29,9 @@ public struct DictationMachine {
             self.successDwell = successDwell
         }
 
+        // `failureDwell` and `successDwell` are deliberately left at their defaults here rather
+        // than read from `config`: unlike the hold and recording thresholds, nothing about them
+        // depends on the owner's dictation habits, so there is no reason to make them editable.
         public init(config: DictationConfig) {
             self.init(
                 minimumHold: config.minimumHoldSeconds,
@@ -51,6 +54,10 @@ public struct DictationMachine {
         case stopping(target: TargetApp)
         case transcribing(target: TargetApp)
         case cleaning(raw: String, target: TargetApp)
+        /// Only exits are `.inserted` and `.insertionFailed`. Escape is deliberately released
+        /// on entry rather than on either exit: once cleanup has handed off to `.insert`,
+        /// there is nothing left to cancel, and swallowing a keystroke the machine has stopped
+        /// listening for would just make it vanish.
         case inserting(target: TargetApp, cleanupSkipped: String?)
     }
 
@@ -81,12 +88,19 @@ public struct DictationMachine {
         case startRecording
         case stopRecording
         case discardRecording
-        /// Cancel whatever recognition or cleanup is in flight.
+        /// Cancel whatever is in flight: recognition, cleanup, or — while still `.stopping` —
+        /// the recorder finishing its file. In that last case the coordinator must discard the
+        /// file once it does arrive rather than send it on to recognition.
         case cancelWork
         case transcribe(URL)
         case clean(String)
         case insert(text: String, into: TargetApp, cleaned: Bool)
+        /// Create-or-update: the panel may already be showing something else, or nothing at
+        /// all. A dropped tick can jump straight from an unannounced recording to
+        /// `.show(.transcribing)` with no `.show(.recording)` ever having preceded it.
         case show(PanelState)
+        /// Must tolerate there being no panel to hide: Escape inside the hold threshold emits
+        /// this with `after: 0` even though the panel never appeared.
         case hidePanel(after: TimeInterval)
         case play(Sound)
         /// Which keys the tap must stop passing through to the rest of the system.
@@ -167,6 +181,7 @@ public struct DictationMachine {
         case (.cleaning(_, let target), .cleaned(let text)):
             state = .inserting(target: target, cleanupSkipped: nil)
             return [
+                .swallow(space: false, escape: false),
                 .show(.inserting(target: target, cleanupSkipped: nil)),
                 .insert(text: text, into: target, cleaned: true),
             ]
@@ -175,6 +190,7 @@ public struct DictationMachine {
             state = .inserting(target: target, cleanupSkipped: message)
             return [
                 .play(.error),
+                .swallow(space: false, escape: false),
                 .show(.inserting(target: target, cleanupSkipped: message)),
                 .insert(text: raw, into: target, cleaned: false),
             ]

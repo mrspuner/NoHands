@@ -89,6 +89,18 @@ private func recording(latched: Bool = false) -> DictationMachine {
     ])
 }
 
+// Latching before the panel has ever appeared must not conjure one up early, and must not
+// lose the fact that the recording is latched once the deferred announcement does happen.
+@Test func latchingBeforeAnnouncementStaysSilentUntilTheThresholdIsReached() {
+    var subject = machine()
+    _ = subject.handle(.fnDown(at: start, target: target))
+    _ = subject.handle(.tick(start.addingTimeInterval(0.1)))
+    let latchEffects = subject.handle(.spaceDown)
+    #expect(latchEffects == [.swallow(space: false, escape: true)])
+    let announceEffects = subject.handle(.tick(start.addingTimeInterval(0.35)))
+    #expect(announceEffects == [.play(.start), .show(.recording(target: target, latched: true))])
+}
+
 @Test func releasingFnAfterLatchingDoesNothing() {
     var subject = recording(latched: true)
     #expect(subject.handle(.fnUp(at: start.addingTimeInterval(2))) == [])
@@ -158,6 +170,7 @@ private func cleaning() -> DictationMachine {
     var subject = cleaning()
     let effects = subject.handle(.cleaned("Привет."))
     #expect(effects == [
+        .swallow(space: false, escape: false),
         .show(.inserting(target: target, cleanupSkipped: nil)),
         .insert(text: "Привет.", into: target, cleaned: true),
     ])
@@ -170,9 +183,25 @@ private func cleaning() -> DictationMachine {
     let effects = subject.handle(.cleanupFailed("offline"))
     #expect(effects == [
         .play(.error),
+        .swallow(space: false, escape: false),
         .show(.inserting(target: target, cleanupSkipped: "offline")),
         .insert(text: "эээ привет", into: target, cleaned: false),
     ])
+}
+
+// `insertionFailed` is the only modelled exit from `inserting` besides success — a paste that
+// fails, most likely Accessibility permission revoked mid-session.
+@Test func insertionFailureIsReported() {
+    var subject = cleaning()
+    _ = subject.handle(.cleaned("Привет."))
+    let effects = subject.handle(.insertionFailed("Accessibility permission was revoked"))
+    #expect(effects == [
+        .play(.error),
+        .show(.failure("Accessibility permission was revoked")),
+        .hidePanel(after: 3),
+        .swallow(space: false, escape: false),
+    ])
+    #expect(subject.state == .idle)
 }
 
 @Test func aCleanInsertionEndsWithTheDoneSound() {
