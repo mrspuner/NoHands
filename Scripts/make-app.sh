@@ -1,10 +1,12 @@
 #!/bin/bash
-# Собирает NoHands.app и подписывает его.
+# Builds NoHands.app and signs it.
 #
-# Подпись — самоподписанным сертификатом, а не ad-hoc: ad-hoc пишет в требование к коду хеш
-# самого бинарника, и после каждой пересборки macOS считает приложение другой программой,
-# отзывая разрешение на управление компьютером. Сертификат создаётся один раз вручную в
-# Связке ключей: Ассистент сертификатов → Создать сертификат → тип «Подпись кода».
+# Signed with a self-signed certificate, not ad-hoc: ad-hoc signing bakes the binary's own
+# hash into the code requirement, so every rebuild makes macOS see a different program and
+# revokes the Accessibility permission the app needs. A named identity keeps the requirement
+# at "this identifier, signed by this certificate" — no hash, so the permission survives
+# rebuilds. See docs/DECISIONS.md, "Самоподписанный сертификат вместо ad-hoc подписи", for the
+# one-time setup of the certificate in Keychain Access.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

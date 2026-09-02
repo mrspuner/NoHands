@@ -13,9 +13,9 @@ final class StatusMenu {
 
     init(onQuit: @escaping () -> Void, onReloadConfig: @escaping () -> Void) {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(
-            systemSymbolName: "mic.fill", accessibilityDescription: "NoHands"
-        )
+        let icon = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "NoHands")
+        icon?.isTemplate = true
+        item.button?.image = icon
 
         statusLine = NSMenuItem(title: "Проверяю…", action: nil, keyEquivalent: "")
         statusLine.isEnabled = false
