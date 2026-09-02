@@ -10,7 +10,6 @@ import Foundation
 /// which way the dependency runs.
 @MainActor
 public final class DictationCoordinator {
-    private let config: DictationConfig
     private let recorder: MicrophoneRecorder
     private let transcriber: any Transcriber
     private let cleaner: DeepSeekClient
@@ -37,7 +36,6 @@ public final class DictationCoordinator {
         hidePanel: @escaping (TimeInterval) -> Void,
         onLevel: @escaping @Sendable (Float) -> Void
     ) {
-        self.config = config
         self.recorder = recorder
         self.transcriber = transcriber
         self.cleaner = cleaner
@@ -65,6 +63,10 @@ public final class DictationCoordinator {
         ticker?.invalidate()
         ticker = nil
         work?.cancel()
+        // Quitting or reloading mid-dictation must not leave the engine running or a partial
+        // recording of the owner's own speech behind on disk.
+        Task { [recorder] in await recorder.discard() }
+        discardAudioFile()
     }
 
     private func received(_ kind: KeyEventKind) {
@@ -169,22 +171,28 @@ public final class DictationCoordinator {
             .appendingPathComponent("nohands-dictation-\(UUID().uuidString).wav")
         audioURL = url
         let level = onLevel
-        Task { [recorder] in
+        Task { [weak self, recorder] in
             do {
                 try await recorder.start(to: url) { value in
                     DispatchQueue.main.async { level(value) }
                 }
             } catch {
-                await MainActor.run { self.apply(.recordingFailed(error.localizedDescription)) }
+                await MainActor.run { self?.apply(.recordingFailed(error.localizedDescription)) }
             }
         }
         // Both thresholds — the accidental brush and the five-minute cut-off — are noticed by
-        // the machine, which needs a clock to notice them with.
-        ticker = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+        // the machine, which needs a clock to notice them with. Registered in `.common` rather
+        // than left in `Timer.scheduledTimer`'s default `.default` mode: the tap's own run loop
+        // source already uses `.commonModes`, and a `.default`-mode timer stops firing while the
+        // menu is open or a window is being dragged — exactly when this app's one visible
+        // surface is in use.
+        let ticker = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.apply(.tick(Date()))
             }
         }
+        RunLoop.main.add(ticker, forMode: .common)
+        self.ticker = ticker
     }
 
     private func stopTicker() {

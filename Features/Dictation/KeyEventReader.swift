@@ -35,4 +35,24 @@ public enum KeyEventReader {
             return nil
         }
     }
+
+    /// Whether the tap must eat this key rather than pass it through.
+    ///
+    /// `space` and `escape` are the machine's own intent, mirrored into the tap by the
+    /// coordinator. Space also swallows on the event's own fn flag, with no memory of fn's
+    /// up/down state needed: `maskSecondaryFn` on a `keyDown` for key code 49 has no other
+    /// source — the aliasing this type exists to filter out (arrows, the F row, Home/End,
+    /// Page Up/Down) sets the flag on those keys' own events, never on space's — so this
+    /// reads directly from the event and cannot go stale the way a separately tracked flag can
+    /// if an fn-up is ever missed.
+    public static func shouldSwallow(_ kind: KeyEventKind, flags: CGEventFlags, space: Bool, escape: Bool) -> Bool {
+        switch kind {
+        case .fnDown, .fnUp:
+            return false
+        case .spaceDown:
+            return flags.contains(.maskSecondaryFn) || space
+        case .escapeDown:
+            return escape
+        }
+    }
 }

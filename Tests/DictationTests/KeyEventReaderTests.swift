@@ -37,3 +37,29 @@ import Testing
     #expect(KeyEventReader.kind(type: .keyDown, keyCode: 36, flags: []) == nil)
     #expect(KeyEventReader.kind(type: .flagsChanged, keyCode: 56, flags: .maskShift) == nil)
 }
+
+// Space swallows on the fn flag alone, with no separately tracked "fn is down" state: an
+// fn-up the tap never saw must not leave every future space swallowed forever.
+@Test func spaceSwallowsOnTheFnFlagEvenWhenTheMachinesFlagIsFalse() {
+    #expect(KeyEventReader.shouldSwallow(.spaceDown, flags: .maskSecondaryFn, space: false, escape: false))
+}
+
+@Test func spaceIsNotSwallowedWhenNeitherTheFlagNorTheMachineWantsIt() {
+    #expect(!KeyEventReader.shouldSwallow(.spaceDown, flags: [], space: false, escape: false))
+}
+
+// The machine's own intent still swallows space with the fn flag absent — latching keeps
+// eating space after fn has physically been released.
+@Test func spaceSwallowsOnTheMachinesFlagWithTheFnFlagAbsent() {
+    #expect(KeyEventReader.shouldSwallow(.spaceDown, flags: [], space: true, escape: false))
+}
+
+@Test func escapeSwallowsOnlyOnTheMachinesFlag() {
+    #expect(KeyEventReader.shouldSwallow(.escapeDown, flags: [], space: false, escape: true))
+    #expect(!KeyEventReader.shouldSwallow(.escapeDown, flags: .maskSecondaryFn, space: false, escape: false))
+}
+
+@Test func fnEventsAreNeverSwallowed() {
+    #expect(!KeyEventReader.shouldSwallow(.fnDown, flags: .maskSecondaryFn, space: true, escape: true))
+    #expect(!KeyEventReader.shouldSwallow(.fnUp, flags: [], space: true, escape: true))
+}

@@ -28,8 +28,6 @@ public final class FnKeyMonitor: @unchecked Sendable {
     private struct Swallow: Sendable {
         var space = false
         var escape = false
-        /// Set by the tap itself, not by the coordinator. See `handle`.
-        var fnIsDown = false
     }
 
     private let onEvent: @Sendable (KeyEventKind) -> Void
@@ -41,6 +39,10 @@ public final class FnKeyMonitor: @unchecked Sendable {
 
     public init(onEvent: @escaping @Sendable (KeyEventKind) -> Void) {
         self.onEvent = onEvent
+    }
+
+    deinit {
+        stop()
     }
 
     public func setSwallow(space: Bool, escape: Bool) {
@@ -110,22 +112,12 @@ public final class FnKeyMonitor: @unchecked Sendable {
         // state machine, and by the time it returns the flags describe the world the keystroke
         // has already created rather than the one it arrived in. Latching is exactly that case
         // — the space that latches a recording turns space-swallowing off.
-        let shouldSwallow = swallow.withLock { state -> Bool in
-            switch kind {
-            case .fnDown:
-                state.fnIsDown = true
-                return false
-            case .fnUp:
-                state.fnIsDown = false
-                return false
-            case .spaceDown:
-                // `fnIsDown` is the tap's own knowledge, so this needs no round trip through
-                // the coordinator and cannot be stale: space is eaten exactly while fn is
-                // physically held, which is exactly when it means "latch".
-                return state.space || state.fnIsDown
-            case .escapeDown:
-                return state.escape
-            }
+        //
+        // `flags` is read out here, ahead of the lock: `CGEvent` itself is not `Sendable`, and
+        // `withLock`'s closure is, so only the `Sendable` flags bitmask may cross into it.
+        let flags = event.flags
+        let shouldSwallow = swallow.withLock { state in
+            KeyEventReader.shouldSwallow(kind, flags: flags, space: state.space, escape: state.escape)
         }
 
         // FIFO by contract, unlike unstructured tasks: fn down must never be processed after

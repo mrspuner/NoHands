@@ -6,6 +6,7 @@ import Dictation
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusMenu: StatusMenu?
     private var coordinator: DictationCoordinator?
+    private var buildTask: Task<Void, Never>?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let menu = StatusMenu(
@@ -14,12 +15,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // the model live in the client, and none of them is consulted again after start.
             onReloadConfig: { [weak self] in
                 guard let self, let menu = self.statusMenu else { return }
-                Task { await self.buildCoordinator(menu: menu) }
+                self.startBuild(menu: menu)
             }
         )
         statusMenu = menu
         menu.setStatus("Загружаю модель…")
-        Task { await self.buildCoordinator(menu: menu) }
+        startBuild(menu: menu)
+    }
+
+    // A build already in flight is ignored rather than cancelled: `ParakeetTranscriber.load`
+    // downloads and loads a model with no cancellation point of its own, so cancelling the task
+    // would not actually stop the work in progress — it would just leave two builds racing to
+    // finish, with no guarantee which coordinator survives. Ignoring keeps exactly one build
+    // running at a time; the owner can retry the reload once it settles.
+    private func startBuild(menu: StatusMenu) {
+        guard buildTask == nil else { return }
+        buildTask = Task { [weak self] in
+            await self?.buildCoordinator(menu: menu)
+            self?.buildTask = nil
+        }
     }
 
     private func buildCoordinator(menu: StatusMenu) async {

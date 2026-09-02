@@ -156,9 +156,10 @@ public struct DictationMachine: Sendable {
             return [.discardRecording, .hidePanel(after: 0), .swallow(space: false, escape: false)]
 
         // The engine refuses at start, not at stop — a missing input device, a denied
-        // permission. `discardRecording` also stops the clock the coordinator started.
+        // permission. `failed` already discards the recording (and, through it, stops the
+        // clock the coordinator started).
         case (.recording, .recordingFailed(let message)):
-            return [.discardRecording] + failed(message)
+            return failed(message)
 
         case (.stopping(let target), .recordingStopped(let url)):
             state = .transcribing(target: target)
@@ -221,7 +222,12 @@ public struct DictationMachine: Sendable {
 
     private mutating func failed(_ message: String) -> [Effect] {
         state = .idle
+        // A dictation that ended owns no audio, whichever step it failed at. `discardRecording`
+        // is idempotent where there is nothing to discard — the coordinator's deletion uses
+        // `try?` and the recorder's `discard()` returns early with no session — so this is safe
+        // to emit unconditionally rather than tracked per call site.
         return [
+            .discardRecording,
             .play(.error),
             .show(.failure(message)),
             .hidePanel(after: limits.failureDwell),

@@ -196,6 +196,7 @@ private func cleaning() -> DictationMachine {
     _ = subject.handle(.cleaned("Привет."))
     let effects = subject.handle(.insertionFailed("Accessibility permission was revoked"))
     #expect(effects == [
+        .discardRecording,
         .play(.error),
         .show(.failure("Accessibility permission was revoked")),
         .hidePanel(after: 3),
@@ -227,6 +228,7 @@ private func cleaning() -> DictationMachine {
     _ = subject.handle(.recordingStopped(URL(fileURLWithPath: "/tmp/a.wav")))
     let effects = subject.handle(.transcriptionFailed("Transcription returned no text"))
     #expect(effects == [
+        .discardRecording,
         .play(.error),
         .show(.failure("Transcription returned no text")),
         .hidePanel(after: 3),
