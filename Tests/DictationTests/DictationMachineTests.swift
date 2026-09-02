@@ -171,6 +171,7 @@ private func cleaning() -> DictationMachine {
     let effects = subject.handle(.cleaned("Привет."))
     #expect(effects == [
         .swallow(space: false, escape: false),
+        .remember(raw: "эээ привет", cleaned: "Привет."),
         .show(.inserting(target: target, cleanupSkipped: nil)),
         .insert(text: "Привет.", into: target, cleaned: true),
     ])
@@ -184,9 +185,20 @@ private func cleaning() -> DictationMachine {
     #expect(effects == [
         .play(.error),
         .swallow(space: false, escape: false),
+        .remember(raw: "эээ привет", cleaned: nil),
         .show(.inserting(target: target, cleanupSkipped: "offline")),
         .insert(text: "эээ привет", into: target, cleaned: false),
     ])
+}
+
+// A dictation that never reached cleanup has nothing worth keeping: the audio is thrown away
+// with it, so a failed recognition cannot leave a file behind.
+@Test func aFailedRecognitionRemembersNothing() {
+    var subject = recording()
+    _ = subject.handle(.fnUp(at: start.addingTimeInterval(2)))
+    _ = subject.handle(.recordingStopped(URL(fileURLWithPath: "/tmp/a.wav")))
+    let effects = subject.handle(.transcriptionFailed("Transcription returned no text"))
+    #expect(!effects.contains { if case .remember = $0 { return true } else { return false } })
 }
 
 // `insertionFailed` is the only modelled exit from `inserting` besides success — a paste that

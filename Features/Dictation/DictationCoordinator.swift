@@ -24,6 +24,7 @@ public final class DictationCoordinator {
     private var ticker: Timer?
     private var work: Task<Void, Never>?
     private var audioURL: URL?
+    private let lastDictation = LastDictation()
 
     public init(
         config: DictationConfig,
@@ -148,7 +149,6 @@ public final class DictationCoordinator {
             }
 
         case .insert(let text, let target, _):
-            discardAudioFile()
             run { [inserter] in
                 do {
                     try await inserter.insert(text, into: target)
@@ -169,6 +169,15 @@ public final class DictationCoordinator {
 
         case .swallow(let space, let escape):
             monitor?.setSwallow(space: space, escape: escape)
+
+        case .remember(let raw, let cleaned):
+            guard let audio = audioURL else { break }
+            audioURL = nil
+            Task { [lastDictation] in
+                await lastDictation.remember(
+                    LastDictation.Entry(audio: audio, raw: raw, cleaned: cleaned)
+                )
+            }
         }
     }
 

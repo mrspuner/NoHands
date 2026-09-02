@@ -105,6 +105,10 @@ public struct DictationMachine: Sendable {
         case play(Sound)
         /// Which keys the tap must stop passing through to the rest of the system.
         case swallow(space: Bool, escape: Bool)
+        /// Hand the finished dictation to `LastDictation`, which also takes ownership of the
+        /// audio file. Emitted only once cleanup has run one way or the other: earlier than
+        /// that there is no text worth keeping.
+        case remember(raw: String, cleaned: String?)
     }
 
     public let limits: Limits
@@ -179,10 +183,11 @@ public struct DictationMachine: Sendable {
         case (.transcribing, .transcriptionFailed(let message)):
             return failed(message)
 
-        case (.cleaning(_, let target), .cleaned(let text)):
+        case (.cleaning(let raw, let target), .cleaned(let text)):
             state = .inserting(target: target, cleanupSkipped: nil)
             return [
                 .swallow(space: false, escape: false),
+                .remember(raw: raw, cleaned: text),
                 .show(.inserting(target: target, cleanupSkipped: nil)),
                 .insert(text: text, into: target, cleaned: true),
             ]
@@ -192,6 +197,7 @@ public struct DictationMachine: Sendable {
             return [
                 .play(.error),
                 .swallow(space: false, escape: false),
+                .remember(raw: raw, cleaned: nil),
                 .show(.inserting(target: target, cleanupSkipped: message)),
                 .insert(text: raw, into: target, cleaned: false),
             ]
