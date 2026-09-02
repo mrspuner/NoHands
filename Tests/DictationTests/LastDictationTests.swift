@@ -48,3 +48,23 @@ private func scratchFile() throws -> URL {
     await store.remember(LastDictation.Entry(audio: audio, raw: "сырой", cleaned: nil))
     #expect(await store.current()?.cleaned == nil)
 }
+
+// `DictationCoordinator.stop()` clears its store on teardown so a rebuild does not abandon the
+// previous store's file in the temp directory — nothing else would ever call `remember` on it
+// again to replace it.
+@Test func clearingDeletesTheFileAndForgetsTheEntry() async throws {
+    let store = LastDictation()
+    let audio = try scratchFile()
+
+    await store.remember(LastDictation.Entry(audio: audio, raw: "раз", cleaned: nil))
+    await store.clear()
+
+    #expect(!FileManager.default.fileExists(atPath: audio.path))
+    #expect(await store.current() == nil)
+}
+
+@Test func clearingAnEmptyStoreDoesNothing() async {
+    let store = LastDictation()
+    await store.clear()
+    #expect(await store.current() == nil)
+}

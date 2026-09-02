@@ -274,6 +274,25 @@ private func cleaning() -> DictationMachine {
     #expect(subject.state == .idle)
 }
 
+// `Limits.init(config:)` is the single seam where the config's thresholds reach the machine.
+// `minimumHold` and `maximumRecording` are both `Double` — nothing but this test stops them
+// from being transposed, which would compile cleanly and change how dictation behaves without
+// a single type error anywhere.
+@Test func limitsInitReadsHoldAndRecordingSecondsIntoTheRightFields() {
+    let config = DictationConfig(
+        language: "ru",
+        minimumHoldSeconds: 0.42,
+        maxRecordingSeconds: 123,
+        model: "deepseek-chat",
+        timeoutSeconds: 10,
+        prompt: "prompt",
+        sounds: DictationConfig.default.sounds
+    )
+    let limits = DictationMachine.Limits(config: config)
+    #expect(limits.minimumHold == 0.42)
+    #expect(limits.maximumRecording == 123)
+}
+
 @Test func strayEventsInIdleAreIgnored() {
     var subject = machine()
     #expect(subject.handle(.spaceDown) == [])

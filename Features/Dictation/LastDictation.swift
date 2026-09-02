@@ -37,4 +37,15 @@ public actor LastDictation {
     public func current() -> Entry? {
         entry
     }
+
+    /// Deletes the held recording, if any, and forgets it. Used when the coordinator that owns
+    /// this store is torn down: `stop()` builds a fresh `LastDictation` on the next rebuild, so
+    /// without this the store being replaced would abandon its file in the temp directory —
+    /// nothing would ever call `remember` on it again to replace that file with a newer one.
+    public func clear() {
+        if let entry {
+            try? FileManager.default.removeItem(at: entry.audio)
+        }
+        entry = nil
+    }
 }

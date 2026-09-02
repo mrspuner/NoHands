@@ -23,6 +23,31 @@ public final class DictationCoordinator {
     private var monitor: FnKeyMonitor?
     private var ticker: Timer?
     private var work: Task<Void, Never>?
+    /// The task running `recorder.start`, from the moment `.startRecording` is performed until
+    /// it finishes. `.startRecording` and `.discardRecording` are each performed in their own
+    /// bare `Task {}`, and Swift guarantees no ordering between two independent tasks touching
+    /// the same actor — `FnKeyMonitor` documents the identical hazard in its own delivery path.
+    /// A sub-threshold fn brush emits both in quick succession; if the discard task ever ran
+    /// its `recorder.discard()` before the start task's `recorder.start()`, `discard()` would
+    /// return early on a session that does not exist yet, and `start()` would then install a
+    /// tap nobody removes. Tracked here so `.discardRecording` and `stop()` can `await` it
+    /// first and make that inversion impossible. The window is widest on the very first run,
+    /// where `recorder.start` blocks on the microphone permission dialog.
+    private var startTask: Task<Void, Never>?
+    /// Ownership of the file at this URL, since nothing else states the rule:
+    /// - Set only by `startRecording()`, the moment the temp path is chosen — before the
+    ///   recorder has necessarily started writing to it.
+    /// - Cleared to nil, and the file deleted, by whichever effect finishes with it:
+    ///   `.discardRecording` (after `recorder.discard()` returns), `.remember` (which hands the
+    ///   file to `LastDictation` instead — ownership passes, the file is not deleted here), or
+    ///   `discardAudioFile()`, the direct-delete helper used by `.cancelWork` and by `stop()`.
+    /// - `.cancelWork` deletes the file directly instead of calling `recorder.discard()`
+    ///   because by the time it runs the machine has already left `.recording`: the recorder
+    ///   was already told to stop (`.stopRecording`) or has already handed back its file
+    ///   (`.transcribe`), so there is no live session left for `discard()` to tear down — it
+    ///   would just return early. `.discardRecording` is the opposite case: it fires from
+    ///   inside `.recording`, the session is still live, and `discard()` is what tears it down;
+    ///   deleting the file without it would leave the engine still running.
     private var audioURL: URL?
     private let lastDictation = LastDictation()
 
@@ -64,10 +89,21 @@ public final class DictationCoordinator {
         ticker?.invalidate()
         ticker = nil
         work?.cancel()
+        let pendingStart = startTask
+        startTask = nil
         // Quitting or reloading mid-dictation must not leave the engine running or a partial
-        // recording of the owner's own speech behind on disk.
-        Task { [recorder] in await recorder.discard() }
+        // recording of the owner's own speech behind on disk. Awaiting a still-in-flight start
+        // first keeps `recorder.start` from ever running after this `discard` — see the comment
+        // on `startTask` for the failure that would otherwise cause.
+        Task { [recorder, pendingStart] in
+            await pendingStart?.value
+            await recorder.discard()
+        }
         discardAudioFile()
+        // Each rebuild creates a fresh `LastDictation`; without this, the previous store's
+        // audio file is abandoned in the temp directory, since nothing will ever call
+        // `remember` on that store again to replace it.
+        Task { [lastDictation] in await lastDictation.clear() }
     }
 
     private func received(_ kind: KeyEventKind) {
@@ -120,7 +156,14 @@ public final class DictationCoordinator {
             stopTicker()
             let url = audioURL
             audioURL = nil
-            Task { [recorder] in
+            let pendingStart = startTask
+            startTask = nil
+            Task { [recorder, pendingStart] in
+                // The start this discard is meant to undo may still be in flight — awaiting it
+                // first guarantees `recorder.start` has run before `recorder.discard` does, so
+                // a fast discard can never overtake a slow start. See the comment on
+                // `startTask`.
+                await pendingStart?.value
                 await recorder.discard()
                 if let url { try? FileManager.default.removeItem(at: url) }
             }
@@ -186,7 +229,7 @@ public final class DictationCoordinator {
             .appendingPathComponent("nohands-dictation-\(UUID().uuidString).wav")
         audioURL = url
         let level = onLevel
-        Task { [weak self, recorder] in
+        startTask = Task { [weak self, recorder] in
             do {
                 try await recorder.start(to: url) { value in
                     DispatchQueue.main.async { level(value) }

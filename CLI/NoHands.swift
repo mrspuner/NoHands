@@ -171,6 +171,14 @@ struct NoHands {
         }
 
         let config = try DictationConfig.loadOrCreate()
+
+        // Checked before recording starts, not after: this command records first and cleans
+        // afterwards, so a missing key discovered only at cleanup time would cost the owner a
+        // spoken sentence they cannot get back. `--raw` never cleans, so it never needs a key.
+        let client: DeepSeekClient? = try parsed.raw ? nil : DeepSeekClient.fromKeychain(
+            model: config.model, prompt: config.prompt, timeout: config.timeoutSeconds
+        )
+
         guard let device = AudioInputDevice.current() else {
             fail("Устройство ввода не найдено. У Mac mini нет встроенного микрофона — подключите внешний")
         }
@@ -201,14 +209,11 @@ struct NoHands {
         let recognized = Date()
         note("распознавание \(String(format: "%.2f", recognized.timeIntervalSince(recognitionStarted))) с")
 
-        guard !parsed.raw else {
+        guard let client else {
             print(rawText)
             return
         }
 
-        let client = try DeepSeekClient.fromKeychain(
-            model: config.model, prompt: config.prompt, timeout: config.timeoutSeconds
-        )
         let cleaned = try await client.clean(rawText)
         note("чистка \(String(format: "%.2f", Date().timeIntervalSince(recognized))) с")
         print(cleaned)

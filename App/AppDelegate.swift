@@ -20,7 +20,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         )
         statusMenu = menu
-        menu.setStatus("Загружаю модель…")
         startBuild(menu: menu)
     }
 
@@ -28,9 +27,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // downloads and loads a model with no cancellation point of its own, so cancelling the task
     // would not actually stop the work in progress — it would just leave two builds racing to
     // finish, with no guarantee which coordinator survives. Ignoring keeps exactly one build
-    // running at a time; the owner can retry the reload once it settles.
+    // running at a time; the owner can retry the reload once it settles. Distinct from
+    // "Загружаю модель…" so a click that did nothing cannot be mistaken for one that worked.
     private func startBuild(menu: StatusMenu) {
-        guard buildTask == nil else { return }
+        guard buildTask == nil else {
+            menu.setStatus("Уже перезагружаюсь, подождите…")
+            return
+        }
         buildTask = Task { [weak self] in
             await self?.buildCoordinator(menu: menu)
             self?.buildTask = nil
@@ -38,6 +41,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func buildCoordinator(menu: StatusMenu) async {
+        // Set here, in the one entry point both launch and «Перечитать конфиг» go through: the
+        // reload path used to tear the tap down and reload the model for several seconds while
+        // the menu still read the old status — "Готов" while dictation was, in fact, dead.
+        menu.setStatus("Загружаю модель…")
         coordinator?.stop()
         coordinator = nil
         do {
@@ -45,7 +52,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Loaded once and kept resident: 470 MB against 16 GB, and the alternative is
             // paying the load on every dictation, which is when waiting is least acceptable.
             let transcriber = try await ParakeetTranscriber.load(language: config.language)
-            let cleaner = try DeepSeekClient.fromKeychain(
+            // The key is not read here: `DeepSeekClient`'s lazy initializer defers that to the
+            // moment cleanup actually runs. Recognition is entirely local and needs no key, so
+            // a missing or Keychain-refused key must not keep the hotkey from ever going live —
+            // see the initializer's own comment for why this is not hypothetical. A missing key
+            // now surfaces as `.cleanupFailed` per spec section 10: raw text inserted, reason
+            // named on the panel, error sound played.
+            let cleaner = DeepSeekClient(
                 model: config.model, prompt: config.prompt, timeout: config.timeoutSeconds
             )
             let coordinator = DictationCoordinator(

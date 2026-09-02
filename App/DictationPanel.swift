@@ -39,7 +39,7 @@ final class DictationPanel {
     func show(_ state: PanelState) {
         pendingHide?.cancel()
         pendingHide = nil
-        if case .recording = state, model.state == nil {
+        if PanelTransition.transition(from: model.state, to: state) == .showResettingLevels {
             model.resetLevels()
         }
         model.state = state
