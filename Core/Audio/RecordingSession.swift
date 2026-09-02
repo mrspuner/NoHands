@@ -77,4 +77,13 @@ final class RecordingSession: @unchecked Sendable {
         engine.stop()
         input.removeTap(onBus: 0)
     }
+
+    /// Safety net for a session that's dropped without `stop()` or `discard()` ever being
+    /// called: without this, the tap stays installed on the input node and a partially written
+    /// WAV sits on disk until ARC gets around to it — the same "file that looks like a
+    /// successful recording" shape the comments in `MicrophoneRecorder.swift` exist to prevent.
+    /// `tearDown()` is idempotent, so this is safe alongside the explicit calls elsewhere.
+    deinit {
+        tearDown()
+    }
 }

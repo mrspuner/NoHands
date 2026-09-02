@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Testing
 @testable import Core
@@ -33,4 +34,35 @@ import Testing
 
 @Test func louderInputGivesLargerLevel() {
     #expect(AudioLevel.normalized(rms: 0.5) > AudioLevel.normalized(rms: 0.05))
+}
+
+// `normalized(buffer:)` is the path MicrophoneRecorder actually calls; these exercise it
+// directly instead of only its shared helper, so the two can't silently drift apart.
+
+@Test func bufferAtAKnownAmplitudeMatchesThatAmplitude() throws {
+    let format = try #require(AVAudioFormat(
+        commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: false
+    ))
+    let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4))
+    buffer.frameLength = 4
+    let channel = try #require(buffer.int16ChannelData)
+    // Same half-scale, alternating-sign pattern as constantAmplitudeIsThatAmplitude: RMS is 0.5.
+    let half = Int16(16384)
+    channel[0][0] = half
+    channel[0][1] = -half
+    channel[0][2] = half
+    channel[0][3] = -half
+
+    let expected = AudioLevel.normalized(rms: 0.5)
+    #expect(abs(AudioLevel.normalized(buffer: buffer) - expected) < 0.001)
+}
+
+@Test func zeroLengthBufferIsZero() throws {
+    let format = try #require(AVAudioFormat(
+        commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: false
+    ))
+    let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4))
+    buffer.frameLength = 0
+
+    #expect(AudioLevel.normalized(buffer: buffer) == 0)
 }

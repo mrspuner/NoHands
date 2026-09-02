@@ -12,13 +12,10 @@ public enum AudioLevel {
     static let floorDB: Float = -60
 
     public static func rms(_ samples: [Int16]) -> Float {
-        guard !samples.isEmpty else { return 0 }
-        var sum = 0.0
-        for sample in samples {
-            let value = Double(sample) / 32768.0
-            sum += value * value
+        samples.withUnsafeBufferPointer { buffer in
+            guard let base = buffer.baseAddress, buffer.count > 0 else { return 0 }
+            return rms(base, count: buffer.count)
         }
-        return Float((sum / Double(samples.count)).squareRoot())
     }
 
     public static func normalized(rms: Float) -> Float {
@@ -29,16 +26,22 @@ public enum AudioLevel {
     }
 
     /// Reads the buffer's samples in place — this runs on the real-time audio thread, where
-    /// allocating an array per buffer would be the wrong thing to do.
+    /// allocating an array per buffer would be the wrong thing to do. Shares its accumulation
+    /// with `rms(_:)` below so the tested path and the shipped path can't drift apart.
     public static func normalized(buffer: AVAudioPCMBuffer) -> Float {
         guard let channel = buffer.int16ChannelData, buffer.frameLength > 0 else { return 0 }
-        let count = Int(buffer.frameLength)
-        let samples = channel[0]
+        return normalized(rms: rms(channel[0], count: Int(buffer.frameLength)))
+    }
+
+    /// The accumulation both `rms(_:)` and `normalized(buffer:)` need: one over an array's
+    /// storage, the other straight off the audio buffer's channel pointer.
+    private static func rms(_ samples: UnsafePointer<Int16>, count: Int) -> Float {
+        guard count > 0 else { return 0 }
         var sum = 0.0
         for index in 0..<count {
             let value = Double(samples[index]) / 32768.0
             sum += value * value
         }
-        return normalized(rms: Float((sum / Double(count)).squareRoot()))
+        return Float((sum / Double(count)).squareRoot())
     }
 }
