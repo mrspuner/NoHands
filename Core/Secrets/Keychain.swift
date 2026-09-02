@@ -24,6 +24,8 @@ public enum KeychainError: Error, Equatable, LocalizedError {
 public enum Keychain {
     public static let elevenLabsService = "nohands-elevenlabs"
     public static let elevenLabsAccount = "api-key"
+    public static let deepSeekService = "nohands-deepseek"
+    public static let deepSeekAccount = "api-key"
 
     /// - Returns: the secret, or nil when the keychain holds no such item.
     /// - Throws: `KeychainError` for every other outcome. Collapsing those into nil would
