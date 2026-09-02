@@ -7,24 +7,16 @@ nohands — инструмент прогонов фазы 0
 nohands compare <наша-расшифровка.txt> <эталон.txt>
     Сверяет два текста пословно и печатает расхождения.
 
-nohands transcribe <файл> --engine whisper [--language ru] [--model <имя>] [--vad] [--relaxed-thresholds]
-    Распознаёт файл локальной моделью Whisper и печатает текст.
-    Код языка двухбуквенный, ISO-639-1: ru, en. Без --language язык определяет модель.
-    --model задаёт сборку модели, по умолчанию \(WhisperTranscriber.defaultModel).
-    --vad нарезает аудио по обнаруженной речи вместо слепых 30-секундных окон.
-    --relaxed-thresholds ослабляет пороги отбраковки неуверенных фрагментов.
-    Все три флага только для whisper, у scribe таких параметров нет.
-
 nohands transcribe <файл> --engine scribe [--language rus] [--keyterms "термин,термин"]
     Распознаёт файл через ElevenLabs Scribe v2 и печатает текст.
     Код языка трёхбуквенный, ISO-639-3: rus, eng. Без --language язык определяет сервис.
     --keyterms работает только с этим движком.
 
 nohands transcribe <файл> --engine parakeet [--language ru]
-    Распознаёт файл локальной моделью Parakeet TDT v3 (FluidAudio) и печатает текст.
+    Распознаёт файл локальной моделью Parakeet TDT v3 (FluidAudio) и печатает текст. Движок по умолчанию.
     Код языка двухбуквенный, ISO-639-1: ru, en. Влияет только на выбор письменности среди
     похожих кандидатов при декодировании, а не на выбор языка модели — та многоязычная всегда.
-    --keyterms, --model, --vad и --relaxed-thresholds к этому движку не относятся.
+    --keyterms к этому движку не относится.
 
 nohands record <секунд> <выход.wav>
     Пишет микрофон в WAV 16 кГц моно. Печатает устройство и формат перед записью.
@@ -122,19 +114,12 @@ struct NoHands {
         let started = Date()
         let transcriber: any Transcriber
         switch parsed.engine {
-        case "whisper":
-            transcriber = try await WhisperTranscriber.load(
-                model: parsed.model ?? WhisperTranscriber.defaultModel,
-                language: parsed.language,
-                useVAD: parsed.useVAD,
-                relaxedThresholds: parsed.relaxedThresholds
-            )
         case "scribe":
             transcriber = try ScribeTranscriber.fromKeychain(language: parsed.language, keyterms: parsed.keyterms)
         case "parakeet":
             transcriber = try await ParakeetTranscriber.load(language: parsed.language)
         default:
-            fail("Неизвестный движок: \(parsed.engine). Поддерживаются whisper, scribe и parakeet")
+            fail("Неизвестный движок: \(parsed.engine). Поддерживаются scribe и parakeet")
         }
         let ready = Date()
         let text = try await transcriber.transcribe(audio: url)

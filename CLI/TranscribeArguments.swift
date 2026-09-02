@@ -7,21 +7,18 @@ import Foundation
 /// to do with the message.
 struct TranscribeArguments {
     var url: URL
-    var engine = "whisper"
+    var engine = "parakeet"
     var language: String?
     var keyterms: [String] = []
     var keytermsGiven = false
-    var model: String?
-    var useVAD = false
-    var relaxedThresholds = false
 
     enum ParseError: Error, Equatable {
         case message(String)
     }
 
     static let usage = """
-    Использование: nohands transcribe <файл> --engine whisper|scribe|parakeet [--language <код>] \
-    [--keyterms "термин,термин"] [--model <имя>] [--vad] [--relaxed-thresholds]
+    Использование: nohands transcribe <файл> --engine scribe|parakeet [--language <код>] \
+    [--keyterms "термин,термин"]
     """
 
     static func parse(_ arguments: [String]) throws -> TranscribeArguments {
@@ -49,34 +46,16 @@ struct TranscribeArguments {
                     .map { $0.trimmingCharacters(in: .whitespaces) }
                     .filter { !$0.isEmpty }
                 index += 2
-            case "--model":
-                guard index + 1 < arguments.count else { throw ParseError.message("--model без значения") }
-                result.model = arguments[index + 1]
-                index += 2
-            case "--vad":
-                result.useVAD = true
-                index += 1
-            case "--relaxed-thresholds":
-                result.relaxedThresholds = true
-                index += 1
             default:
                 throw ParseError.message("Неизвестный аргумент: \(arguments[index])")
             }
         }
 
-        // Keyterm prompting is a Scribe API feature; neither local engine has anything like it.
+        // Keyterm prompting is a Scribe API feature; the local engine has nothing like it.
         // Accepting the flag and dropping it would leave the owner reading a run they think was
         // biased and wasn't.
         if result.engine != "scribe", result.keytermsGiven {
             throw ParseError.message("--keyterms поддерживается только движком scribe, у \(result.engine) такого параметра нет")
-        }
-        // Symmetric check: --model, --vad and --relaxed-thresholds tune WhisperKit's decoding
-        // and model choice specifically. Scribe is a hosted API with none of these knobs, and
-        // Parakeet is a different local model with its own (currently fixed) configuration.
-        if result.engine != "whisper", result.model != nil || result.useVAD || result.relaxedThresholds {
-            throw ParseError.message(
-                "--model, --vad и --relaxed-thresholds поддерживаются только движком whisper, у \(result.engine) таких параметров нет"
-            )
         }
 
         return result

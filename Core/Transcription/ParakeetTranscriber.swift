@@ -4,10 +4,10 @@ import Foundation
 
 /// Local speech recognition through FluidAudio's Parakeet TDT v3 (CoreML on the Neural Engine).
 ///
-/// `FluidAudio.Language` is not a language selector the way Whisper's is: the v3 model is
-/// multilingual regardless of the flag. It only steers `TdtDecoderV3`'s top-K search to prefer
-/// same-script token candidates on close calls (Latin vs Cyrillic homophones), so passing it
-/// narrows ambiguity rather than switching what the model understands. Source:
+/// `FluidAudio.Language` is not a language selector: the v3 model is multilingual regardless of
+/// the flag. It only steers `TdtDecoderV3`'s top-K search to prefer same-script token candidates
+/// on close calls (Latin vs Cyrillic homophones), so passing it narrows ambiguity rather than
+/// switching what the model understands. Source:
 /// `.build/checkouts/FluidAudio/Sources/FluidAudio/Shared/TokenLanguageFilter.swift` and the
 /// `language:` doc comments on `AsrManager.transcribe`.
 public actor ParakeetTranscriber: Transcriber {
@@ -77,8 +77,7 @@ public actor ParakeetTranscriber: Transcriber {
             }
             // Every other ASRError (not initialized, model load, processing, compilation,
             // unsupported platform, encoder instantiation) is a broken local model, not a bad
-            // request — `modelUnavailable` is the existing case for that, even though
-            // `WhisperTranscriber` only reaches it from `load`; nothing about the case ties it
+            // request — `modelUnavailable` is the case for that; nothing about the case ties it
             // to load time specifically.
             throw TranscriptionError.modelUnavailable(error.localizedDescription)
         }

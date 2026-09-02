@@ -7,8 +7,8 @@ import Testing
 // rejects anything outside it, and they run without the model because the check happens
 // before the model is loaded.
 //
-// Names are prefixed `parakeet` to avoid colliding with the identically-shaped tests in
-// `WhisperTranscriberTests.swift` — both are top-level `@Test` functions in the same module.
+// Names are prefixed `parakeet` since these are top-level `@Test` functions in the same module
+// as the rest of `CoreTests`.
 
 @Test func parakeetTwoLetterCodeIsAccepted() throws {
     try ParakeetTranscriber.validateLanguage("ru")
