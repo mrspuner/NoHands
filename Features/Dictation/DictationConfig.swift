@@ -43,6 +43,13 @@ public struct DictationConfig: Equatable, Sendable, Codable {
     public var prompt: String
     public var sounds: Sounds
 
+    // Declared explicitly: with both `init(from:)` and `encode(to:)` written by hand, the
+    // compiler has nothing left to synthesize, and that synthesis is what produced this enum
+    // implicitly before `encode(to:)` was added.
+    private enum CodingKeys: String, CodingKey {
+        case language, minimumHoldSeconds, maxRecordingSeconds, model, timeoutSeconds, prompt, sounds
+    }
+
     public static let `default` = DictationConfig(
         language: "ru",
         minimumHoldSeconds: 0.3,
@@ -99,6 +106,20 @@ public struct DictationConfig: Equatable, Sendable, Codable {
         sounds = try container.decodeIfPresent(Sounds.self, forKey: .sounds) ?? fallback.sounds
     }
 
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        // Written explicitly rather than left to synthesis: `encodeIfPresent` drops the key
+        // when language is nil, and an absent key means "use the default" on the way back in —
+        // so a config that says "detect the language" would come back as Russian.
+        try container.encode(language, forKey: .language)
+        try container.encode(minimumHoldSeconds, forKey: .minimumHoldSeconds)
+        try container.encode(maxRecordingSeconds, forKey: .maxRecordingSeconds)
+        try container.encode(model, forKey: .model)
+        try container.encode(timeoutSeconds, forKey: .timeoutSeconds)
+        try container.encode(prompt, forKey: .prompt)
+        try container.encode(sounds, forKey: .sounds)
+    }
+
     public static func decode(_ data: Data) throws -> DictationConfig {
         try JSONDecoder().decode(DictationConfig.self, from: data)
     }
@@ -110,9 +131,14 @@ public struct DictationConfig: Equatable, Sendable, Codable {
 
     /// Reads the file, or writes the defaults and returns those. Writing on first run means the
     /// owner has a complete file to edit instead of having to remember the key names.
+    ///
+    /// Existence and readability are checked separately on purpose: `FileManager.contents`
+    /// returns nil both when the file is absent and when it exists but cannot be read, and
+    /// those two cases must not be treated alike — a read failure must throw, not silently
+    /// replace the owner's config with the defaults.
     public static func loadOrCreate(at url: URL = fileURL) throws -> DictationConfig {
-        if let data = FileManager.default.contents(atPath: url.path) {
-            return try decode(data)
+        if FileManager.default.fileExists(atPath: url.path) {
+            return try decode(Data(contentsOf: url))
         }
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true
