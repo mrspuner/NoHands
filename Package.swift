@@ -6,6 +6,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "Core", targets: ["Core"]),
+        .library(name: "Dictation", targets: ["Dictation"]),
         .executable(name: "nohands", targets: ["CLI"]),
     ],
     dependencies: [
@@ -19,6 +20,11 @@ let package = Package(
             ],
             path: "Core"
         ),
+        .target(
+            name: "Dictation",
+            dependencies: ["Core"],
+            path: "Features/Dictation"
+        ),
         .executableTarget(
             name: "CLI",
             dependencies: ["Core"],
@@ -28,6 +34,11 @@ let package = Package(
             name: "CoreTests",
             dependencies: ["Core"],
             path: "Tests/CoreTests"
+        ),
+        .testTarget(
+            name: "DictationTests",
+            dependencies: ["Dictation"],
+            path: "Tests/DictationTests"
         ),
         .testTarget(
             name: "CLITests",
