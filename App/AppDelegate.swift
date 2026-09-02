@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusMenu: StatusMenu?
     private var coordinator: DictationCoordinator?
     private var buildTask: Task<Void, Never>?
+    private let panel = DictationPanel()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let menu = StatusMenu(
@@ -54,9 +55,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 cleaner: cleaner,
                 inserter: TextInserter(),
                 sounds: SoundPlayer(sounds: config.sounds),
-                showPanel: { _ in },
-                hidePanel: { _ in },
-                onLevel: { _ in }
+                showPanel: { [panel] state in panel.show(state) },
+                hidePanel: { [panel] delay in panel.hide(after: delay) },
+                onLevel: { [panel] level in
+                    // `onLevel` is `@Sendable`: DictationCoordinator already hops to the main
+                    // queue before invoking it, so this is the same "known to be on the main
+                    // actor, provably or not" situation the coordinator itself expresses with
+                    // `MainActor.assumeIsolated` for its timer and key-event delivery.
+                    MainActor.assumeIsolated {
+                        panel.setLevel(level)
+                    }
+                }
             )
             try coordinator.start()
             self.coordinator = coordinator
