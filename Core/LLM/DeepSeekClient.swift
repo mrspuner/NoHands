@@ -6,9 +6,6 @@ import Foundation
 /// speech — meeting transcripts are summarized locally for exactly this reason.
 public actor DeepSeekClient {
     private static let endpoint = URL(string: "https://api.deepseek.com/anthropic/v1/messages")!
-    /// Cleanup returns roughly what it was given, so the budget is derived from the input
-    /// rather than fixed: a long dictation must not be cut off mid-sentence.
-    private static let tokenBudgetMultiplier = 3
 
     private let apiKey: String
     private let model: String
@@ -43,7 +40,7 @@ public actor DeepSeekClient {
         request.timeoutInterval = timeout
         request.httpBody = try CleanupPayload.body(
             model: model,
-            maxTokens: max(256, text.count * Self.tokenBudgetMultiplier),
+            maxTokens: CleanupPayload.tokenBudget(forCharacters: text.count),
             prompt: prompt,
             text: text
         )

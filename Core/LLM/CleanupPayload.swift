@@ -16,9 +16,12 @@ enum CleanupPayload {
         }
         let model: String
         let maxTokens: Int
-        /// Not optional and never omitted. Reasoning left on costs thirty five times the
-        /// output tokens and never reaches an answer.
-        let thinking = Thinking()
+        /// Computed, not stored: a stored property with a default still leaves an initializer
+        /// parameter that some future call site could pass a different value into. This is the
+        /// single parameter the project's entire cost model rests on — reasoning left on costs
+        /// thirty five times the output tokens and never reaches an answer — so there is no
+        /// initializer slot for it at all.
+        var thinking: Thinking { Thinking() }
         let system: String
         let messages: [Message]
 
@@ -29,6 +32,17 @@ enum CleanupPayload {
             case system
             case messages
         }
+
+        // Written by hand: synthesis only encodes stored properties, and `thinking` is
+        // deliberately computed (see above) so it cannot be passed a different value.
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(model, forKey: .model)
+            try container.encode(maxTokens, forKey: .maxTokens)
+            try container.encode(thinking, forKey: .thinking)
+            try container.encode(system, forKey: .system)
+            try container.encode(messages, forKey: .messages)
+        }
     }
 
     private struct Response: Decodable {
@@ -37,6 +51,22 @@ enum CleanupPayload {
             let text: String?
         }
         let content: [Block]
+    }
+
+    /// Cleanup returns roughly what it was given, so the budget scales with the input rather
+    /// than being fixed — a long dictation must not be cut off mid-sentence. The floor keeps a
+    /// short dictation from being handed a budget too small to hold the punctuation and
+    /// capitalization fixes around it. The ceiling is DeepSeek's documented maximum output for
+    /// `deepseek-v4-flash` — the model `deepseek-chat` resolves to, confirmed by the live probe
+    /// in task 3 — 384,000 tokens, per https://api-docs.deepseek.com/quick_start/pricing,
+    /// checked 2026-09-02. A probe sending `max_tokens: 1000000` was accepted with HTTP 200
+    /// rather than rejected, so the ceiling here is a documented sanity bound, not a value the
+    /// service itself would otherwise enforce.
+    static func tokenBudget(forCharacters count: Int) -> Int {
+        let floor = 256
+        let ceiling = 384_000
+        let multiplier = 3
+        return min(ceiling, max(floor, count * multiplier))
     }
 
     static func body(model: String, maxTokens: Int, prompt: String, text: String) throws -> Data {

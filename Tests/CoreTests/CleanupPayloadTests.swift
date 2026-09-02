@@ -53,3 +53,20 @@ import Testing
         try CleanupPayload.text(from: Data(#"{"content":[{"type":"text","text":"   "}]}"#.utf8))
     }
 }
+
+// A tiny dictation must not be handed a budget too small to hold punctuation and
+// capitalization fixes around it.
+@Test func tokenBudgetFloorsAShortText() {
+    #expect(CleanupPayload.tokenBudget(forCharacters: 10) == 256)
+}
+
+@Test func tokenBudgetScalesWithLength() {
+    #expect(CleanupPayload.tokenBudget(forCharacters: 1000) == 3000)
+}
+
+// DeepSeek's documented output ceiling for the model `deepseek-chat` resolves to
+// (deepseek-v4-flash) is 384,000 tokens. A five-minute dictation's proportional budget stays
+// far below it, but nothing should ever ask the service for more than it can give.
+@Test func tokenBudgetCapsAtTheDocumentedCeiling() {
+    #expect(CleanupPayload.tokenBudget(forCharacters: 200_000) == 384_000)
+}
