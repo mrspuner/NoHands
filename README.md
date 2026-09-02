@@ -8,7 +8,7 @@
 
 Диктовка идёт через облачный API, потому что нужна задержка около секунды. Созвоны расшифровываются локально на Apple Neural Engine, потому что их много и результат не срочен. Транскрипты складываются обычными markdown-файлами.
 
-Подробнее — [docs/DESIGN.md](docs/DESIGN.md). Почему сделано именно так — [docs/DECISIONS.md](docs/DECISIONS.md).
+Как устроено — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Замысел целиком — [docs/DESIGN.md](docs/DESIGN.md). Почему сделано именно так — [docs/DECISIONS.md](docs/DECISIONS.md).
 
 ## Требования
 
