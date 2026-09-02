@@ -46,6 +46,20 @@ func readFile(_ path: String) -> String {
     return content
 }
 
+/// `nil` at or above 32 kHz. Below that, macOS is most often reporting a Bluetooth headset's
+/// mic (AirPods included) — DESIGN.md calls that the worst input the app can have, since the
+/// same negotiation also narrows the system audio track and diarization degrades on it.
+/// Recording is still allowed at any rate; this only makes the tradeoff explicit instead of a
+/// generic "качество будет заниженным" line that named neither the rate nor the likely cause.
+func narrowbandWarning(sampleRate: Double) -> String? {
+    guard sampleRate < 32000 else { return nil }
+    return """
+    ВНИМАНИЕ: вход \(Int(sampleRate)) Гц — узкополосный режим, такая запись не годится для \
+    оценки качества распознавания. Типичная причина — подключённая Bluetooth-гарнитура \
+    (например, AirPods): проверьте вход в системных настройках звука
+    """
+}
+
 @main
 struct NoHands {
     static func main() async {
@@ -147,8 +161,8 @@ struct NoHands {
         }
         print("устройство: \(device.name)")
         print("формат входа: \(Int(device.sampleRate)) Гц, каналов \(device.channelCount)")
-        if device.sampleRate < 32000 {
-            print("ВНИМАНИЕ: частота ниже 32 кГц — это узкополосный режим, качество распознавания будет заниженным")
+        if let warning = narrowbandWarning(sampleRate: device.sampleRate) {
+            print(warning)
         }
         print("пишу \(seconds) с…")
 
