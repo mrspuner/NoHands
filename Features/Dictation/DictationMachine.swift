@@ -1,0 +1,215 @@
+import Foundation
+
+/// Everything dictation does, as a pure function of state and event.
+///
+/// Not one system call lives here: no keyboard, no microphone, no network, no window. Events
+/// come in, a list of effects goes out, and the coordinator performs them. That is what makes
+/// the whole behaviour — thresholds, latching, cancellation, every failure path — testable
+/// without a machine to run it on.
+///
+/// Failure is not a state. Any failure returns the machine to `idle` and emits the effects
+/// that report it, because a resting failure state would need an explicit way out, and a
+/// missing way out means dictation stops working until the app is restarted.
+public struct DictationMachine {
+    public struct Limits: Equatable, Sendable {
+        public var minimumHold: TimeInterval
+        public var maximumRecording: TimeInterval
+        public var failureDwell: TimeInterval
+        public var successDwell: TimeInterval
+
+        public init(
+            minimumHold: TimeInterval,
+            maximumRecording: TimeInterval,
+            failureDwell: TimeInterval = 3,
+            successDwell: TimeInterval = 0.6
+        ) {
+            self.minimumHold = minimumHold
+            self.maximumRecording = maximumRecording
+            self.failureDwell = failureDwell
+            self.successDwell = successDwell
+        }
+
+        public init(config: DictationConfig) {
+            self.init(
+                minimumHold: config.minimumHoldSeconds,
+                maximumRecording: config.maxRecordingSeconds
+            )
+        }
+    }
+
+    public enum Mode: Equatable, Sendable {
+        case held
+        case latched
+    }
+
+    public enum State: Equatable, Sendable {
+        case idle
+        /// `announced` is false until the hold has outlasted `minimumHold` — before that the
+        /// panel has not appeared and no sound has played.
+        case recording(mode: Mode, since: Date, target: TargetApp, announced: Bool)
+        /// The engine has been told to stop; the file has not come back yet.
+        case stopping(target: TargetApp)
+        case transcribing(target: TargetApp)
+        case cleaning(raw: String, target: TargetApp)
+        case inserting(target: TargetApp, cleanupSkipped: String?)
+    }
+
+    public enum Event: Equatable, Sendable {
+        case fnDown(at: Date, target: TargetApp)
+        case fnUp(at: Date)
+        case spaceDown
+        case escapeDown
+        /// Delivered while recording, often enough to notice both thresholds.
+        case tick(Date)
+        case recordingStopped(URL)
+        case recordingFailed(String)
+        case transcribed(String)
+        case transcriptionFailed(String)
+        case cleaned(String)
+        case cleanupFailed(String)
+        case inserted
+        case insertionFailed(String)
+    }
+
+    public enum Sound: Equatable, Sendable {
+        case start
+        case done
+        case error
+    }
+
+    public enum Effect: Equatable, Sendable {
+        case startRecording
+        case stopRecording
+        case discardRecording
+        /// Cancel whatever recognition or cleanup is in flight.
+        case cancelWork
+        case transcribe(URL)
+        case clean(String)
+        case insert(text: String, into: TargetApp, cleaned: Bool)
+        case show(PanelState)
+        case hidePanel(after: TimeInterval)
+        case play(Sound)
+        /// Which keys the tap must stop passing through to the rest of the system.
+        case swallow(space: Bool, escape: Bool)
+    }
+
+    public let limits: Limits
+    public private(set) var state: State = .idle
+
+    public init(limits: Limits) {
+        self.limits = limits
+    }
+
+    public mutating func handle(_ event: Event) -> [Effect] {
+        switch (state, event) {
+        case (.idle, .fnDown(let at, let target)):
+            state = .recording(mode: .held, since: at, target: target, announced: false)
+            return [.startRecording, .swallow(space: true, escape: true)]
+
+        case (.recording(let mode, let since, let target, let announced), .tick(let now)):
+            if now.timeIntervalSince(since) >= limits.maximumRecording {
+                return stopRecording(target: target)
+            }
+            guard !announced, now.timeIntervalSince(since) >= limits.minimumHold else { return [] }
+            state = .recording(mode: mode, since: since, target: target, announced: true)
+            return [.play(.start), .show(.recording(target: target, latched: mode == .latched))]
+
+        case (.recording(.held, let since, let target, _), .fnUp(let at)):
+            // Measured from the timestamps rather than from `announced`: a tick that never
+            // arrived must not throw away a dictation the owner actually made.
+            guard at.timeIntervalSince(since) >= limits.minimumHold else {
+                state = .idle
+                return [.discardRecording, .swallow(space: false, escape: false)]
+            }
+            return stopRecording(target: target)
+
+        case (.recording(.latched, _, _, _), .fnUp):
+            return []
+
+        case (.recording(.latched, _, let target, _), .fnDown):
+            return stopRecording(target: target)
+
+        case (.recording(.held, let since, let target, let announced), .spaceDown):
+            state = .recording(mode: .latched, since: since, target: target, announced: announced)
+            var effects: [Effect] = [.swallow(space: false, escape: true)]
+            if announced {
+                effects.append(.show(.recording(target: target, latched: true)))
+            }
+            return effects
+
+        case (.recording, .escapeDown):
+            state = .idle
+            return [.discardRecording, .hidePanel(after: 0), .swallow(space: false, escape: false)]
+
+        // The engine refuses at start, not at stop — a missing input device, a denied
+        // permission. `discardRecording` also stops the clock the coordinator started.
+        case (.recording, .recordingFailed(let message)):
+            return [.discardRecording] + failed(message)
+
+        case (.stopping(let target), .recordingStopped(let url)):
+            state = .transcribing(target: target)
+            return [.transcribe(url)]
+
+        case (.stopping, .recordingFailed(let message)):
+            return failed(message)
+
+        case (.stopping, .escapeDown), (.transcribing, .escapeDown), (.cleaning, .escapeDown):
+            state = .idle
+            return [.cancelWork, .hidePanel(after: 0), .swallow(space: false, escape: false)]
+
+        case (.transcribing(let target), .transcribed(let text)):
+            state = .cleaning(raw: text, target: target)
+            return [.show(.cleaning(target: target)), .clean(text)]
+
+        case (.transcribing, .transcriptionFailed(let message)):
+            return failed(message)
+
+        case (.cleaning(_, let target), .cleaned(let text)):
+            state = .inserting(target: target, cleanupSkipped: nil)
+            return [
+                .show(.inserting(target: target, cleanupSkipped: nil)),
+                .insert(text: text, into: target, cleaned: true),
+            ]
+
+        case (.cleaning(let raw, let target), .cleanupFailed(let message)):
+            state = .inserting(target: target, cleanupSkipped: message)
+            return [
+                .play(.error),
+                .show(.inserting(target: target, cleanupSkipped: message)),
+                .insert(text: raw, into: target, cleaned: false),
+            ]
+
+        case (.inserting(_, let skipped), .inserted):
+            state = .idle
+            var effects: [Effect] = [.swallow(space: false, escape: false)]
+            // The error sound has already played when cleanup was skipped; a success chime on
+            // top of it would say the opposite of what happened.
+            if skipped == nil {
+                effects.append(.play(.done))
+            }
+            effects.append(.hidePanel(after: limits.successDwell))
+            return effects
+
+        case (.inserting, .insertionFailed(let message)):
+            return failed(message)
+
+        default:
+            return []
+        }
+    }
+
+    private mutating func stopRecording(target: TargetApp) -> [Effect] {
+        state = .stopping(target: target)
+        return [.stopRecording, .swallow(space: false, escape: true), .show(.transcribing(target: target))]
+    }
+
+    private mutating func failed(_ message: String) -> [Effect] {
+        state = .idle
+        return [
+            .play(.error),
+            .show(.failure(message)),
+            .hidePanel(after: limits.failureDwell),
+            .swallow(space: false, escape: false),
+        ]
+    }
+}
