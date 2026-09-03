@@ -60,8 +60,11 @@ public struct MeetingMachine: Sendable {
         /// saved silently, a draft asks. `quietSince` is when both devices last went free.
         case recording(app: MeetingApp?, since: Date, confirmed: Bool, promptShown: Bool, quietSince: Date?)
         /// Both devices have been free long enough that the meeting looks over. Capture keeps
-        /// running: a meeting that comes back to life must not be cut in two.
-        case stopOffered(app: MeetingApp?, since: Date, offeredAt: Date)
+        /// running: a meeting that comes back to life must not be cut in two. `confirmed` is
+        /// carried over from `.recording` rather than assumed: without it, a revived meeting
+        /// would forget whether anybody ever confirmed it, and an unconfirmed draft would end
+        /// up saving silently instead of asking.
+        case stopOffered(app: MeetingApp?, since: Date, confirmed: Bool, offeredAt: Date)
         /// Capture is stopped, the folder is still a draft, and the answer decides its fate.
         case savePending(since: Date, stoppedAt: Date)
         /// This process was refused. Nothing it does raises a prompt until it lets both
@@ -178,26 +181,27 @@ public struct MeetingMachine: Sendable {
             state = .recording(app: app, since: since, confirmed: confirmed, promptShown: promptShown, quietSince: quietSince)
             return []
 
-        case (.stopOffered(let app, let since, _), .streamsChanged(let changed, let input, let output, _))
+        case (.stopOffered(let app, let since, let confirmed, _), .streamsChanged(let changed, let input, let output, _))
             where changed.pid == app?.pid && (input || output):
             // A meeting that came back to life must not be cut in two: the same file keeps
-            // being written, and only the panel changes back.
-            state = .recording(app: app, since: since, confirmed: true, promptShown: false, quietSince: nil)
-            return [.show(.recording(since: since, confirmed: true))]
+            // being written, and only the panel changes back. `confirmed` is restored as it
+            // was, not forced to true.
+            state = .recording(app: app, since: since, confirmed: confirmed, promptShown: false, quietSince: nil)
+            return [.show(.recording(since: since, confirmed: confirmed))]
 
-        case (.recording(let app, let since, _, _, let quiet), .tick(let now)):
+        case (.recording(let app, let since, let confirmed, _, let quiet), .tick(let now)):
             if now.timeIntervalSince(since) >= limits.maxMeeting {
                 return stopAtLimit()
             }
             if let quiet, now.timeIntervalSince(quiet) >= limits.silence {
-                return offerStop(app: app, since: since, at: now)
+                return offerStop(app: app, since: since, confirmed: confirmed, at: now)
             }
             return collapseStartPromptIfDue(now)
 
-        case (.recording(let app, let since, _, _, _), .appExited(let pid, let at)) where pid == app?.pid:
-            return offerStop(app: app, since: since, at: at)
+        case (.recording(let app, let since, let confirmed, _, _), .appExited(let pid, let at)) where pid == app?.pid:
+            return offerStop(app: app, since: since, confirmed: confirmed, at: at)
 
-        case (.stopOffered(_, let since, let offeredAt), .tick(let now)):
+        case (.stopOffered(_, let since, _, let offeredAt), .tick(let now)):
             if now.timeIntervalSince(since) >= limits.maxMeeting {
                 return stopAtLimit()
             }
@@ -220,8 +224,8 @@ public struct MeetingMachine: Sendable {
         }
     }
 
-    private mutating func offerStop(app: MeetingApp?, since: Date, at now: Date) -> [Effect] {
-        state = .stopOffered(app: app, since: since, offeredAt: now)
+    private mutating func offerStop(app: MeetingApp?, since: Date, confirmed: Bool, at now: Date) -> [Effect] {
+        state = .stopOffered(app: app, since: since, confirmed: confirmed, offeredAt: now)
         return [.show(.stopPrompt(duration: now.timeIntervalSince(since)))]
     }
 

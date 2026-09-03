@@ -163,7 +163,7 @@ private func recordingConfirmed() -> MeetingMachine {
     _ = subject.handle(.streamsChanged(app: telemost, input: false, output: false, at: quiet))
     let effects = subject.handle(.tick(quiet.addingTimeInterval(61)))
     #expect(effects == [.show(.stopPrompt(duration: 121))])
-    #expect(subject.state == .stopOffered(app: telemost, since: start, offeredAt: quiet.addingTimeInterval(61)))
+    #expect(subject.state == .stopOffered(app: telemost, since: start, confirmed: true, offeredAt: quiet.addingTimeInterval(61)))
 }
 
 // The meeting came back to life — the prompt is withdrawn, recording continues in the same file.
@@ -249,4 +249,37 @@ private func recordingConfirmed() -> MeetingMachine {
     #expect(subject.handle(.tick(offered.addingTimeInterval(121))) == [
         .stopCapture, .keepDraft, .blockDictation(false), .hide(after: 0),
     ])
+}
+
+// Revival must restore the original `confirmed`, not force it to true: an unconfirmed draft
+// that went quiet once and then came back to life still has to ask when it eventually stops.
+@Test func aRevivedUnconfirmedDraftStillAsksWhenItStops() {
+    var subject = drafting()
+    let quiet = start.addingTimeInterval(60)
+    _ = subject.handle(.streamsChanged(app: telemost, input: false, output: false, at: quiet))
+    let offered = quiet.addingTimeInterval(61)
+    _ = subject.handle(.tick(offered))
+    #expect(subject.state == .stopOffered(app: telemost, since: start, confirmed: false, offeredAt: offered))
+
+    let alive = offered.addingTimeInterval(9)
+    let revival = subject.handle(.streamsChanged(app: telemost, input: true, output: true, at: alive))
+    #expect(revival == [.show(.recording(since: start, confirmed: false))])
+    #expect(subject.state == .recording(app: telemost, since: start, confirmed: false, promptShown: false, quietSince: nil))
+
+    let stop = subject.handle(.stopPressed(at: alive.addingTimeInterval(10)))
+    #expect(stop == [
+        .stopCapture,
+        .blockDictation(false),
+        .show(.savePrompt(duration: 140)),
+    ])
+}
+
+@Test func manualStopFromTheStopPromptOfAConfirmedRecordingSavesRatherThanAsking() {
+    var subject = recordingConfirmed()
+    let quiet = start.addingTimeInterval(60)
+    _ = subject.handle(.streamsChanged(app: telemost, input: false, output: false, at: quiet))
+    _ = subject.handle(.tick(quiet.addingTimeInterval(61)))
+    let effects = subject.handle(.stopPressed(at: quiet.addingTimeInterval(70)))
+    #expect(effects == [.stopCapture, .keepDraft, .blockDictation(false), .hide(after: 0)])
+    #expect(subject.state == .idle)
 }
