@@ -80,6 +80,14 @@ public final class DictationCoordinator {
         self.machine = DictationMachine(limits: DictationMachine.Limits(config: config))
     }
 
+    /// Set by whoever owns the meeting recording, which is the one thing dictation must not run
+    /// alongside. A pass-through rather than a copy: the flag lives in the machine, where the
+    /// refusal is decided, and a second copy here would be a second version of the same truth.
+    public var isBlocked: Bool {
+        get { machine.isBlocked }
+        set { machine.isBlocked = newValue }
+    }
+
     public func start() throws {
         let monitor = FnKeyMonitor { [weak self] kind in
             MainActor.assumeIsolated {
