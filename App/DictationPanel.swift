@@ -34,6 +34,12 @@ final class DictationPanel {
         panel.ignoresMouseEvents = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.contentView = NSHostingView(rootView: PanelView(model: model))
+
+        // Shown from launch and never ordered out again: the collapsed strip above the Dock is
+        // how the owner knows the application is running at all. Nothing there means nothing is
+        // listening.
+        position()
+        panel.orderFrontRegardless()
     }
 
     func show(_ state: PanelState) {
@@ -47,10 +53,11 @@ final class DictationPanel {
         panel.orderFrontRegardless()
     }
 
+    /// Collapses the panel back to its resting strip. The window itself stays on screen — see
+    /// `init`.
     func hide(after delay: TimeInterval) {
         pendingHide?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            self?.panel.orderOut(nil)
             self?.model.state = nil
         }
         pendingHide = work
@@ -59,6 +66,11 @@ final class DictationPanel {
 
     func setLevel(_ level: Float) {
         model.push(level: level)
+    }
+
+    func setFrontmost(name: String?, icon: NSImage?) {
+        model.frontmostName = name
+        model.frontmostIcon = icon
     }
 
     private func position() {

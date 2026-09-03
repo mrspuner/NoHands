@@ -24,6 +24,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         )
         statusMenu = menu
+
+        // The frontmost application is read live rather than captured, so the panel can never
+        // name a receiver that stopped being one. `NSWorkspace` posts on its own notification
+        // centre, not the default one.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [panel] notification in
+            let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            MainActor.assumeIsolated {
+                panel.setFrontmost(name: app?.localizedName, icon: app?.icon)
+            }
+        }
+        let current = NSWorkspace.shared.frontmostApplication
+        panel.setFrontmost(name: current?.localizedName, icon: current?.icon)
+
         startBuild(menu: menu)
     }
 
