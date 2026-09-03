@@ -41,6 +41,29 @@ private let noon = Date(timeIntervalSince1970: 1_788_000_000)
     #expect(second.lastPathComponent.hasSuffix("-2"))
 }
 
+// The existing "same minute" test above promotes the first folder before starting the second,
+// so it only exercises the branch that checks the final name. This one leaves the first folder
+// a draft, exercising the branch that checks the draft name instead.
+@Test func aSecondDraftStartedWhileTheFirstIsStillADraftGetsADifferentFolder() throws {
+    let queue = try temporaryQueue()
+    defer { try? FileManager.default.removeItem(at: queue) }
+    let first = try MeetingFolder.createDraft(in: queue, startedAt: noon, slug: "telemost")
+    let second = try MeetingFolder.createDraft(in: queue, startedAt: noon, slug: "telemost")
+    #expect(second.lastPathComponent != first.lastPathComponent)
+    #expect(second.lastPathComponent.hasSuffix("-2"))
+}
+
+// Both the base name and its first bumped suffix are taken, so the third meeting must skip past
+// both instead of colliding again or looping forever.
+@Test func aThirdMeetingInTheSameMinuteWhenBaseAndBaseTwoAreTakenGetsSuffixThree() throws {
+    let queue = try temporaryQueue()
+    defer { try? FileManager.default.removeItem(at: queue) }
+    _ = try MeetingFolder.createDraft(in: queue, startedAt: noon, slug: "telemost")
+    _ = try MeetingFolder.createDraft(in: queue, startedAt: noon, slug: "telemost")
+    let third = try MeetingFolder.createDraft(in: queue, startedAt: noon, slug: "telemost")
+    #expect(third.lastPathComponent.hasSuffix("-3"))
+}
+
 @Test func onlyDraftsAreListedAsUnfinished() throws {
     let queue = try temporaryQueue()
     defer { try? FileManager.default.removeItem(at: queue) }
