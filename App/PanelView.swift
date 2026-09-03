@@ -186,6 +186,14 @@ private struct Surface: View {
     /// box at all: a halo around a strip that floats over other windows reads as a smudge on
     /// the screen rather than as part of the panel.
     static let glowReach: CGFloat = 20
+    /// The veil that settles the glow into the fill away from the edge. Its strength is a
+    /// function of distance to the *edge*, not to the centre: this panel is far wider than it
+    /// is tall, and a radial gradient would darken the side edges and the top edge by
+    /// different amounts even though both are edges. An inset shape softened by a blur is a
+    /// true distance-from-edge ramp — nothing at the edge, most of the way there a couple of
+    /// points in, full by a third of the way to the middle.
+    static let veilInset: CGFloat = 1
+    static let veilSoftness: CGFloat = 5
 
     var body: some View {
         if recording {
@@ -221,6 +229,19 @@ private struct Surface: View {
                 .opacity(layers.inner)
                 .mask(shape.strokeBorder(lineWidth: Self.glowReach).blur(radius: 8))
                 .mask(shape)
+
+            // Only while recording: at rest the glow is faint enough to need no settling, and
+            // the strip is too small to have a middle worth veiling.
+            if recording {
+                shape
+                    .fill(Color.black.opacity(0.55))
+                    .mask(
+                        shape
+                            .inset(by: Self.veilInset)
+                            .fill(Color.white)
+                            .blur(radius: Self.veilSoftness)
+                    )
+            }
 
             shape.strokeBorder(Color.white.opacity(layers.hairline), lineWidth: 0.5)
 
