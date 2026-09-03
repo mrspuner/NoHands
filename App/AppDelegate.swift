@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let menu = StatusMenu(
+            recent: recent,
             onQuit: { [weak self] in self?.coordinator?.stop() },
             // Re-reading means rebuilding: the thresholds live in the machine, the prompt and
             // the model live in the client, and none of them is consulted again after start.

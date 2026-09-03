@@ -10,8 +10,13 @@ import Dictation
 final class StatusMenu {
     private let item: NSStatusItem
     private let statusLine: NSMenuItem
+    private let recentDelegate: RecentMenuDelegate
 
-    init(onQuit: @escaping () -> Void, onReloadConfig: @escaping () -> Void) {
+    init(
+        recent: RecentDictations,
+        onQuit: @escaping () -> Void,
+        onReloadConfig: @escaping () -> Void
+    ) {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let icon = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "NoHands")
         icon?.isTemplate = true
@@ -20,8 +25,17 @@ final class StatusMenu {
         statusLine = NSMenuItem(title: "Проверяю…", action: nil, keyEquivalent: "")
         statusLine.isEnabled = false
 
+        recentDelegate = RecentMenuDelegate(recent: recent)
+        let recentMenu = NSMenu()
+        // Rebuilt every time it opens, so it never shows a stale list.
+        recentMenu.delegate = recentDelegate
+        let recentItem = NSMenuItem(title: "Последние диктовки", action: nil, keyEquivalent: "")
+        recentItem.submenu = recentMenu
+
         let menu = NSMenu()
         menu.addItem(statusLine)
+        menu.addItem(.separator())
+        menu.addItem(recentItem)
         menu.addItem(.separator())
         menu.addItem(
             withTitle: "Открыть конфиг", action: #selector(Actions.openConfig), keyEquivalent: ""
@@ -76,6 +90,49 @@ final class StatusMenu {
         @objc func quit() {
             onQuit?()
             NSApplication.shared.terminate(nil)
+        }
+    }
+
+    /// Fills the recent-dictations submenu when it opens. A separate object because
+    /// `NSMenuDelegate` needs an Objective-C class, and because this one owns the store while
+    /// `Actions` owns the singleton callbacks.
+    @MainActor
+    final class RecentMenuDelegate: NSObject, NSMenuDelegate {
+        private let recent: RecentDictations
+
+        init(recent: RecentDictations) {
+            self.recent = recent
+        }
+
+        func menuNeedsUpdate(_ menu: NSMenu) {
+            menu.removeAllItems()
+            let entries = recent.entries()
+            guard !entries.isEmpty else {
+                let empty = NSMenuItem(title: "пока ничего", action: nil, keyEquivalent: "")
+                empty.isEnabled = false
+                menu.addItem(empty)
+                return
+            }
+            for entry in entries {
+                // Without this the rough text of a failed cleanup looks like a recognition bug.
+                let suffix = entry.wasCleaned ? "" : " · без чистки"
+                let item = NSMenuItem(
+                    title: MenuTitle.short(entry.inserted) + suffix,
+                    action: #selector(copyEntry(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = self
+                // The menu shows a shortened line; the clipboard gets the whole thing.
+                item.representedObject = entry.inserted
+                menu.addItem(item)
+            }
+        }
+
+        @objc private func copyEntry(_ sender: NSMenuItem) {
+            guard let text = sender.representedObject as? String else { return }
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
         }
     }
 }
