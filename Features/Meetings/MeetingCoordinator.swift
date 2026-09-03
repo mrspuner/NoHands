@@ -170,6 +170,37 @@ public final class MeetingCoordinator {
         }
     }
 
+    /// What the menu bar may offer about meetings right now.
+    ///
+    /// Read rather than pushed, and derived from the machine rather than tracked alongside it:
+    /// a second copy of "is a meeting being recorded" is a second thing that can be wrong, and
+    /// the wrong one would be the one deciding whether dictation is allowed to run.
+    public enum Activity: Equatable, Sendable {
+        case ready
+        /// Something is being recorded, and this is when it started — the elapsed time in the
+        /// menu item comes from here rather than from a clock the menu keeps for itself.
+        case recording(since: Date)
+        /// A prompt owns the decision until it is answered. There is nothing to start, because
+        /// the machine would ignore it, and nothing to stop, because the capture is already
+        /// closed — so the menu offers neither rather than offering an item that does nothing.
+        case awaitingAnswer
+    }
+
+    public var activity: Activity {
+        switch machine.state {
+        // A stop prompt is still a recording: the capture is running and the menu's "stop" is
+        // one of the ways to answer it.
+        case .recording(_, let since, _, _, _), .stopOffered(_, let since, _, _, _):
+            .recording(since: since)
+        case .savePending:
+            .awaitingAnswer
+        // A refused meeting is at rest as far as the menu goes: the manual start is exactly
+        // what the owner reaches for after refusing one by mistake.
+        case .idle, .declined:
+            .ready
+        }
+    }
+
     // MARK: - Polling
 
     func poll(now: Date = Date()) {
