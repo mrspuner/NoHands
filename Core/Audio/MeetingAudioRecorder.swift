@@ -29,13 +29,42 @@ public enum MeetingCaptureError: Error, Equatable, LocalizedError {
 /// Both files are 16 kHz mono: Parakeet and the voice-embedding model both work at 16 kHz, so
 /// 48 kHz would only be downsampled later, after a week of sitting on a 256 GB disk.
 public actor MeetingAudioRecorder {
+    /// What one capture left behind — including a capture that went wrong.
+    ///
+    /// A failure and the paths are different pieces of information, and the paths are not worth
+    /// less because something failed: half a meeting on disk is still half a meeting. So the
+    /// cause is carried here rather than thrown, and the caller decides what to do with a
+    /// recording that has one.
     public struct Outcome: Sendable {
         public let systemURL: URL
         public let microphoneURL: URL
 
-        public init(systemURL: URL, microphoneURL: URL) {
+        /// When the first buffer of each track arrived, in seconds on the stream's own clock,
+        /// or `nil` for a track that never received one.
+        ///
+        /// The whole reason both tracks come off one `SCStream` is that they are then stamped
+        /// by the same clock — but they still begin whenever each output starts delivering.
+        /// Phase 2б needs the difference to place words on a shared timeline. Nothing here
+        /// pads or trims anything: the number is reported, not corrected, because a correction
+        /// applied twice is worse than a gap measured once.
+        public let systemStartedAt: Double?
+        public let microphoneStartedAt: Double?
+
+        /// What went wrong, named, or `nil` when nothing did.
+        public let failure: String?
+
+        public init(
+            systemURL: URL,
+            microphoneURL: URL,
+            systemStartedAt: Double?,
+            microphoneStartedAt: Double?,
+            failure: String?
+        ) {
             self.systemURL = systemURL
             self.microphoneURL = microphoneURL
+            self.systemStartedAt = systemStartedAt
+            self.microphoneStartedAt = microphoneStartedAt
+            self.failure = failure
         }
     }
 
@@ -49,6 +78,15 @@ public actor MeetingAudioRecorder {
     private var stream: SCStream?
     private var writer: TrackWriter?
 
+    /// - Parameter excludedBundleIDs: applications whose audio is cut out of the system track.
+    ///
+    ///   Read that again before filling this list. It is not "do not record these windows" and
+    ///   it is not a privacy switch — it removes those applications from the audio mix. Put the
+    ///   browser or the conferencing client in here and the recording still runs, the buffers
+    ///   still arrive, every check in this file still passes, and `system.wav` is a perfectly
+    ///   valid file containing an hour of silence. Nothing downstream would notice either.
+    ///   This list is for the things that must not end up in a meeting — a music player, a
+    ///   noisy game — never for the application the meeting is happening in.
     public init(folder: URL, excludedBundleIDs: [String]) {
         self.folder = folder
         self.excludedBundleIDs = excludedBundleIDs
@@ -122,9 +160,19 @@ public actor MeetingAudioRecorder {
 
     /// Stops the capture and closes both files.
     ///
-    /// - Throws: `streamFailed` when the stream died mid-meeting, a file could not be written,
-    ///   or a track received nothing at all. Both files are left on disk in that case: what was
-    ///   recorded before the failure is still a recording, and the spec keeps the folder as is.
+    /// A capture that went wrong still returns its `Outcome`, with the cause in `failure`: the
+    /// stream died mid-meeting, a file could not be written, or a track received nothing at
+    /// all. Whatever was recorded before that stays on disk, which is what the spec asks for —
+    /// the folder is kept as it is and the panel names the reason.
+    ///
+    /// A track's file exists only if at least one buffer reached it. That is not a detail:
+    /// "no audio arrived" — the failure this most often reports — is exactly the case where the
+    /// file was never created, because creating it eagerly would leave a valid WAV header with
+    /// no audio behind it, which is the shape of a bug phase 1 already paid for once.
+    ///
+    /// - Throws: only when there is no capture to stop. That is a programmer error rather than
+    ///   a circumstance, and there is no recording whose paths or timestamps could be described
+    ///   — an `Outcome` would have to invent them.
     public func stop() async throws -> Outcome {
         guard let stream, let writer else {
             throw MeetingCaptureError.streamFailed("stop called with no capture running")
@@ -134,7 +182,7 @@ public actor MeetingAudioRecorder {
         // `try?`: a stream that already died reports "not running" here, while the reason it
         // died was recorded by the delegate. `finish` is what names it.
         try? await stream.stopCapture()
-        return try writer.finish()
+        return writer.finish()
     }
 }
 
@@ -183,8 +231,10 @@ enum AudioDownmix {
 
 /// One track: converts what arrives into 16 kHz mono and appends it to its own file.
 ///
-/// Touched only from `TrackWriter.queue`, so it needs no locking of its own.
-private final class CaptureTrack {
+/// Touched only from `TrackWriter.queue`, so it needs no locking of its own. Internal rather
+/// than private so the tests can drive it with a sample buffer of their own — an `SCStream`
+/// cannot be built in a test process.
+final class CaptureTrack {
     let url: URL
     private let name: String
     private let format: AVAudioFormat
@@ -192,6 +242,11 @@ private final class CaptureTrack {
     private var converter: AVAudioConverter?
     private(set) var frames: AVAudioFrameCount = 0
     private(set) var failure: String?
+
+    /// Presentation timestamp of the first buffer this track was handed, in seconds on the
+    /// stream's clock. Where the audio in the file begins — the resampler holds a few frames
+    /// back, but the content still starts at this buffer.
+    private(set) var startedAt: Double?
 
     init(name: String, url: URL, format: AVAudioFormat) {
         self.name = name
@@ -203,6 +258,12 @@ private final class CaptureTrack {
         // One named failure per track is enough: every cause below is structural, and retrying
         // it every ten milliseconds for the rest of the meeting would only spin on it.
         guard failure == nil else { return }
+        if startedAt == nil {
+            let stamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            if stamp.isValid, stamp.isNumeric {
+                startedAt = stamp.seconds
+            }
+        }
         guard let source = samples(of: sampleBuffer) else { return }
         guard let mono = AudioDownmix.mono(from: source) else {
             fail("cannot down-mix the \(name) track from \(source.format)")
@@ -317,7 +378,11 @@ private final class CaptureTrack {
 /// A class rather than a closure because `SCStreamOutput` is a delegate protocol, and one
 /// serial queue for both tracks because the two files must not be written concurrently by
 /// converters that are not thread-safe.
-private final class TrackWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
+///
+/// Internal rather than private for the same reason as `CaptureTrack`: the delegate method
+/// takes an `SCStream`, which a test process cannot build, so it does nothing but forward to
+/// `receive`, which a test can call.
+final class TrackWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     let queue = DispatchQueue(label: "com.nohands.meeting.capture")
 
     /// Everything below is touched on `queue` only.
@@ -345,6 +410,11 @@ private final class TrackWriter: NSObject, SCStreamOutput, SCStreamDelegate, @un
         didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of type: SCStreamOutputType
     ) {
+        receive(sampleBuffer, of: type)
+    }
+
+    /// Called on `queue` for every buffer of either track.
+    func receive(_ sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         // A buffer arriving after `finish` is dropped rather than written: recreating a closed
         // file would truncate the recording that was just handed over.
         guard !closed, CMSampleBufferDataIsReady(sampleBuffer) else { return }
@@ -374,15 +444,17 @@ private final class TrackWriter: NSObject, SCStreamOutput, SCStreamDelegate, @un
         queue.sync { closeOnQueue() }
     }
 
-    func finish() throws -> MeetingAudioRecorder.Outcome {
-        let failure: String? = queue.sync {
+    func finish() -> MeetingAudioRecorder.Outcome {
+        queue.sync {
             closeOnQueue()
-            return firstFailure()
+            return MeetingAudioRecorder.Outcome(
+                systemURL: system.url,
+                microphoneURL: microphone.url,
+                systemStartedAt: system.startedAt,
+                microphoneStartedAt: microphone.startedAt,
+                failure: firstFailure()
+            )
         }
-        if let failure {
-            throw MeetingCaptureError.streamFailed(failure)
-        }
-        return MeetingAudioRecorder.Outcome(systemURL: system.url, microphoneURL: microphone.url)
     }
 
     private func closeOnQueue() {
