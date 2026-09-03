@@ -96,12 +96,19 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
 
 extension MeetingsConfig {
     /// Reads the `meetings` object out of the shared config file, writing the defaults into it
-    /// when the key is absent.
+    /// when the key is absent from an existing file. When the file itself does not exist,
+    /// nothing is written — defaults are returned in memory and the file is left absent.
     ///
     /// Works on the parsed JSON dictionary rather than on a typed root: the dictation settings
     /// live in the same file under their own keys, and re-encoding a typed root would drop
     /// every key that root does not know about.
     public static func loadOrCreate(at url: URL = configFileURL) throws -> MeetingsConfig {
+        // Unlike `DictationConfig.loadOrCreate`, a missing file is not created here. Dictation
+        // owns creating `config.json` with its own template on first run; if `Meetings` created
+        // it first, the file would carry only a `meetings` section, and `DictationConfig`'s next
+        // call would see an existing file and skip writing its own defaults into it — the owner
+        // would be left without a dictation template. `Meetings` only ever appends a section to
+        // a file dictation already created.
         guard FileManager.default.fileExists(atPath: url.path) else {
             return .default
         }
