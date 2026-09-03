@@ -300,3 +300,20 @@ private func cleaning() -> DictationMachine {
     #expect(subject.handle(.tick(start)) == [])
     #expect(subject.state == .idle)
 }
+
+// Owned by the meeting machine, not by an event: concurrent microphone capture by two
+// consumers is a scenario the owner never needs, since dictation is not used during meetings.
+@Test func fnDoesNothingWhileAMeetingIsBeingRecorded() {
+    var subject = machine()
+    subject.isBlocked = true
+    #expect(subject.handle(.fnDown(at: start)) == [.show(.blocked)])
+    #expect(subject.state == .idle)
+}
+
+@Test func unblockingRestoresNormalDictation() {
+    var subject = machine()
+    subject.isBlocked = true
+    _ = subject.handle(.fnDown(at: start))
+    subject.isBlocked = false
+    #expect(subject.handle(.fnDown(at: start)) == [.startRecording, .swallow(space: true, escape: true)])
+}

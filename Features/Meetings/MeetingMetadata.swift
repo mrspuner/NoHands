@@ -73,6 +73,15 @@ public struct MeetingMetadata: Equatable, Sendable, Codable {
     public var excludedApps: [String]
     public var gaps: [Gap]
 
+    /// When each track's first buffer arrived, in seconds on the capture stream's own clock —
+    /// not a calendar date. Both tracks come off one `SCStream` so they share that clock, but
+    /// each output still starts delivering whenever it starts delivering; phase 2б needs the
+    /// gap between the two to place words on a shared timeline. Named after
+    /// `MeetingAudioRecorder.Outcome.systemStartedAt` / `.microphoneStartedAt`, which is where
+    /// the value comes from. `nil` means the track never delivered a buffer at all.
+    public var systemStartedAt: Double?
+    public var microphoneStartedAt: Double?
+
     public init(
         startedAt: Date,
         stoppedAt: Date?,
@@ -82,7 +91,9 @@ public struct MeetingMetadata: Equatable, Sendable, Codable {
         inputDevice: InputDevice?,
         stopReason: StopReason?,
         excludedApps: [String],
-        gaps: [Gap]
+        gaps: [Gap],
+        systemStartedAt: Double?,
+        microphoneStartedAt: Double?
     ) {
         self.startedAt = startedAt
         self.stoppedAt = stoppedAt
@@ -93,6 +104,8 @@ public struct MeetingMetadata: Equatable, Sendable, Codable {
         self.stopReason = stopReason
         self.excludedApps = excludedApps
         self.gaps = gaps
+        self.systemStartedAt = systemStartedAt
+        self.microphoneStartedAt = microphoneStartedAt
     }
 
     public static let fileName = "meeting.json"

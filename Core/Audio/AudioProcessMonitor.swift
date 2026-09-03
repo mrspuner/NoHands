@@ -25,8 +25,13 @@ public enum AudioProcessMonitor {
         }
     }
 
-    public static func current() -> [State] {
-        processObjects().compactMap { object in
+    /// `nil` means the CoreAudio call itself failed — a revoked permission, a system glitch —
+    /// and must not be read as "nobody is holding a device". Collapsing those two into one empty
+    /// array would make a permanent failure look identical to ordinary silence, and the meeting
+    /// detector would stop working forever without ever saying so.
+    public static func current() -> [State]? {
+        guard let objects = processObjects() else { return nil }
+        return objects.compactMap { object in
             let pid = pid(of: object)
             guard pid > 0 else { return nil }
             let app = NSRunningApplication(processIdentifier: pid)
@@ -40,7 +45,9 @@ public enum AudioProcessMonitor {
         }
     }
 
-    private static func processObjects() -> [AudioObjectID] {
+    /// `nil` only for a failed system call. A `size` of zero is a legitimate answer — no process
+    /// is touching audio right now — and is reported as an empty array, not as failure.
+    private static func processObjects() -> [AudioObjectID]? {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyProcessObjectList,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -49,11 +56,12 @@ public enum AudioProcessMonitor {
         var size: UInt32 = 0
         guard AudioObjectGetPropertyDataSize(
             AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size
-        ) == noErr, size > 0 else { return [] }
+        ) == noErr else { return nil }
+        guard size > 0 else { return [] }
         var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
         guard AudioObjectGetPropertyData(
             AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &ids
-        ) == noErr else { return [] }
+        ) == noErr else { return nil }
         return ids
     }
 

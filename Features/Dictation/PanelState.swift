@@ -13,4 +13,6 @@ public enum PanelState: Equatable, Sendable {
     /// `cleanupSkipped` carries the reason cleanup did not happen, or nil when it did.
     case inserting(cleanupSkipped: String?)
     case failure(String)
+    /// fn was pressed while a meeting is being recorded: dictation refused to start.
+    case blocked
 }

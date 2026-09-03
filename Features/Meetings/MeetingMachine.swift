@@ -84,7 +84,13 @@ public struct MeetingMachine: Sendable {
         case deletePressed
         /// Delivered often enough to notice every threshold.
         case tick(Date)
-        case captureFailed(String)
+        /// Capture never started: a denied permission, nothing to open. There is no partial
+        /// recording to protect, so the draft is thrown away.
+        case captureFailedAtStart(String)
+        /// Capture had already produced audio and then died mid-stream. Spec §10: the recording
+        /// stops, but the folder is kept as-is rather than discarded — a transient capture
+        /// failure must not cost a meeting that was already forty minutes in.
+        case captureFailedWhileRecording(String)
     }
 
     public enum Effect: Equatable, Sendable {
@@ -166,10 +172,20 @@ public struct MeetingMachine: Sendable {
             }
             return []
 
-        case (.recording, .captureFailed(let message)), (.stopOffered, .captureFailed(let message)):
+        case (.recording, .captureFailedAtStart(let message)), (.stopOffered, .captureFailedAtStart(let message)):
             state = .idle
             return [
                 .discardDraft,
+                .blockDictation(false),
+                .show(.failure(message)),
+                .hide(after: Self.failureDwell),
+            ]
+
+        case (.recording, .captureFailedWhileRecording(let message)), (.stopOffered, .captureFailedWhileRecording(let message)):
+            state = .idle
+            return [
+                .stopCapture,
+                .keepDraft,
                 .blockDictation(false),
                 .show(.failure(message)),
                 .hide(after: Self.failureDwell),

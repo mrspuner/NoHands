@@ -114,12 +114,22 @@ public struct DictationMachine: Sendable {
     public let limits: Limits
     public private(set) var state: State = .idle
 
+    /// True while a meeting is being recorded. Set by the coordinator, not carried as an event:
+    /// the meeting machine owns this fact, and mirroring it as dictation state would give two
+    /// machines two versions of the same truth. Concurrent microphone capture by both features
+    /// is a scenario worth never having to debug, and the owner does not dictate during meetings
+    /// anyway.
+    public var isBlocked = false
+
     public init(limits: Limits) {
         self.limits = limits
     }
 
     public mutating func handle(_ event: Event) -> [Effect] {
         switch (state, event) {
+        case (.idle, .fnDown) where isBlocked:
+            return [.show(.blocked)]
+
         case (.idle, .fnDown(let at)):
             state = .recording(mode: .held, since: at, announced: false)
             return [.startRecording, .swallow(space: true, escape: true)]

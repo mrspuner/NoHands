@@ -90,6 +90,8 @@ struct PanelView: View {
             guard let skipped else { return "вставляю" }
             return "вставляю без чистки: \(skipped)"
         case .failure(let message): return message
+        // Wording lands with the coordinator that can actually trigger this state.
+        case .blocked: return ""
         case .recording, nil: return ""
         }
     }

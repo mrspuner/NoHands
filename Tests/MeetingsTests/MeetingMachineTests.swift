@@ -126,13 +126,61 @@ private func recordingConfirmed() -> MeetingMachine {
     ])
 }
 
-@Test func aFailedCaptureReportsAndReturnsToIdle() {
+// Capture never actually started, so there is nothing to stop — only the draft folder, which
+// holds no usable audio, needs to go.
+@Test func captureFailingAtStartDiscardsTheDraftFromRecording() {
     var subject = drafting()
-    let effects = subject.handle(.captureFailed("нет разрешения на запись экрана"))
+    let effects = subject.handle(.captureFailedAtStart("нет разрешения на запись экрана"))
     #expect(effects == [
         .discardDraft,
         .blockDictation(false),
         .show(.failure("нет разрешения на запись экрана")),
+        .hide(after: 5),
+    ])
+    #expect(subject.state == .idle)
+}
+
+@Test func captureFailingAtStartDiscardsTheDraftFromStopOffered() {
+    var subject = recordingConfirmed()
+    let quiet = start.addingTimeInterval(60)
+    _ = subject.handle(.streamsChanged(app: telemost, input: false, output: false, at: quiet))
+    _ = subject.handle(.tick(quiet.addingTimeInterval(61)))
+    let effects = subject.handle(.captureFailedAtStart("нет разрешения на запись экрана"))
+    #expect(effects == [
+        .discardDraft,
+        .blockDictation(false),
+        .show(.failure("нет разрешения на запись экрана")),
+        .hide(after: 5),
+    ])
+    #expect(subject.state == .idle)
+}
+
+// Spec §10: a stream that dies mid-meeting stops the recording but keeps what was already
+// captured — a forty-minute meeting must not be thrown away over a transient capture error.
+@Test func captureFailingWhileRecordingKeepsTheDraftFromRecording() {
+    var subject = recordingConfirmed()
+    let effects = subject.handle(.captureFailedWhileRecording("поток захвата прервался"))
+    #expect(effects == [
+        .stopCapture,
+        .keepDraft,
+        .blockDictation(false),
+        .show(.failure("поток захвата прервался")),
+        .hide(after: 5),
+    ])
+    #expect(subject.state == .idle)
+}
+
+@Test func captureFailingWhileRecordingKeepsTheDraftFromStopOffered() {
+    var subject = recordingConfirmed()
+    let quiet = start.addingTimeInterval(60)
+    _ = subject.handle(.streamsChanged(app: telemost, input: false, output: false, at: quiet))
+    _ = subject.handle(.tick(quiet.addingTimeInterval(61)))
+    let effects = subject.handle(.captureFailedWhileRecording("поток захвата прервался"))
+    #expect(effects == [
+        .stopCapture,
+        .keepDraft,
+        .blockDictation(false),
+        .show(.failure("поток захвата прервался")),
         .hide(after: 5),
     ])
     #expect(subject.state == .idle)
