@@ -172,17 +172,20 @@ private struct Surface: View {
     struct Layers {
         let stroke: Double
         let inner: Double
-        let bloom: Double
         /// The reference's `innerShadow`: a white hairline just inside the edge.
         let hairline: Double
 
-        static let sunset = Layers(stroke: 0.26, inner: 0.42, bloom: 0.24, hairline: 0.27)
+        static let sunset = Layers(stroke: 0.55, inner: 0.5, hairline: 0.27)
         /// The reference halves every layer for "mono"; at rest this is meant to be barely there.
-        static let mono = Layers(stroke: 0.13, inner: 0.21, bloom: 0.12, hairline: 0.14)
+        static let mono = Layers(stroke: 0.22, inner: 0.2, hairline: 0.14)
     }
 
     /// From the reference's `md` preset.
     static let saturation: Double = 1.2
+    /// How far the glow is allowed to reach in from the edge. Nothing is drawn outside the
+    /// box at all: a halo around a strip that floats over other windows reads as a smudge on
+    /// the screen rather than as part of the panel.
+    static let glowReach: CGFloat = 20
 
     var body: some View {
         if recording {
@@ -201,26 +204,27 @@ private struct Surface: View {
         }
     }
 
-    /// Four layers, in the reference's own order. The patches sit on the perimeter, so masking
-    /// the same field to the whole shape rather than to the ring is what turns a border into a
-    /// glow that reaches inward — the patches' inner shoulders are all that shows.
+    /// Three layers over the fill. The patches sit on the perimeter, so the same field masked
+    /// to a band inside the edge rather than to the ring alone is what turns a border into a
+    /// glow reaching inward — the patches' inner shoulders are all that shows.
     private func surface(
         _ blobs: [Blob], spin: Angle, seconds: Double?, layers: Layers
     ) -> some View {
         ZStack {
-            field(blobs, spin: spin, seconds: seconds, blur: 18)
-                .opacity(layers.bloom)
-
             shape.fill(.regularMaterial)
             shape.fill(Color.black.opacity(0.55))
 
-            field(blobs, spin: spin, seconds: seconds, blur: 10)
+            // The glow, held to a soft band `glowReach` deep. Masked twice on purpose: the
+            // blurred band shapes how far it reaches and how softly it fades, and the second
+            // mask guarantees not a pixel of it lands outside the box.
+            field(blobs, spin: spin, seconds: seconds, blur: 12)
                 .opacity(layers.inner)
+                .mask(shape.strokeBorder(lineWidth: Self.glowReach).blur(radius: 8))
                 .mask(shape)
 
             shape.strokeBorder(Color.white.opacity(layers.hairline), lineWidth: 0.5)
 
-            field(blobs, spin: spin, seconds: seconds, blur: 1.2)
+            field(blobs, spin: spin, seconds: seconds, blur: 1.5)
                 .opacity(layers.stroke)
                 .mask(shape.strokeBorder(lineWidth: Self.borderWidth))
         }
@@ -272,25 +276,16 @@ private struct Surface: View {
 /// recognition nor a single API call reports any — so those get a caption instead of a bar
 /// that would be pretending.
 ///
-/// Lit in the border's own colours, so the loudest thing on the panel and its frame belong to
-/// the same object.
+/// White: the border already carries all the colour the panel needs, and a voice reads more
+/// clearly as plain light than as a second gradient competing with the frame.
 private struct Levels: View {
     let values: [Float]
 
     var body: some View {
-        LinearGradient(
-            colors: Surface.sunset.map(\.color),
-            startPoint: .leading,
-            endPoint: .trailing
-        )
-        .mask(bars)
-        .frame(width: CGFloat(values.count) * 5 - 2, height: 22)
-    }
-
-    private var bars: some View {
         HStack(alignment: .center, spacing: 2) {
             ForEach(Array(values.enumerated()), id: \.offset) { _, value in
                 Capsule()
+                    .fill(.white)
                     .frame(width: 3, height: max(3, CGFloat(value) * 22))
             }
         }
