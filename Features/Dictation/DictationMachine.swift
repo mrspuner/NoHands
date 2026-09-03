@@ -105,7 +105,7 @@ public struct DictationMachine: Sendable {
         case play(Sound)
         /// Which keys the tap must stop passing through to the rest of the system.
         case swallow(space: Bool, escape: Bool)
-        /// Hand the finished dictation to `LastDictation`, which also takes ownership of the
+        /// Hand the finished dictation to `RecentDictations`, which also takes ownership of the
         /// audio file. Emitted only once cleanup has run one way or the other: earlier than
         /// that there is no text worth keeping.
         case remember(raw: String, cleaned: String?)

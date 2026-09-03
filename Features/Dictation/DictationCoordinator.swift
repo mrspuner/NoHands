@@ -39,7 +39,7 @@ public final class DictationCoordinator {
     ///   recorder has necessarily started writing to it.
     /// - Cleared to nil, and the file deleted, by whichever effect finishes with it:
     ///   `.discardRecording` (after `recorder.discard()` returns), `.remember` (which hands the
-    ///   file to `LastDictation` instead — ownership passes, the file is not deleted here), or
+    ///   file to `RecentDictations` instead — ownership passes, the file is not deleted here), or
     ///   `discardAudioFile()`, the direct-delete helper used by `.cancelWork` and by `stop()`.
     /// - `.cancelWork` deletes the file directly instead of calling `recorder.discard()`
     ///   because by the time it runs the machine has already left `.recording`: the recorder
@@ -49,7 +49,7 @@ public final class DictationCoordinator {
     ///   inside `.recording`, the session is still live, and `discard()` is what tears it down;
     ///   deleting the file without it would leave the engine still running.
     private var audioURL: URL?
-    private let lastDictation = LastDictation()
+    private let recent: RecentDictations
 
     public init(
         config: DictationConfig,
@@ -57,6 +57,7 @@ public final class DictationCoordinator {
         transcriber: any Transcriber,
         cleaner: DeepSeekClient,
         inserter: TextInserter,
+        recent: RecentDictations,
         sounds: SoundPlayer,
         showPanel: @escaping (PanelState) -> Void,
         hidePanel: @escaping (TimeInterval) -> Void,
@@ -66,6 +67,7 @@ public final class DictationCoordinator {
         self.transcriber = transcriber
         self.cleaner = cleaner
         self.inserter = inserter
+        self.recent = recent
         self.sounds = sounds
         self.showPanel = showPanel
         self.hidePanel = hidePanel
@@ -100,10 +102,9 @@ public final class DictationCoordinator {
             await recorder.discard()
         }
         discardAudioFile()
-        // Each rebuild creates a fresh `LastDictation`; without this, the previous store's
-        // audio file is abandoned in the temp directory, since nothing will ever call
-        // `remember` on that store again to replace it.
-        Task { [lastDictation] in await lastDictation.clear() }
+        // The texts are the owner's safety net and must survive a config reload; the recording
+        // belongs to this coordinator and must not outlive it.
+        recent.discardAudio()
     }
 
     private func received(_ kind: KeyEventKind) {
@@ -214,13 +215,9 @@ public final class DictationCoordinator {
             monitor?.setSwallow(space: space, escape: escape)
 
         case .remember(let raw, let cleaned):
-            guard let audio = audioURL else { break }
+            let audio = audioURL
             audioURL = nil
-            Task { [lastDictation] in
-                await lastDictation.remember(
-                    LastDictation.Entry(audio: audio, raw: raw, cleaned: cleaned)
-                )
-            }
+            recent.remember(raw: raw, cleaned: cleaned, audio: audio)
         }
     }
 

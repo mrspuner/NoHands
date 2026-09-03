@@ -8,6 +8,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var coordinator: DictationCoordinator?
     private var buildTask: Task<Void, Never>?
     private let panel = DictationPanel()
+    /// Owned here rather than by the coordinator: a config reload rebuilds the coordinator, and
+    /// the owner's last ten dictations must not vanish with it.
+    private let recent = RecentDictations()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let menu = StatusMenu(
@@ -67,6 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 transcriber: transcriber,
                 cleaner: cleaner,
                 inserter: TextInserter(),
+                recent: recent,
                 sounds: SoundPlayer(sounds: config.sounds),
                 showPanel: { [panel] state in panel.show(state) },
                 hidePanel: { [panel] delay in panel.hide(after: delay) },
