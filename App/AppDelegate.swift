@@ -7,7 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusMenu: StatusMenu?
     private var coordinator: DictationCoordinator?
     private var buildTask: Task<Void, Never>?
-    private let panel = DictationPanel()
+    private let panel = PanelWindow()
     /// Owned here rather than by the coordinator: a config reload rebuilds the coordinator, and
     /// the owner's last ten dictations must not vanish with it.
     private let recent = RecentDictations()

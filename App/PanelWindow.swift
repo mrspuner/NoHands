@@ -2,13 +2,14 @@ import AppKit
 import Dictation
 import SwiftUI
 
-/// The floating strip above the Dock.
+/// The floating strip above the Dock. Serves both features — dictation and meetings — which is
+/// why it is not named after either.
 ///
 /// `.nonactivatingPanel` and refusing key status are not decoration: a panel that can become
 /// key steals the focus, and the dictated text lands in the panel instead of the field the
 /// owner was aiming at.
 @MainActor
-final class DictationPanel {
+final class PanelWindow {
     private final class Panel: NSPanel {
         override var canBecomeKey: Bool { false }
         override var canBecomeMain: Bool { false }

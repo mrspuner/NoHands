@@ -2,7 +2,7 @@ import Foundation
 
 /// Whether showing a new panel state should reset the level-bar history.
 ///
-/// Pure decision, deliberately pulled out of `DictationPanel` (an `NSPanel` wrapper in the
+/// Pure decision, deliberately pulled out of `PanelWindow` (an `NSPanel` wrapper in the
 /// `App` target, which has no test target of its own) the same way the swallow rule was pulled
 /// out of the event tap, the narrowband predicate out of the device query, and the level
 /// arithmetic out of the recorder. Each of those turned out to be exactly where a defect lived.
