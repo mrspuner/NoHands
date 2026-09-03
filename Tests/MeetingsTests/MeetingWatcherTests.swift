@@ -23,11 +23,15 @@ private let config = MeetingsConfig(
     #expect(matched[0].app.slug == "telemost")
 }
 
-// Our own process must never raise a meeting: dictation holds the input too.
+// Dictation holds the same microphone a meeting would. If our own process were not excluded,
+// dictation would raise a meeting, and that meeting would go on holding the microphone after
+// dictation ends — a loop the feature must never enter. The bundle ID here is deliberately a
+// real trigger app's, so this only fails for the right reason: without the pid check, this
+// state would otherwise match `config.triggerApps` and be reported.
 @Test func ourOwnProcessIsNeverAMeeting() {
     let mine = AudioProcessMonitor.State(
         pid: ProcessInfo.processInfo.processIdentifier,
-        bundleID: "com.nohands.app",
+        bundleID: "ru.yandex.telemost",
         name: "NoHands",
         isRunningInput: true,
         isRunningOutput: false
