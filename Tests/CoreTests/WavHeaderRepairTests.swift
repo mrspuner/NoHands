@@ -129,6 +129,37 @@ private func readLittleEndianUInt32(_ data: Data, at offset: Int) -> UInt32 {
     #expect(try AVAudioFile(forReading: url).length == 10)
 }
 
+// The chunk walk pads an odd-sized chunk by one byte, per the RIFF spec (`size + size % 2`) —
+// a line no fixture above exercises, because every chunk `ExtAudioFile` itself writes happens
+// to be even-sized. Miss that pad byte and the walk starts reading the next chunk header one
+// byte early: on this fixture it would land inside `data`'s own tag and never match it, and
+// repair would wrongly refuse a file it should have fixed.
+@Test func repairFindsDataPastAnOddLengthChunk() throws {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    var bytes = Array("RIFF".utf8)
+    bytes.append(contentsOf: [0, 0, 0, 0]) // RIFF size placeholder — repair recomputes it
+    bytes.append(contentsOf: Array("WAVE".utf8))
+    bytes.append(contentsOf: Array("JUNK".utf8))
+    bytes.append(contentsOf: [5, 0, 0, 0]) // odd chunk size: 5 data bytes, needs a pad byte
+    bytes.append(contentsOf: [0xAA, 0xAA, 0xAA, 0xAA, 0xAA])
+    bytes.append(0x00) // the pad byte the RIFF spec requires after an odd-sized chunk
+    bytes.append(contentsOf: Array("data".utf8))
+    bytes.append(contentsOf: [0, 0, 0, 0]) // data size placeholder, to be repaired
+    let audio: [UInt8] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    bytes.append(contentsOf: audio)
+    try Data(bytes).write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    #expect(try WavHeaderRepair.repair(at: url) == true)
+
+    let after = try Data(contentsOf: url)
+    #expect(after.count == bytes.count)
+    #expect(after.suffix(audio.count) == Data(audio))
+    let dataSizeFieldOffset = after.count - audio.count - 4
+    #expect(readLittleEndianUInt32(after, at: dataSizeFieldOffset) == UInt32(audio.count))
+    #expect(readLittleEndianUInt32(after, at: 4) == UInt32(after.count - 8))
+}
+
 // A file that is not a WAV at all must not be rewritten into looking like a valid one — better
 // for the draft to stay unopenable than for it to be quietly, wrongly "fixed".
 @Test func aFileThatIsNotAWavIsLeftAlone() throws {
@@ -162,6 +193,53 @@ private func readLittleEndianUInt32(_ data: Data, at offset: Int) -> UInt32 {
     bytes.append(contentsOf: Array("WAVE".utf8))
     bytes.append(contentsOf: Array("fmt ".utf8))
     bytes.append(contentsOf: [4, 0, 0, 0, 1, 2, 3, 4]) // a 4-byte fmt chunk, then nothing
+    try Data(bytes).write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+    let before = try Data(contentsOf: url)
+
+    #expect(try WavHeaderRepair.repair(at: url) == false)
+
+    let after = try Data(contentsOf: url)
+    #expect(before == after)
+}
+
+// The `fmt ` fixture above declares a size that lands exactly on the end of the file — a
+// well-formed file that simply has no `data` chunk. This one declares a size that overshoots
+// the file entirely: the walk must not guess where the next chunk might start once its
+// arithmetic runs past what is actually on disk, and must leave the file untouched either way.
+@Test func aChunkLengthPastEndOfFileIsLeftAlone() throws {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    var bytes = Array("RIFF".utf8)
+    bytes.append(contentsOf: [0, 0, 0, 0])
+    bytes.append(contentsOf: Array("WAVE".utf8))
+    bytes.append(contentsOf: Array("fmt ".utf8))
+    bytes.append(contentsOf: [0xFF, 0xFF, 0x00, 0x00]) // declares 65535 bytes
+    bytes.append(contentsOf: [1, 2, 3, 4]) // only 4 actual bytes follow
+    try Data(bytes).write(to: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+    let before = try Data(contentsOf: url)
+
+    #expect(try WavHeaderRepair.repair(at: url) == false)
+
+    let after = try Data(contentsOf: url)
+    #expect(before == after)
+}
+
+// A different shape of the same danger: the position where `data` should be holds a garbage
+// chunk instead, one that also lies about its length. Distinct from both the well-formed
+// "no data chunk" fixture above (an honest length that just runs out) and the overshooting
+// `fmt` chunk above (the lie sits earlier, before any chunk could plausibly be `data`) — here
+// the lie sits exactly where the real recording's length would be found.
+@Test func aGarbageChunkWhereDataShouldBeWithAnOversizedLengthIsLeftAlone() throws {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    var bytes = Array("RIFF".utf8)
+    bytes.append(contentsOf: [0, 0, 0, 0])
+    bytes.append(contentsOf: Array("WAVE".utf8))
+    bytes.append(contentsOf: Array("fmt ".utf8))
+    bytes.append(contentsOf: [4, 0, 0, 0, 1, 2, 3, 4]) // a well-formed 4-byte fmt chunk
+    bytes.append(contentsOf: Array("grbg".utf8)) // garbage where "data" was expected
+    bytes.append(contentsOf: [0x00, 0x10, 0x00, 0x00]) // declares 4096 bytes
+    bytes.append(contentsOf: [9, 9, 9]) // only 3 actual bytes follow
     try Data(bytes).write(to: url)
     defer { try? FileManager.default.removeItem(at: url) }
     let before = try Data(contentsOf: url)

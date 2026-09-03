@@ -22,11 +22,12 @@ import Foundation
 /// only because they were already zero. `repair` instead walks the chunk list from the start of
 /// the file to find `data`, the same way any WAV reader has to.
 public enum WavHeaderRepair {
-    /// Thrown instead of silently truncating a byte count into the 32-bit field a classic WAV
-    /// header has room for. Not expected in practice for this project — 16 kHz mono Int16 audio
-    /// reaches 4 GiB only after roughly 37 days of continuous recording — but wrapping the
-    /// number instead of naming the problem is exactly the kind of quiet corruption this type
-    /// exists to prevent.
+    /// Thrown instead of handing a byte count too big for the 32-bit field a classic WAV header
+    /// has room for to `UInt32(_:)`, which traps — a fatal error that kills the whole process,
+    /// not a quietly wrapped number. Not expected in practice for this project — 16 kHz mono
+    /// Int16 audio reaches 4 GiB only after roughly 37 days of continuous recording — but a
+    /// crash on the file that was being rescued is exactly the outcome this type exists to
+    /// turn into a named, catchable error instead.
     public enum RepairError: Error, Equatable, LocalizedError {
         case tooLargeForClassicWavHeader(byteCount: UInt64)
 
@@ -34,7 +35,7 @@ public enum WavHeaderRepair {
             switch self {
             case .tooLargeForClassicWavHeader(let byteCount):
                 return "Audio data is \(byteCount) bytes, too large for a classic WAV's " +
-                    "32-bit length field — refusing to repair rather than write a wrapped number"
+                    "32-bit length field — refusing to repair rather than crash converting it"
             }
         }
     }
