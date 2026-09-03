@@ -1,4 +1,3 @@
-import AppKit
 import Core
 import Foundation
 
@@ -111,9 +110,7 @@ public final class DictationCoordinator {
         let now = Date()
         switch kind {
         case .fnDown:
-            // The target is fixed when recording starts, not when the text is pasted: if the
-            // owner switches windows mid-sentence, the text still goes where they were aiming.
-            apply(.fnDown(at: now, target: Self.frontmostApp()))
+            apply(.fnDown(at: now))
         case .fnUp:
             apply(.fnUp(at: now))
         case .spaceDown:
@@ -121,14 +118,6 @@ public final class DictationCoordinator {
         case .escapeDown:
             apply(.escapeDown)
         }
-    }
-
-    private static func frontmostApp() -> TargetApp {
-        let app = NSWorkspace.shared.frontmostApplication
-        return TargetApp(
-            bundleIdentifier: app?.bundleIdentifier,
-            name: app?.localizedName ?? "активное окно"
-        )
     }
 
     private func apply(_ event: DictationMachine.Event) {
@@ -192,10 +181,10 @@ public final class DictationCoordinator {
                 }
             }
 
-        case .insert(let text, let target, _):
+        case .insert(let text, _):
             run { [inserter] in
                 do {
-                    try await inserter.insert(text, into: target)
+                    try await inserter.insert(text)
                     return .inserted
                 } catch {
                     return .insertionFailed(error.localizedDescription)

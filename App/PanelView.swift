@@ -1,4 +1,3 @@
-import AppKit
 import Dictation
 import SwiftUI
 
@@ -7,16 +6,9 @@ struct PanelView: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            if let target = target {
-                icon(for: target)
-                Text(target.name)
-                    .font(.system(size: 12, weight: .medium))
-                    .lineLimit(1)
-            }
-
-            if case .recording = model.state {
+            if case .recording(let latched) = model.state {
                 Levels(values: model.levels)
-                if case .recording(_, true) = model.state {
+                if latched {
                     Text("фиксация")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
@@ -34,16 +26,6 @@ struct PanelView: View {
         .frame(maxWidth: 520)
     }
 
-    private var target: TargetApp? {
-        switch model.state {
-        case .recording(let target, _), .transcribing(let target),
-             .cleaning(let target), .inserting(let target, _):
-            return target
-        case .failure, nil:
-            return nil
-        }
-    }
-
     private var isFailure: Bool {
         if case .failure = model.state { return true }
         return false
@@ -53,24 +35,11 @@ struct PanelView: View {
         switch model.state {
         case .transcribing: return "распознаю"
         case .cleaning: return "чищу"
-        case .inserting(_, let skipped):
+        case .inserting(let skipped):
             guard let skipped else { return "вставляю" }
             return "вставляю без чистки: \(skipped)"
         case .failure(let message): return message
         case .recording, nil: return ""
-        }
-    }
-
-    private func icon(for target: TargetApp) -> some View {
-        let image = target.bundleIdentifier
-            .flatMap { NSRunningApplication.runningApplications(withBundleIdentifier: $0).first }?
-            .icon
-        return Group {
-            if let image {
-                Image(nsImage: image).resizable().frame(width: 20, height: 20)
-            } else {
-                Image(systemName: "app.dashed").frame(width: 20, height: 20)
-            }
         }
     }
 }

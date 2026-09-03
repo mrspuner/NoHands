@@ -2,7 +2,6 @@ import Foundation
 import Testing
 @testable import Dictation
 
-private let target = TargetApp(bundleIdentifier: "com.apple.mail", name: "Mail")
 private let start = Date(timeIntervalSince1970: 1_000_000)
 
 private func machine() -> DictationMachine {
@@ -15,7 +14,7 @@ private func machine() -> DictationMachine {
 /// start from.
 private func recording(latched: Bool = false) -> DictationMachine {
     var subject = machine()
-    _ = subject.handle(.fnDown(at: start, target: target))
+    _ = subject.handle(.fnDown(at: start))
     _ = subject.handle(.tick(start.addingTimeInterval(0.35)))
     if latched {
         _ = subject.handle(.spaceDown)
@@ -25,7 +24,7 @@ private func recording(latched: Bool = false) -> DictationMachine {
 
 @Test func pressingFnStartsRecordingAndSwallowsBothKeys() {
     var subject = machine()
-    let effects = subject.handle(.fnDown(at: start, target: target))
+    let effects = subject.handle(.fnDown(at: start))
     #expect(effects == [.startRecording, .swallow(space: true, escape: true)])
 }
 
@@ -33,15 +32,15 @@ private func recording(latched: Bool = false) -> DictationMachine {
 // would give a flash and a beep for nothing.
 @Test func nothingIsShownBeforeTheHoldThreshold() {
     var subject = machine()
-    _ = subject.handle(.fnDown(at: start, target: target))
+    _ = subject.handle(.fnDown(at: start))
     #expect(subject.handle(.tick(start.addingTimeInterval(0.2))) == [])
 }
 
 @Test func panelAndSoundAppearOnceTheHoldIsLongEnough() {
     var subject = machine()
-    _ = subject.handle(.fnDown(at: start, target: target))
+    _ = subject.handle(.fnDown(at: start))
     let effects = subject.handle(.tick(start.addingTimeInterval(0.31)))
-    #expect(effects == [.play(.start), .show(.recording(target: target, latched: false))])
+    #expect(effects == [.play(.start), .show(.recording(latched: false))])
 }
 
 @Test func theAnnouncementHappensOnlyOnce() {
@@ -51,7 +50,7 @@ private func recording(latched: Bool = false) -> DictationMachine {
 
 @Test func aBrushAgainstFnIsDiscardedSilently() {
     var subject = machine()
-    _ = subject.handle(.fnDown(at: start, target: target))
+    _ = subject.handle(.fnDown(at: start))
     let effects = subject.handle(.fnUp(at: start.addingTimeInterval(0.1)))
     #expect(effects == [.discardRecording, .swallow(space: false, escape: false)])
     #expect(subject.state == .idle)
@@ -61,12 +60,12 @@ private func recording(latched: Bool = false) -> DictationMachine {
 // a dropped tick must not throw away a real dictation.
 @Test func aLongHoldIsKeptEvenIfNoTickArrived() {
     var subject = machine()
-    _ = subject.handle(.fnDown(at: start, target: target))
+    _ = subject.handle(.fnDown(at: start))
     let effects = subject.handle(.fnUp(at: start.addingTimeInterval(2)))
     #expect(effects == [
         .stopRecording,
         .swallow(space: false, escape: true),
-        .show(.transcribing(target: target)),
+        .show(.transcribing),
     ])
 }
 
@@ -76,7 +75,7 @@ private func recording(latched: Bool = false) -> DictationMachine {
     #expect(effects == [
         .stopRecording,
         .swallow(space: false, escape: true),
-        .show(.transcribing(target: target)),
+        .show(.transcribing),
     ])
 }
 
@@ -85,7 +84,7 @@ private func recording(latched: Bool = false) -> DictationMachine {
     let effects = subject.handle(.spaceDown)
     #expect(effects == [
         .swallow(space: false, escape: true),
-        .show(.recording(target: target, latched: true)),
+        .show(.recording(latched: true)),
     ])
 }
 
@@ -93,12 +92,12 @@ private func recording(latched: Bool = false) -> DictationMachine {
 // lose the fact that the recording is latched once the deferred announcement does happen.
 @Test func latchingBeforeAnnouncementStaysSilentUntilTheThresholdIsReached() {
     var subject = machine()
-    _ = subject.handle(.fnDown(at: start, target: target))
+    _ = subject.handle(.fnDown(at: start))
     _ = subject.handle(.tick(start.addingTimeInterval(0.1)))
     let latchEffects = subject.handle(.spaceDown)
     #expect(latchEffects == [.swallow(space: false, escape: true)])
     let announceEffects = subject.handle(.tick(start.addingTimeInterval(0.35)))
-    #expect(announceEffects == [.play(.start), .show(.recording(target: target, latched: true))])
+    #expect(announceEffects == [.play(.start), .show(.recording(latched: true))])
 }
 
 @Test func releasingFnAfterLatchingDoesNothing() {
@@ -108,11 +107,11 @@ private func recording(latched: Bool = false) -> DictationMachine {
 
 @Test func pressingFnAgainStopsALatchedRecording() {
     var subject = recording(latched: true)
-    let effects = subject.handle(.fnDown(at: start.addingTimeInterval(5), target: target))
+    let effects = subject.handle(.fnDown(at: start.addingTimeInterval(5)))
     #expect(effects == [
         .stopRecording,
         .swallow(space: false, escape: true),
-        .show(.transcribing(target: target)),
+        .show(.transcribing),
     ])
 }
 
@@ -123,7 +122,7 @@ private func recording(latched: Bool = false) -> DictationMachine {
     #expect(effects == [
         .stopRecording,
         .swallow(space: false, escape: true),
-        .show(.transcribing(target: target)),
+        .show(.transcribing),
     ])
 }
 
@@ -155,7 +154,7 @@ private func recording(latched: Bool = false) -> DictationMachine {
     _ = subject.handle(.fnUp(at: start.addingTimeInterval(2)))
     _ = subject.handle(.recordingStopped(URL(fileURLWithPath: "/tmp/a.wav")))
     let effects = subject.handle(.transcribed("эээ привет"))
-    #expect(effects == [.show(.cleaning(target: target)), .clean("эээ привет")])
+    #expect(effects == [.show(.cleaning), .clean("эээ привет")])
 }
 
 private func cleaning() -> DictationMachine {
@@ -172,8 +171,8 @@ private func cleaning() -> DictationMachine {
     #expect(effects == [
         .swallow(space: false, escape: false),
         .remember(raw: "эээ привет", cleaned: "Привет."),
-        .show(.inserting(target: target, cleanupSkipped: nil)),
-        .insert(text: "Привет.", into: target, cleaned: true),
+        .show(.inserting(cleanupSkipped: nil)),
+        .insert(text: "Привет.", cleaned: true),
     ])
 }
 
@@ -186,8 +185,8 @@ private func cleaning() -> DictationMachine {
         .play(.error),
         .swallow(space: false, escape: false),
         .remember(raw: "эээ привет", cleaned: nil),
-        .show(.inserting(target: target, cleanupSkipped: "offline")),
-        .insert(text: "эээ привет", into: target, cleaned: false),
+        .show(.inserting(cleanupSkipped: "offline")),
+        .insert(text: "эээ привет", cleaned: false),
     ])
 }
 
@@ -254,7 +253,7 @@ private func cleaning() -> DictationMachine {
     _ = subject.handle(.fnUp(at: start.addingTimeInterval(2)))
     _ = subject.handle(.recordingFailed("No audio was captured"))
     #expect(subject.state == .idle)
-    #expect(subject.handle(.fnDown(at: start.addingTimeInterval(10), target: target))
+    #expect(subject.handle(.fnDown(at: start.addingTimeInterval(10)))
         == [.startRecording, .swallow(space: true, escape: true)])
 }
 
@@ -262,7 +261,7 @@ private func cleaning() -> DictationMachine {
 // this the owner would hold fn, hear nothing, release it and never learn why.
 @Test func aRecordingThatNeverStartedIsReported() {
     var subject = machine()
-    _ = subject.handle(.fnDown(at: start, target: target))
+    _ = subject.handle(.fnDown(at: start))
     let effects = subject.handle(.recordingFailed("No audio input device is available"))
     #expect(effects == [
         .discardRecording,

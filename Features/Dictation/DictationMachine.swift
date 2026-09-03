@@ -49,20 +49,20 @@ public struct DictationMachine: Sendable {
         case idle
         /// `announced` is false until the hold has outlasted `minimumHold` — before that the
         /// panel has not appeared and no sound has played.
-        case recording(mode: Mode, since: Date, target: TargetApp, announced: Bool)
+        case recording(mode: Mode, since: Date, announced: Bool)
         /// The engine has been told to stop; the file has not come back yet.
-        case stopping(target: TargetApp)
-        case transcribing(target: TargetApp)
-        case cleaning(raw: String, target: TargetApp)
+        case stopping
+        case transcribing
+        case cleaning(raw: String)
         /// Only exits are `.inserted` and `.insertionFailed`. Escape is deliberately released
         /// on entry rather than on either exit: once cleanup has handed off to `.insert`,
         /// there is nothing left to cancel, and swallowing a keystroke the machine has stopped
         /// listening for would just make it vanish.
-        case inserting(target: TargetApp, cleanupSkipped: String?)
+        case inserting(cleanupSkipped: String?)
     }
 
     public enum Event: Equatable, Sendable {
-        case fnDown(at: Date, target: TargetApp)
+        case fnDown(at: Date)
         case fnUp(at: Date)
         case spaceDown
         case escapeDown
@@ -94,7 +94,7 @@ public struct DictationMachine: Sendable {
         case cancelWork
         case transcribe(URL)
         case clean(String)
-        case insert(text: String, into: TargetApp, cleaned: Bool)
+        case insert(text: String, cleaned: Bool)
         /// Create-or-update: the panel may already be showing something else, or nothing at
         /// all. A dropped tick can jump straight from an unannounced recording to
         /// `.show(.transcribing)` with no `.show(.recording)` ever having preceded it.
@@ -120,38 +120,38 @@ public struct DictationMachine: Sendable {
 
     public mutating func handle(_ event: Event) -> [Effect] {
         switch (state, event) {
-        case (.idle, .fnDown(let at, let target)):
-            state = .recording(mode: .held, since: at, target: target, announced: false)
+        case (.idle, .fnDown(let at)):
+            state = .recording(mode: .held, since: at, announced: false)
             return [.startRecording, .swallow(space: true, escape: true)]
 
-        case (.recording(let mode, let since, let target, let announced), .tick(let now)):
+        case (.recording(let mode, let since, let announced), .tick(let now)):
             if now.timeIntervalSince(since) >= limits.maximumRecording {
-                return stopRecording(target: target)
+                return stopRecording()
             }
             guard !announced, now.timeIntervalSince(since) >= limits.minimumHold else { return [] }
-            state = .recording(mode: mode, since: since, target: target, announced: true)
-            return [.play(.start), .show(.recording(target: target, latched: mode == .latched))]
+            state = .recording(mode: mode, since: since, announced: true)
+            return [.play(.start), .show(.recording(latched: mode == .latched))]
 
-        case (.recording(.held, let since, let target, _), .fnUp(let at)):
+        case (.recording(.held, let since, _), .fnUp(let at)):
             // Measured from the timestamps rather than from `announced`: a tick that never
             // arrived must not throw away a dictation the owner actually made.
             guard at.timeIntervalSince(since) >= limits.minimumHold else {
                 state = .idle
                 return [.discardRecording, .swallow(space: false, escape: false)]
             }
-            return stopRecording(target: target)
+            return stopRecording()
 
-        case (.recording(.latched, _, _, _), .fnUp):
+        case (.recording(.latched, _, _), .fnUp):
             return []
 
-        case (.recording(.latched, _, let target, _), .fnDown):
-            return stopRecording(target: target)
+        case (.recording(.latched, _, _), .fnDown):
+            return stopRecording()
 
-        case (.recording(.held, let since, let target, let announced), .spaceDown):
-            state = .recording(mode: .latched, since: since, target: target, announced: announced)
+        case (.recording(.held, let since, let announced), .spaceDown):
+            state = .recording(mode: .latched, since: since, announced: announced)
             var effects: [Effect] = [.swallow(space: false, escape: true)]
             if announced {
-                effects.append(.show(.recording(target: target, latched: true)))
+                effects.append(.show(.recording(latched: true)))
             }
             return effects
 
@@ -165,8 +165,8 @@ public struct DictationMachine: Sendable {
         case (.recording, .recordingFailed(let message)):
             return failed(message)
 
-        case (.stopping(let target), .recordingStopped(let url)):
-            state = .transcribing(target: target)
+        case (.stopping, .recordingStopped(let url)):
+            state = .transcribing
             return [.transcribe(url)]
 
         case (.stopping, .recordingFailed(let message)):
@@ -176,33 +176,33 @@ public struct DictationMachine: Sendable {
             state = .idle
             return [.cancelWork, .hidePanel(after: 0), .swallow(space: false, escape: false)]
 
-        case (.transcribing(let target), .transcribed(let text)):
-            state = .cleaning(raw: text, target: target)
-            return [.show(.cleaning(target: target)), .clean(text)]
+        case (.transcribing, .transcribed(let text)):
+            state = .cleaning(raw: text)
+            return [.show(.cleaning), .clean(text)]
 
         case (.transcribing, .transcriptionFailed(let message)):
             return failed(message)
 
-        case (.cleaning(let raw, let target), .cleaned(let text)):
-            state = .inserting(target: target, cleanupSkipped: nil)
+        case (.cleaning(let raw), .cleaned(let text)):
+            state = .inserting(cleanupSkipped: nil)
             return [
                 .swallow(space: false, escape: false),
                 .remember(raw: raw, cleaned: text),
-                .show(.inserting(target: target, cleanupSkipped: nil)),
-                .insert(text: text, into: target, cleaned: true),
+                .show(.inserting(cleanupSkipped: nil)),
+                .insert(text: text, cleaned: true),
             ]
 
-        case (.cleaning(let raw, let target), .cleanupFailed(let message)):
-            state = .inserting(target: target, cleanupSkipped: message)
+        case (.cleaning(let raw), .cleanupFailed(let message)):
+            state = .inserting(cleanupSkipped: message)
             return [
                 .play(.error),
                 .swallow(space: false, escape: false),
                 .remember(raw: raw, cleaned: nil),
-                .show(.inserting(target: target, cleanupSkipped: message)),
-                .insert(text: raw, into: target, cleaned: false),
+                .show(.inserting(cleanupSkipped: message)),
+                .insert(text: raw, cleaned: false),
             ]
 
-        case (.inserting(_, let skipped), .inserted):
+        case (.inserting(let skipped), .inserted):
             state = .idle
             var effects: [Effect] = [.swallow(space: false, escape: false)]
             // The error sound has already played when cleanup was skipped; a success chime on
@@ -221,9 +221,9 @@ public struct DictationMachine: Sendable {
         }
     }
 
-    private mutating func stopRecording(target: TargetApp) -> [Effect] {
-        state = .stopping(target: target)
-        return [.stopRecording, .swallow(space: false, escape: true), .show(.transcribing(target: target))]
+    private mutating func stopRecording() -> [Effect] {
+        state = .stopping
+        return [.stopRecording, .swallow(space: false, escape: true), .show(.transcribing)]
     }
 
     private mutating func failed(_ message: String) -> [Effect] {
