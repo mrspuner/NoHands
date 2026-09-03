@@ -83,6 +83,10 @@ final class DictationPanel {
         model.narrowbandHz = hz
     }
 
+    /// Distance from the top of the Dock to the bottom of the strip. The content is
+    /// bottom-aligned inside the window, so this is the gap the owner actually sees.
+    private static let gapAboveDock: CGFloat = 16
+
     private func position() {
         // `NSScreen.main` reflects the key window, which does not exist yet when this runs from
         // `init` — before `NSApp.run()`. Falling back to the first screen keeps the strip off the
@@ -93,7 +97,7 @@ final class DictationPanel {
         panel.setFrameOrigin(
             NSPoint(
                 x: visible.midX - size.width / 2,
-                y: visible.minY + 24
+                y: visible.minY + Self.gapAboveDock
             )
         )
     }

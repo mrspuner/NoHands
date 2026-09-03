@@ -12,16 +12,26 @@ struct PanelView: View {
                 active
             }
         }
+        // Both views hang from the bottom of the window, so expanding and collapsing grows and
+        // shrinks upward from one fixed line above the Dock instead of moving the strip.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
     }
 
     /// The resting strip: just enough to say the application is alive.
+    /// Warm orange rather than the system material the expanded panel uses: the resting strip
+    /// has to be findable at a glance against any desktop, and material against a light
+    /// wallpaper is nearly invisible. It cannot be confused with the narrowband notice, which
+    /// is also orange — the two are never on screen at the same time, since the notice only
+    /// appears in the expanded view and this only in the collapsed one.
+    private static let restingTint = Color(red: 0.93, green: 0.53, blue: 0.20)
+
     private var resting: some View {
         Image(systemName: "mic.fill")
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(.regularMaterial, in: Capsule())
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(Self.restingTint, in: Capsule())
     }
 
     private var active: some View {
