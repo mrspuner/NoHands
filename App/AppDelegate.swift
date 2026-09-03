@@ -83,6 +83,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try coordinator.start()
             self.coordinator = coordinator
             menu.setStatus("Готов")
+            // Reaching the Keychain raises an authorization dialog the first time this
+            // application reads the key. Doing it here, once the hotkey is already live, puts
+            // that dialog where waiting costs nothing — rather than in the middle of the first
+            // dictation, after the owner has already spoken. It cannot fail the launch: see
+            // `warmUp()`.
+            await cleaner.warmUp()
         } catch {
             menu.setStatus(error.localizedDescription)
         }

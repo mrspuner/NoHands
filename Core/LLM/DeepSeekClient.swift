@@ -14,10 +14,12 @@ public actor DeepSeekClient {
     /// `.keychain` defers the actual lookup to `clean(_:)` — see the initializer below for why.
     private enum KeySource {
         case fixed(String)
-        case keychain
+        case deferred(@Sendable () throws -> String?)
     }
 
     private let keySource: KeySource
+    /// The resolved key, kept for the life of the client. See `resolvedKey()`.
+    private var cachedKey: String?
     private let model: String
     private let prompt: String
     private let timeout: TimeInterval
@@ -41,10 +43,40 @@ public actor DeepSeekClient {
     /// `CleanupError` the coordinator already turns into `.cleanupFailed` — raw text inserted,
     /// reason named on the panel, error sound played.
     public init(model: String, prompt: String, timeout: TimeInterval) {
-        self.keySource = .keychain
+        self.init(model: model, prompt: prompt, timeout: timeout) {
+            try Keychain.password(
+                service: Keychain.deepSeekService,
+                account: Keychain.deepSeekAccount
+            )
+        }
+    }
+
+    /// The same lazy behaviour with the lookup itself injected, so the caching below can be
+    /// verified without touching the owner's real keychain.
+    init(
+        model: String,
+        prompt: String,
+        timeout: TimeInterval,
+        lookup: @escaping @Sendable () throws -> String?
+    ) {
+        self.keySource = .deferred(lookup)
         self.model = model
         self.prompt = prompt
         self.timeout = timeout
+    }
+
+    /// Resolves the key now, so the first dictation does not have to.
+    ///
+    /// The Keychain item is created by hand from Terminal, so `NoHands.app` is not on its
+    /// access list and the first read raises a system authorization dialog. Resolving at
+    /// launch puts that dialog where waiting costs nothing; leaving it to the first cleanup
+    /// put it in the middle of a dictation, after the owner had already spoken.
+    ///
+    /// Deliberately swallows every failure: a key that is missing or refused is a cleanup-time
+    /// failure by design — raw text inserted, reason named on the panel — and must never stop
+    /// the app from starting.
+    public func warmUp() {
+        _ = try? resolvedKey()
     }
 
     /// Eager counterpart of the lazy initializer above, kept for the one call site that must
@@ -91,19 +123,28 @@ public actor DeepSeekClient {
         return try CleanupPayload.text(from: data)
     }
 
-    private func resolvedKey() throws -> String {
+    /// Resolved once and kept. The lookup reaches the Keychain, which asks the owner for
+    /// authorization the first time this application reads the item — doing that per cleanup
+    /// meant a dialog in the middle of every dictation.
+    ///
+    /// Only success is cached. A failure is retried on the next call, so a key added while the
+    /// app is running starts working without a restart.
+    func resolvedKey() throws -> String {
+        if let cachedKey {
+            return cachedKey
+        }
+        let key: String
         switch keySource {
-        case .fixed(let key):
-            return key
-        case .keychain:
-            guard let key = try Keychain.password(
-                service: Keychain.deepSeekService,
-                account: Keychain.deepSeekAccount
-            ) else {
+        case .fixed(let fixed):
+            key = fixed
+        case .deferred(let lookup):
+            guard let found = try lookup() else {
                 throw CleanupError.apiKeyMissing
             }
-            return key
+            key = found
         }
+        cachedKey = key
+        return key
     }
 
     /// The panel is a fixed-size window and the only place a `requestFailed` message is ever
