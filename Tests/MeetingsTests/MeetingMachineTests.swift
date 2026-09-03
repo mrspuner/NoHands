@@ -21,6 +21,13 @@ private func drafting() -> MeetingMachine {
     return subject
 }
 
+/// A draft that has been left running: the prompt has collapsed, the recording continues.
+private func recordingConfirmed() -> MeetingMachine {
+    var subject = drafting()
+    _ = subject.handle(.confirmPressed(at: start.addingTimeInterval(5)))
+    return subject
+}
+
 @Test func aTriggerAppTakingTheInputStartsADraftAndAsks() {
     var subject = machine()
     let effects = subject.handle(
@@ -129,4 +136,117 @@ private func drafting() -> MeetingMachine {
         .hide(after: 5),
     ])
     #expect(subject.state == .idle)
+}
+
+// Muting releases the input and leaves the output taken: the app keeps playing back the
+// other participants. This is the middle of the meeting, not its end.
+@Test func muteReleasesTheInputAndChangesNothing() {
+    var subject = recordingConfirmed()
+    let effects = subject.handle(
+        .streamsChanged(app: telemost, input: false, output: true, at: start.addingTimeInterval(60))
+    )
+    #expect(effects == [])
+    _ = subject.handle(.tick(start.addingTimeInterval(600)))
+    #expect(subject.state == .recording(app: telemost, since: start, confirmed: true, promptShown: false, quietSince: nil))
+}
+
+@Test func bothDevicesGoingFreeStartsTheSilenceClockButOffersNothingYet() {
+    var subject = recordingConfirmed()
+    let quiet = start.addingTimeInterval(60)
+    #expect(subject.handle(.streamsChanged(app: telemost, input: false, output: false, at: quiet)) == [])
+    #expect(subject.handle(.tick(quiet.addingTimeInterval(59))) == [])
+}
+
+@Test func silenceLongerThanTheThresholdOffersToStopWhileStillRecording() {
+    var subject = recordingConfirmed()
+    let quiet = start.addingTimeInterval(60)
+    _ = subject.handle(.streamsChanged(app: telemost, input: false, output: false, at: quiet))
+    let effects = subject.handle(.tick(quiet.addingTimeInterval(61)))
+    #expect(effects == [.show(.stopPrompt(duration: 121))])
+    #expect(subject.state == .stopOffered(app: telemost, since: start, offeredAt: quiet.addingTimeInterval(61)))
+}
+
+// The meeting came back to life — the prompt is withdrawn, recording continues in the same file.
+@Test func devicesComingBackToLifeWithdrawTheStopPrompt() {
+    var subject = recordingConfirmed()
+    let quiet = start.addingTimeInterval(60)
+    _ = subject.handle(.streamsChanged(app: telemost, input: false, output: false, at: quiet))
+    _ = subject.handle(.tick(quiet.addingTimeInterval(61)))
+    let alive = quiet.addingTimeInterval(70)
+    let effects = subject.handle(.streamsChanged(app: telemost, input: true, output: true, at: alive))
+    #expect(effects == [.show(.recording(since: start, confirmed: true))])
+    #expect(subject.state == .recording(app: telemost, since: start, confirmed: true, promptShown: false, quietSince: nil))
+}
+
+@Test func theProcessExitingOffersToStopAtOnce() {
+    var subject = recordingConfirmed()
+    let effects = subject.handle(.appExited(pid: 501, at: start.addingTimeInterval(600)))
+    #expect(effects == [.show(.stopPrompt(duration: 600))])
+}
+
+// Silence saves: the prompt is easy to miss, and inattention should cost disk space, not the
+// meeting itself.
+@Test func anUnansweredStopPromptSavesTheRecording() {
+    var subject = recordingConfirmed()
+    let quiet = start.addingTimeInterval(60)
+    _ = subject.handle(.streamsChanged(app: telemost, input: false, output: false, at: quiet))
+    let offered = quiet.addingTimeInterval(61)
+    _ = subject.handle(.tick(offered))
+    let effects = subject.handle(.tick(offered.addingTimeInterval(121)))
+    #expect(effects == [.stopCapture, .keepDraft, .blockDictation(false), .hide(after: 0)])
+    #expect(subject.state == .idle)
+}
+
+@Test func answeringTheStopPromptWithKeepSavesImmediately() {
+    var subject = recordingConfirmed()
+    let quiet = start.addingTimeInterval(60)
+    _ = subject.handle(.streamsChanged(app: telemost, input: false, output: false, at: quiet))
+    _ = subject.handle(.tick(quiet.addingTimeInterval(61)))
+    #expect(subject.handle(.keepPressed) == [.stopCapture, .keepDraft, .blockDictation(false), .hide(after: 0)])
+}
+
+@Test func answeringTheStopPromptWithDeleteRemovesTheFolder() {
+    var subject = recordingConfirmed()
+    let quiet = start.addingTimeInterval(60)
+    _ = subject.handle(.streamsChanged(app: telemost, input: false, output: false, at: quiet))
+    _ = subject.handle(.tick(quiet.addingTimeInterval(61)))
+    #expect(subject.handle(.deletePressed) == [.stopCapture, .discardDraft, .blockDictation(false), .hide(after: 0)])
+}
+
+// The length limit stops at once rather than asking: it exists precisely so a forgotten
+// recording cannot eat the disk.
+@Test func theLengthLimitStopsWithoutAsking() {
+    var subject = recordingConfirmed()
+    let effects = subject.handle(.tick(start.addingTimeInterval(14400)))
+    #expect(effects == [
+        .stopCapture,
+        .keepDraft,
+        .blockDictation(false),
+        .show(.limitReached),
+        .hide(after: 5),
+    ])
+    #expect(subject.state == .idle)
+}
+
+// The collapsed start prompt changes only how the panel looks: the meeting stays a draft and
+// will ask about itself when it stops.
+@Test func theStartPromptCollapsesButTheRecordingStaysADraft() {
+    var subject = drafting()
+    let effects = subject.handle(.tick(start.addingTimeInterval(31)))
+    #expect(effects == [.show(.recording(since: start, confirmed: false))])
+    #expect(subject.state == .recording(app: telemost, since: start, confirmed: false, promptShown: false, quietSince: nil))
+    let stop = subject.handle(.stopPressed(at: start.addingTimeInterval(600)))
+    #expect(stop.contains(.show(.savePrompt(duration: 600))))
+}
+
+@Test func theStopPromptOfADraftAsksAboutSavingRatherThanSavingSilently() {
+    var subject = drafting()
+    _ = subject.handle(.tick(start.addingTimeInterval(31)))
+    let quiet = start.addingTimeInterval(60)
+    _ = subject.handle(.streamsChanged(app: telemost, input: false, output: false, at: quiet))
+    let offered = quiet.addingTimeInterval(61)
+    _ = subject.handle(.tick(offered))
+    #expect(subject.handle(.tick(offered.addingTimeInterval(121))) == [
+        .stopCapture, .keepDraft, .blockDictation(false), .hide(after: 0),
+    ])
 }

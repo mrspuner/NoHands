@@ -172,8 +172,82 @@ public struct MeetingMachine: Sendable {
                 .hide(after: Self.failureDwell),
             ]
 
+        case (.recording(let app, let since, let confirmed, let promptShown, let quiet), .streamsChanged(let changed, let input, let output, let at))
+            where changed.pid == app?.pid:
+            let quietSince = (input || output) ? nil : (quiet ?? at)
+            state = .recording(app: app, since: since, confirmed: confirmed, promptShown: promptShown, quietSince: quietSince)
+            return []
+
+        case (.stopOffered(let app, let since, _), .streamsChanged(let changed, let input, let output, _))
+            where changed.pid == app?.pid && (input || output):
+            // A meeting that came back to life must not be cut in two: the same file keeps
+            // being written, and only the panel changes back.
+            state = .recording(app: app, since: since, confirmed: true, promptShown: false, quietSince: nil)
+            return [.show(.recording(since: since, confirmed: true))]
+
+        case (.recording(let app, let since, _, _, let quiet), .tick(let now)):
+            if now.timeIntervalSince(since) >= limits.maxMeeting {
+                return stopAtLimit()
+            }
+            if let quiet, now.timeIntervalSince(quiet) >= limits.silence {
+                return offerStop(app: app, since: since, at: now)
+            }
+            return collapseStartPromptIfDue(now)
+
+        case (.recording(let app, let since, _, _, _), .appExited(let pid, let at)) where pid == app?.pid:
+            return offerStop(app: app, since: since, at: at)
+
+        case (.stopOffered(_, let since, let offeredAt), .tick(let now)):
+            if now.timeIntervalSince(since) >= limits.maxMeeting {
+                return stopAtLimit()
+            }
+            guard now.timeIntervalSince(offeredAt) >= limits.autoStop else { return [] }
+            return keepAndFinish()
+
+        case (.stopOffered, .keepPressed):
+            return keepAndFinish()
+
+        case (.stopOffered, .deletePressed):
+            state = .idle
+            return [.stopCapture, .discardDraft, .blockDictation(false), .hide(after: 0)]
+
+        case (.stopOffered, .stopPressed):
+            state = .idle
+            return [.stopCapture, .keepDraft, .blockDictation(false), .hide(after: 0)]
+
         default:
             return []
         }
+    }
+
+    private mutating func offerStop(app: MeetingApp?, since: Date, at now: Date) -> [Effect] {
+        state = .stopOffered(app: app, since: since, offeredAt: now)
+        return [.show(.stopPrompt(duration: now.timeIntervalSince(since)))]
+    }
+
+    /// Silence saves. The draft flag stops mattering here: an unanswered stop prompt is not a
+    /// refusal, and the only thing that deletes is an explicit "delete".
+    private mutating func keepAndFinish() -> [Effect] {
+        state = .idle
+        return [.stopCapture, .keepDraft, .blockDictation(false), .hide(after: 0)]
+    }
+
+    private mutating func stopAtLimit() -> [Effect] {
+        state = .idle
+        return [
+            .stopCapture,
+            .keepDraft,
+            .blockDictation(false),
+            .show(.limitReached),
+            .hide(after: Self.failureDwell),
+        ]
+    }
+
+    private mutating func collapseStartPromptIfDue(_ now: Date) -> [Effect] {
+        guard case .recording(let app, let since, let confirmed, true, let quiet) = state,
+              now.timeIntervalSince(since) >= limits.startPrompt
+        else { return [] }
+        state = .recording(app: app, since: since, confirmed: confirmed, promptShown: false, quietSince: quiet)
+        return [.show(.recording(since: since, confirmed: confirmed))]
     }
 }
