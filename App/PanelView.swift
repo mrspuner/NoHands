@@ -166,39 +166,75 @@ private struct Surface: View {
         Blob(color: .rgb(165, 165, 165), x: 1.000, y: 0.271, width: 52, height: 48),
     ]
 
+    /// How strongly each layer shows, from the reference's `md` preset on a dark surface.
+    /// The crisp edge is the *faintest* of the three; most of what the eye reads as the effect
+    /// is the inner glow spilling in from the patches sitting on the perimeter.
+    struct Layers {
+        let stroke: Double
+        let inner: Double
+        let bloom: Double
+        /// The reference's `innerShadow`: a white hairline just inside the edge.
+        let hairline: Double
+
+        static let sunset = Layers(stroke: 0.26, inner: 0.42, bloom: 0.24, hairline: 0.27)
+        /// The reference halves every layer for "mono"; at rest this is meant to be barely there.
+        static let mono = Layers(stroke: 0.13, inner: 0.21, bloom: 0.12, hairline: 0.14)
+    }
+
+    /// From the reference's `md` preset.
+    static let saturation: Double = 1.2
+
     var body: some View {
-        ZStack {
-            shape.fill(.regularMaterial)
-            // Dark enough that the strip reads as a deliberate object and the border is the
-            // brightest thing on it.
-            shape.fill(Color.black.opacity(0.55))
-            if recording {
-                TimelineView(.animation) { timeline in
-                    let seconds = timeline.date.timeIntervalSinceReferenceDate
-                    patches(
-                        Self.sunset,
-                        spin: .degrees(turn(seconds, Self.spinPeriod) * 360),
-                        seconds: seconds,
-                        blur: 8,
-                        opacity: 0.95
-                    )
-                }
-            } else {
-                // Still, and therefore free: at rest this is a strip the size of an icon.
-                patches(Self.mono, spin: .degrees(0), seconds: nil, blur: 12, opacity: 0.45)
+        if recording {
+            TimelineView(.animation) { timeline in
+                let seconds = timeline.date.timeIntervalSinceReferenceDate
+                surface(
+                    Self.sunset,
+                    spin: .degrees(turn(seconds, Self.spinPeriod) * 360),
+                    seconds: seconds,
+                    layers: .sunset
+                )
             }
+        } else {
+            // Still, and therefore free: at rest this is a strip the size of an icon.
+            surface(Self.mono, spin: .degrees(0), seconds: nil, layers: .mono)
         }
+    }
+
+    /// Four layers, in the reference's own order. The patches sit on the perimeter, so masking
+    /// the same field to the whole shape rather than to the ring is what turns a border into a
+    /// glow that reaches inward — the patches' inner shoulders are all that shows.
+    private func surface(
+        _ blobs: [Blob], spin: Angle, seconds: Double?, layers: Layers
+    ) -> some View {
+        ZStack {
+            field(blobs, spin: spin, seconds: seconds, blur: 18)
+                .opacity(layers.bloom)
+
+            shape.fill(.regularMaterial)
+            shape.fill(Color.black.opacity(0.55))
+
+            field(blobs, spin: spin, seconds: seconds, blur: 10)
+                .opacity(layers.inner)
+                .mask(shape)
+
+            shape.strokeBorder(Color.white.opacity(layers.hairline), lineWidth: 0.5)
+
+            field(blobs, spin: spin, seconds: seconds, blur: 1.2)
+                .opacity(layers.stroke)
+                .mask(shape.strokeBorder(lineWidth: Self.borderWidth))
+        }
+        .saturation(Self.saturation)
     }
 
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
     }
 
-    /// The patches are laid out across the whole surface, blurred, then masked down to the
-    /// border ring: blurring first and masking after is what keeps the glow soft without
-    /// bleeding it across the panel's face.
-    private func patches(
-        _ blobs: [Blob], spin: Angle, seconds: Double?, blur: CGFloat, opacity: Double
+    /// The nine patches laid out across the surface, spun and breathing. Every layer draws the
+    /// same field and differs only in how hard it is blurred and how far it is masked.
+    private func field(
+        _ blobs: [Blob], spin: Angle, seconds: Double?, blur: CGFloat
     ) -> some View {
         GeometryReader { geometry in
             ZStack {
@@ -217,8 +253,6 @@ private struct Surface: View {
             .blur(radius: blur)
             .rotationEffect(spin)
         }
-        .opacity(opacity)
-        .mask(shape.strokeBorder(lineWidth: Self.borderWidth))
     }
 
     /// Each patch fades in and out on its own phase, which is the reference's `beam-breathe`.
