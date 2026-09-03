@@ -95,12 +95,36 @@ struct PanelView: View {
     }
 }
 
-/// The panel's background: a slightly darkened material with a lit border.
+/// One blurred patch of colour sitting on the border.
 ///
-/// Shape, corner radius, border width and period are taken from the reference this was designed
-/// against — `beam.jakubantalik.com`, mode "rotate", size "md". Two of its themes are used:
-/// "mono" at rest, a still grey halo; "sunset" while recording, its warm colours travelling
-/// around the border once every 3.1 seconds.
+/// Position is a unit point within the surface; values outside 0…1 are the reference's own and
+/// place a patch deliberately past the edge, so only its inner shoulder reaches the border.
+private struct Blob {
+    let color: Color
+    let x: Double
+    let y: Double
+    let width: CGFloat
+    let height: CGFloat
+}
+
+private extension Color {
+    /// The reference states its colours in 0…255 `rgb()`; keeping them in that form makes them
+    /// checkable against it line by line.
+    static func rgb(_ r: Double, _ g: Double, _ b: Double) -> Color {
+        Color(red: r / 255, green: g / 255, blue: b / 255)
+    }
+}
+
+/// The panel's background: a dark surface inside a border made of moving coloured patches.
+///
+/// Geometry, colours, corner radius, border width and period come from the reference this was
+/// designed against — `beam.jakubantalik.com`, mode "rotate", size "md" — down to the nine
+/// patches and their percentage positions. Its animation is three things at once, named by its
+/// own keyframes: `beam-spin`, `beam-breathe`, `beam-travel`. Spin and breathe are reproduced
+/// here; they are what makes it read as alive rather than as a drawn line.
+///
+/// Two themes: "mono" at rest, the same nine patches in grey and still; "sunset" while
+/// recording, warm and in motion.
 ///
 /// The motion is deliberately confined to recording. This panel is on screen permanently now,
 /// and a continuously animating layer means continuous redraws on a machine that is also
@@ -111,38 +135,57 @@ private struct Surface: View {
     static let cornerRadius: CGFloat = 16
     static let borderWidth: CGFloat = 1
     /// One full turn, from the reference.
-    static let period: Double = 3.1
+    static let spinPeriod: Double = 3.1
+    /// Deliberately not a multiple of the spin, so the two never fall into lockstep and the
+    /// border keeps looking unrepetitive.
+    static let breathePeriod: Double = 2.3
 
-    /// The reference's "sunset" border colours, in the order they sit around the edge.
-    private static let sunset: [Color] = [
-        Color(red: 1.00, green: 0.31, blue: 0.20),
-        Color(red: 1.00, green: 0.63, blue: 0.16),
-        Color(red: 1.00, green: 0.47, blue: 0.24),
-        Color(red: 1.00, green: 0.78, blue: 0.20),
-        Color(red: 1.00, green: 0.39, blue: 0.31),
+    /// The reference's "sunset" patches, in its own order.
+    static let sunset: [Blob] = [
+        Blob(color: .rgb(255, 80, 50), x: 0.330, y: -0.074, width: 70, height: 40),
+        Blob(color: .rgb(255, 160, 40), x: 0.120, y: -0.050, width: 60, height: 35),
+        Blob(color: .rgb(255, 120, 60), x: 0.021, y: 0.683, width: 40, height: 70),
+        Blob(color: .rgb(255, 200, 50), x: 0.021, y: 0.683, width: 20, height: 35),
+        Blob(color: .rgb(255, 100, 80), x: 0.744, y: 1.000, width: 180, height: 32),
+        Blob(color: .rgb(255, 180, 60), x: 0.550, y: 1.000, width: 85, height: 26),
+        Blob(color: .rgb(255, 60, 60), x: 0.939, y: 0.000, width: 74, height: 32),
+        Blob(color: .rgb(255, 140, 50), x: 1.000, y: 0.271, width: 26, height: 42),
+        Blob(color: .rgb(255, 90, 70), x: 1.000, y: 0.271, width: 52, height: 48),
     ]
 
-    /// "mono" is the same geometry desaturated and blurred harder — in the reference, the
-    /// colours drop to about a seventh of their opacity and the blur grows from one or two
-    /// pixels to a dozen.
-    private static let mono: [Color] = [
-        Color(white: 0.75), Color(white: 0.45), Color(white: 0.85), Color(white: 0.40),
+    /// The same nine patches in the reference's "mono" greys.
+    private static let mono: [Blob] = [
+        Blob(color: .rgb(180, 180, 180), x: 0.330, y: -0.074, width: 70, height: 40),
+        Blob(color: .rgb(140, 140, 140), x: 0.120, y: -0.050, width: 60, height: 35),
+        Blob(color: .rgb(160, 160, 160), x: 0.021, y: 0.683, width: 40, height: 70),
+        Blob(color: .rgb(130, 130, 130), x: 0.021, y: 0.683, width: 20, height: 35),
+        Blob(color: .rgb(170, 170, 170), x: 0.744, y: 1.000, width: 180, height: 32),
+        Blob(color: .rgb(150, 150, 150), x: 0.550, y: 1.000, width: 85, height: 26),
+        Blob(color: .rgb(190, 190, 190), x: 0.939, y: 0.000, width: 74, height: 32),
+        Blob(color: .rgb(145, 145, 145), x: 1.000, y: 0.271, width: 26, height: 42),
+        Blob(color: .rgb(165, 165, 165), x: 1.000, y: 0.271, width: 52, height: 48),
     ]
 
     var body: some View {
         ZStack {
-            shape
-                .fill(.regularMaterial)
-            // Slightly darker than the Dock, so the strip reads as a deliberate object rather
-            // than as a smudge of whatever is behind it.
-            shape
-                .fill(Color.black.opacity(0.18))
+            shape.fill(.regularMaterial)
+            // Dark enough that the strip reads as a deliberate object and the border is the
+            // brightest thing on it.
+            shape.fill(Color.black.opacity(0.55))
             if recording {
                 TimelineView(.animation) { timeline in
-                    border(colors: Self.sunset, angle: Self.angle(at: timeline.date), blur: 2, opacity: 0.95)
+                    let seconds = timeline.date.timeIntervalSinceReferenceDate
+                    patches(
+                        Self.sunset,
+                        spin: .degrees(turn(seconds, Self.spinPeriod) * 360),
+                        seconds: seconds,
+                        blur: 8,
+                        opacity: 0.95
+                    )
                 }
             } else {
-                border(colors: Self.mono, angle: .degrees(0), blur: 6, opacity: 0.5)
+                // Still, and therefore free: at rest this is a strip the size of an icon.
+                patches(Self.mono, spin: .degrees(0), seconds: nil, blur: 12, opacity: 0.45)
             }
         }
     }
@@ -151,33 +194,69 @@ private struct Surface: View {
         RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
     }
 
-    private func border(colors: [Color], angle: Angle, blur: CGFloat, opacity: Double) -> some View {
-        // The gradient is drawn across the whole surface, then masked down to the border ring:
-        // blurring first and masking after is what keeps the glow soft without bleeding it
-        // across the panel's face.
-        AngularGradient(colors: colors + [colors[0]], center: .center, angle: angle)
+    /// The patches are laid out across the whole surface, blurred, then masked down to the
+    /// border ring: blurring first and masking after is what keeps the glow soft without
+    /// bleeding it across the panel's face.
+    private func patches(
+        _ blobs: [Blob], spin: Angle, seconds: Double?, blur: CGFloat, opacity: Double
+    ) -> some View {
+        GeometryReader { geometry in
+            ZStack {
+                ForEach(blobs.indices, id: \.self) { index in
+                    let blob = blobs[index]
+                    Ellipse()
+                        .fill(blob.color)
+                        .frame(width: blob.width, height: blob.height)
+                        .opacity(breath(at: seconds, phase: Double(index) * 0.37))
+                        .position(
+                            x: blob.x * geometry.size.width,
+                            y: blob.y * geometry.size.height
+                        )
+                }
+            }
             .blur(radius: blur)
-            .opacity(opacity)
-            .mask(shape.strokeBorder(lineWidth: Self.borderWidth))
+            .rotationEffect(spin)
+        }
+        .opacity(opacity)
+        .mask(shape.strokeBorder(lineWidth: Self.borderWidth))
     }
 
-    private static func angle(at date: Date) -> Angle {
-        let turn = date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period) / period
-        return .degrees(turn * 360)
+    /// Each patch fades in and out on its own phase, which is the reference's `beam-breathe`.
+    /// Still patches when there is no clock — the resting theme does not animate.
+    private func breath(at seconds: Double?, phase: Double) -> Double {
+        guard let seconds else { return 1 }
+        let turns = turn(seconds, Self.breathePeriod) + phase
+        return 0.55 + 0.45 * (0.5 + 0.5 * sin(turns * 2 * .pi))
+    }
+
+    private func turn(_ seconds: Double, _ period: Double) -> Double {
+        seconds.truncatingRemainder(dividingBy: period) / period
     }
 }
 
 /// The live level while recording. No honest progress exists for the stages after it — neither
 /// recognition nor a single API call reports any — so those get a caption instead of a bar
 /// that would be pretending.
+///
+/// Lit in the border's own colours, so the loudest thing on the panel and its frame belong to
+/// the same object.
 private struct Levels: View {
     let values: [Float]
 
     var body: some View {
+        LinearGradient(
+            colors: Surface.sunset.map(\.color),
+            startPoint: .leading,
+            endPoint: .trailing
+        )
+        .mask(bars)
+        .frame(width: CGFloat(values.count) * 5 - 2, height: 22)
+    }
+
+    private var bars: some View {
         HStack(alignment: .center, spacing: 2) {
             ForEach(Array(values.enumerated()), id: \.offset) { _, value in
                 Capsule()
-                    .fill(Color.accentColor)
                     .frame(width: 3, height: max(3, CGFloat(value) * 22))
             }
         }

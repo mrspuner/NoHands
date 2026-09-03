@@ -29,7 +29,9 @@ final class DictationPanel {
         panel.level = .floating
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = true
+        // No window shadow: with the lit border the panel draws its own edge, and AppKit's shadow
+        // around a small capsule reads as a hard black outline rather than as depth.
+        panel.hasShadow = false
         panel.hidesOnDeactivate = false
         panel.ignoresMouseEvents = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
@@ -54,7 +56,6 @@ final class DictationPanel {
         // AppKit caches a borderless transparent window's shadow from the backing store's alpha.
         // The content just changed shape (capsule to wide panel), so the cached shadow would keep
         // the old outline until something else forces a recompute.
-        panel.invalidateShadow()
     }
 
     /// Collapses the panel back to its resting strip. The window itself stays on screen — see
