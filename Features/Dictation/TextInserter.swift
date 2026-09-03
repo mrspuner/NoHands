@@ -3,7 +3,7 @@ import ApplicationServices
 import CoreGraphics
 import Foundation
 
-/// Puts dictated text where it was aimed: pasteboard, Cmd+V, pasteboard back.
+/// Puts dictated text wherever focus is right now: pasteboard, Cmd+V, pasteboard back.
 @MainActor
 public struct TextInserter: Sendable {
     public enum InsertionError: Error, Equatable, LocalizedError {

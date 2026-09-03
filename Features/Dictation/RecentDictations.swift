@@ -50,9 +50,10 @@ public final class RecentDictations {
     }
 
     public func remember(raw: String, cleaned: String?, audio: URL?) {
-        // Order matters. The previous newest gives up its file first, then the new entry goes
-        // in, then the tail is trimmed. Trimming first could carry an entry out of the ring
-        // while it still owned a file, and nothing would ever delete it.
+        // Order matters. The previous newest has to give up its file before the new entry is
+        // inserted, not after: `releaseAudio` finds the file owner by scanning for the first
+        // entry with non-nil `audio`, and once the new entry sits at index 0 it would be found
+        // first — deleting the recording that just arrived instead of the one it replaced.
         releaseAudio()
         stored.insert(Entry(raw: raw, cleaned: cleaned, audio: audio), at: 0)
         if stored.count > Self.capacity {

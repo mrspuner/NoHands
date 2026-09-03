@@ -4,8 +4,8 @@ import Foundation
 ///
 /// Pure decision, deliberately pulled out of `DictationPanel` (an `NSPanel` wrapper in the
 /// `App` target, which has no test target of its own) the same way the swallow rule was pulled
-/// out of the event tap, the activation plan out of the inserter, and the level arithmetic out
-/// of the recorder. Each of those turned out to be exactly where a defect lived.
+/// out of the event tap, the narrowband predicate out of the device query, and the level
+/// arithmetic out of the recorder. Each of those turned out to be exactly where a defect lived.
 public enum PanelTransition: Equatable, Sendable {
     case showResettingLevels
     case showKeepingLevels

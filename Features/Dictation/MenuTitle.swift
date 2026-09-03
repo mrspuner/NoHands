@@ -6,6 +6,9 @@ import Foundation
 /// once cleanup has punctuated it, and a newline inside an `NSMenuItem` title breaks the row's
 /// layout; and a cut that lands mid-phrase can leave a trailing space before the ellipsis,
 /// which reads as a typo rather than as a truncation.
+///
+/// Lives here rather than in `App`, even though it only serves a menu title, because `App` has
+/// no test target and this rule is worth testing.
 public enum MenuTitle {
     public static func short(_ text: String, limit: Int = 60) -> String {
         let flat = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")

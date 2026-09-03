@@ -26,6 +26,14 @@ struct PanelView: View {
 
     private var active: some View {
         HStack(spacing: 12) {
+            // Naming the frontmost application next to a failure reads as "the text went there" —
+            // it did not. Shown in every other expanded state, where it is accurate.
+            if let name = model.frontmostName, !isFailure {
+                icon
+                Text(name)
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+            }
             if case .recording(let latched) = model.state {
                 Levels(values: model.levels)
                 if latched {
@@ -38,12 +46,6 @@ struct PanelView: View {
                     .font(.system(size: 12))
                     .foregroundStyle(isFailure ? Color.red : Color.secondary)
                     .lineLimit(2)
-            }
-            if let name = model.frontmostName {
-                icon
-                Text(name)
-                    .font(.system(size: 12, weight: .medium))
-                    .lineLimit(1)
             }
             if let hz = model.narrowbandHz {
                 Text("узкая полоса, \(Int(hz / 1000)) кГц")

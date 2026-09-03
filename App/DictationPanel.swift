@@ -20,7 +20,7 @@ final class DictationPanel {
 
     init() {
         panel = Panel(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 56),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 56),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -51,6 +51,10 @@ final class DictationPanel {
         model.state = state
         position()
         panel.orderFrontRegardless()
+        // AppKit caches a borderless transparent window's shadow from the backing store's alpha.
+        // The content just changed shape (capsule to wide panel), so the cached shadow would keep
+        // the old outline until something else forces a recompute.
+        panel.invalidateShadow()
     }
 
     /// Collapses the panel back to its resting strip. The window itself stays on screen — see
@@ -60,6 +64,7 @@ final class DictationPanel {
         let work = DispatchWorkItem { [weak self] in
             self?.model.state = nil
             self?.model.narrowbandHz = nil
+            self?.panel.invalidateShadow()
         }
         pendingHide = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
@@ -79,7 +84,10 @@ final class DictationPanel {
     }
 
     private func position() {
-        guard let screen = NSScreen.main else { return }
+        // `NSScreen.main` reflects the key window, which does not exist yet when this runs from
+        // `init` — before `NSApp.run()`. Falling back to the first screen keeps the strip off the
+        // bottom-left corner on a cold launch instead of waiting for the first dictation to move it.
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
         let size = panel.frame.size
         let visible = screen.visibleFrame
         panel.setFrameOrigin(

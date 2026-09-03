@@ -10,6 +10,8 @@ import Dictation
 final class StatusMenu {
     private let item: NSStatusItem
     private let statusLine: NSMenuItem
+    // `NSMenu.delegate` is weak; without a strong reference here the delegate would be
+    // deallocated right after `init` and the submenu would silently stop populating.
     private let recentDelegate: RecentMenuDelegate
 
     init(
