@@ -87,11 +87,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// is not that — it is the same "why is this not working" that the dictation build already
     /// answers in the menu, and the menu is where the owner has just clicked to reload.
     private func rebuildMeetings() -> String? {
-        // Never around a recording in flight. The new coordinator would have no capture to
-        // stop, and the old one, its poller gone, would leave an `SCStream` writing into a
-        // folder nobody is left to hand over.
-        if let meetings, meetings.activity != .ready {
-            return "созвоны: настройки применятся после записи"
+        // Never around anything the old coordinator is still holding — a recording, an
+        // unanswered prompt, a refusal. `canBeRebuilt` is deliberately not the same question as
+        // "what may the menu offer": it says so itself, at length, and this line asking the
+        // wrong one of the two is how a refused meeting ended up recorded anyway.
+        if let meetings, !meetings.canBeRebuilt {
+            return "созвоны: настройки применятся после встречи или ответа на подсказку"
         }
         let config: MeetingsConfig
         do {

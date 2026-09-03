@@ -129,6 +129,19 @@ private func recordingConfirmed() -> MeetingMachine {
     #expect(subject.state == .idle)
 }
 
+// Silence saves here as well, and — just as important — the question ends. An unanswered save
+// prompt used to stand forever: the machine ignored ticks in this state, so a recording nobody
+// answered for was never handed over, and the panel it held kept taking the mouse over the Dock.
+@Test func anUnansweredSavePromptSavesTheRecording() {
+    var subject = drafting()
+    let stopped = start.addingTimeInterval(600)
+    _ = subject.handle(.stopPressed(at: stopped))
+
+    #expect(subject.handle(.tick(stopped.addingTimeInterval(119))) == [])
+    #expect(subject.handle(.tick(stopped.addingTimeInterval(120))) == [.keepDraft, .hide(after: 0)])
+    #expect(subject.state == .idle)
+}
+
 // Manual start outside a meeting: no app, no auto-stop, the folder slug is manual.
 @Test func aManualStartWithNoMeetingAppRecordsWithoutAnAppAndWithoutAPrompt() {
     var subject = machine()
@@ -456,4 +469,54 @@ private func recordingConfirmed() -> MeetingMachine {
         .blockDictation(true),
         .show(.recording(since: pressed, confirmed: true)),
     ])
+}
+
+// MARK: - What the menu bar is allowed to offer
+
+// The menu offers "stop" only while there is a recording to stop, and the elapsed time it puts
+// into that item has to come from the recording itself rather than from a second clock the menu
+// would keep for itself.
+@Test func theMenuIsOfferedAStopForAsLongAsSomethingIsBeingRecorded() {
+    var subject = machine()
+    #expect(subject.state.activity == .ready)
+
+    _ = subject.handle(.startPressed(app: telemost, at: start))
+    #expect(subject.state.activity == .recording(since: start))
+
+    _ = subject.handle(.stopPressed(at: start.addingTimeInterval(2820)))
+    #expect(subject.state.activity == .ready)
+}
+
+// A meeting whose room went quiet is still being recorded: the prompt asks what to do with it,
+// and until it is answered the menu must keep offering to stop that recording rather than to
+// start a second one.
+@Test func aMeetingWaitingOutItsStopPromptIsStillARecording() {
+    var subject = recordingConfirmed()
+    let quiet = start.addingTimeInterval(60)
+    _ = subject.handle(.streamsChanged(app: telemost, input: false, output: false, at: quiet))
+    _ = subject.handle(.tick(quiet.addingTimeInterval(61)))
+
+    #expect(subject.state.activity == .recording(since: start))
+}
+
+// Stopping a recording nobody ever confirmed leaves the question "keep it?" on the panel, and
+// only the panel can answer it: the machine ignores a start pressed in this state, so a menu
+// item offering one would do nothing at all.
+@Test func anUnansweredSavePromptLeavesTheMenuNothingToOffer() {
+    var subject = drafting()
+    _ = subject.handle(.stopPressed(at: start.addingTimeInterval(90)))
+    #expect(subject.state.activity == .awaitingAnswer)
+
+    _ = subject.handle(.keepPressed(at: start.addingTimeInterval(95)))
+    #expect(subject.state.activity == .ready)
+}
+
+// A refusal is "ready" to the menu on purpose — the manual start is exactly what the owner
+// reaches for after refusing one by mistake. It is emphatically not ready to be rebuilt
+// around, which is a different question and lives in `MeetingCoordinator.canBeRebuilt`.
+@Test func aRefusedMeetingStillOffersTheMenuAStart() {
+    var subject = drafting()
+    _ = subject.handle(.declinePressed(at: start.addingTimeInterval(5)))
+
+    #expect(subject.state.activity == .ready)
 }

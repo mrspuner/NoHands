@@ -17,7 +17,7 @@ final class StatusMenu {
     /// item that is sometimes missing.
     private let meetingItem: NSMenuItem
     private let screenRecordingItem: NSMenuItem
-    private let meetingActivity: () -> MeetingCoordinator.Activity?
+    private let meetingActivity: () -> MeetingMachine.Activity?
     // `NSMenu.delegate` is weak; without a strong reference here the delegate would be
     // deallocated right after `init` and the submenu would silently stop populating.
     private let recentDelegate: RecentMenuDelegate
@@ -28,7 +28,7 @@ final class StatusMenu {
     ///   and the item has to say so rather than offer a recording nobody would make.
     init(
         recent: RecentDictations,
-        meetingActivity: @escaping () -> MeetingCoordinator.Activity?,
+        meetingActivity: @escaping () -> MeetingMachine.Activity?,
         onStartMeeting: @escaping () -> Void,
         onStopMeeting: @escaping () -> Void,
         onQuit: @escaping () -> Void,
@@ -103,24 +103,25 @@ final class StatusMenu {
     /// Recomputed when the menu opens, because that is when it is read. The elapsed time in
     /// "остановить запись" therefore stands still in a menu left hanging open — the alternative
     /// is a timer rewriting a title once a second all day for the seconds anyone is looking.
+    ///
+    /// What greys an item out here is its action being nil, not `isEnabled`: `NSMenu` enables
+    /// its items by itself, so anything written to `isEnabled` is overwritten when the menu is
+    /// shown — an item is enabled exactly when its target can perform its action.
     private func refreshMeetingItems() {
         switch meetingActivity() {
         case .recording(let since):
             meetingItem.title =
                 "Остановить запись (\(ElapsedTime.clock(Date().timeIntervalSince(since))))"
             meetingItem.action = #selector(Actions.stopMeeting)
-            meetingItem.isEnabled = true
         case .ready:
             meetingItem.title = "Записать созвон"
             meetingItem.action = #selector(Actions.startMeeting)
-            meetingItem.isEnabled = true
         // A prompt on the panel owns the decision, or there is no coordinator at all. Either
         // way pressing this would do nothing, and an item that silently does nothing is worse
         // than a greyed one.
         case .awaitingAnswer, nil:
             meetingItem.title = "Записать созвон"
             meetingItem.action = nil
-            meetingItem.isEnabled = false
         }
         // Hidden rather than greyed once the permission is there: an item offering to grant
         // what is already granted is a standing reminder of a solved problem.

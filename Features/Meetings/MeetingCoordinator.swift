@@ -172,33 +172,29 @@ public final class MeetingCoordinator {
 
     /// What the menu bar may offer about meetings right now.
     ///
-    /// Read rather than pushed, and derived from the machine rather than tracked alongside it:
-    /// a second copy of "is a meeting being recorded" is a second thing that can be wrong, and
-    /// the wrong one would be the one deciding whether dictation is allowed to run.
-    public enum Activity: Equatable, Sendable {
-        case ready
-        /// Something is being recorded, and this is when it started — the elapsed time in the
-        /// menu item comes from here rather than from a clock the menu keeps for itself.
-        case recording(since: Date)
-        /// A prompt owns the decision until it is answered. There is nothing to start, because
-        /// the machine would ignore it, and nothing to stop, because the capture is already
-        /// closed — so the menu offers neither rather than offering an item that does nothing.
-        case awaitingAnswer
+    /// A pass-through, not a copy: the answer is a function of the machine's state and lives
+    /// there, the way `DictationCoordinator.isBlocked` passes through to its own machine. Read
+    /// rather than pushed — a second copy of "is a meeting being recorded" would be a second
+    /// thing that can be wrong, and the wrong one would be the one deciding whether dictation
+    /// is allowed to run.
+    public var activity: MeetingMachine.Activity {
+        machine.state.activity
     }
 
-    public var activity: Activity {
-        switch machine.state {
-        // A stop prompt is still a recording: the capture is running and the menu's "stop" is
-        // one of the ways to answer it.
-        case .recording(_, let since, _, _, _), .stopOffered(_, let since, _, _, _):
-            .recording(since: since)
-        case .savePending:
-            .awaitingAnswer
-        // A refused meeting is at rest as far as the menu goes: the manual start is exactly
-        // what the owner reaches for after refusing one by mistake.
-        case .idle, .declined:
-            .ready
-        }
+    /// Whether this coordinator may be thrown away and built again from a re-read config.
+    ///
+    /// A different question from `activity`, and answering it with that one is a defect rather
+    /// than a shortcut: to the menu a refusal is `.ready`, because the manual start is exactly
+    /// what the owner reaches for after refusing by mistake — but a rebuild would erase the
+    /// refusal, the meeting application is still holding the devices, and the very next poll
+    /// would start recording the meeting that was just refused. Silence would then save it.
+    ///
+    /// Rebuilding is safe only when nothing lives in this object that the new one could not
+    /// find for itself. Two things do: whatever the machine remembers, and the orphan prompt,
+    /// which is offered from here rather than by the machine. Everything else — the drafts on
+    /// disk, the processes holding the devices — the new coordinator reads again at startup.
+    public var canBeRebuilt: Bool {
+        machine.state == .idle && orphanOfferedAt == nil
     }
 
     // MARK: - Polling

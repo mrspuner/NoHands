@@ -82,6 +82,40 @@ public struct MeetingMachine: Sendable {
         /// This process was refused. Nothing it does raises a prompt until it lets both
         /// devices go.
         case declined(pid: Int32)
+
+        /// The same state in the three terms the menu bar is written in.
+        ///
+        /// A function of the state and nothing else, so it belongs here rather than in the
+        /// coordinator: there is nothing about it that needs a folder, a capture or a clock,
+        /// and everything about it that is easy to get wrong at one of the five states.
+        public var activity: Activity {
+            switch self {
+            // A stop prompt is still a recording: the capture is running, and the menu's
+            // "stop" is one of the ways to answer it.
+            case .recording(_, let since, _, _, _), .stopOffered(_, let since, _, _, _):
+                .recording(since: since)
+            case .savePending:
+                .awaitingAnswer
+            // A refusal is at rest as far as the menu goes: the manual start is exactly what
+            // the owner reaches for after refusing one by mistake. Whether this coordinator
+            // may be *rebuilt* is a different question with a different answer here — see
+            // `MeetingCoordinator.canBeRebuilt`.
+            case .idle, .declined:
+                .ready
+            }
+        }
+    }
+
+    /// What the menu bar may offer about meetings right now.
+    public enum Activity: Equatable, Sendable {
+        case ready
+        /// Something is being recorded, and this is when it started — the elapsed time in the
+        /// menu item comes from here rather than from a clock the menu keeps for itself.
+        case recording(since: Date)
+        /// A prompt owns the decision until it is answered. There is nothing to start, because
+        /// the machine ignores it in this state, and nothing to stop, because the capture is
+        /// already closed — so the menu offers neither rather than an item that does nothing.
+        case awaitingAnswer
     }
 
     public enum Event: Equatable, Sendable {
@@ -195,6 +229,17 @@ public struct MeetingMachine: Sendable {
         case (.savePending, .deletePressed):
             state = .idle
             return [.discardDraft, .hide(after: 0)]
+
+        // The same silence rule as everywhere else, and the same threshold as the stop prompt:
+        // an unanswered question is not a refusal, so it saves. Without this the question would
+        // simply never end — the recording would stay a draft nobody hands over, and the panel
+        // holding it would go on taking the mouse over the Dock for the rest of the day.
+        // Deliberately the effects of `keepPressed` above, minus the ones that already ran when
+        // this state was entered: the capture is closed and dictation is unblocked by now.
+        case (.savePending(_, let stoppedAt), .tick(let now)):
+            guard now.timeIntervalSince(stoppedAt) >= limits.autoStop else { return [] }
+            state = .idle
+            return [.keepDraft, .hide(after: 0)]
 
         case (.declined(let pid), .streamsChanged(let app, let input, let output, _))
             where app.pid == pid:

@@ -674,51 +674,37 @@ private func drainMainActor() async {
     #expect(harness.shown.count == 2)
 }
 
-// MARK: - What the menu bar is allowed to offer
+// MARK: - When this coordinator may be thrown away and built again
 
-// The menu offers "stop" only while there is a recording to stop, and the elapsed time it puts
-// into that item has to come from the recording itself rather than from a second clock the menu
-// would keep for itself.
-@Test @MainActor func theMenuIsOfferedAStopForAsLongAsSomethingIsBeingRecorded() throws {
-    let harness = try Harness()
-    #expect(harness.coordinator.activity == .ready)
-
-    harness.processes = [telemost]
-    harness.coordinator.startPressed(at: noon)
-    #expect(harness.coordinator.activity == .recording(since: noon))
-
-    harness.coordinator.stopPressed(at: noon.addingTimeInterval(2820))
-    #expect(harness.coordinator.activity == .ready)
-}
-
-// A meeting whose application went quiet is still being recorded: the prompt asks what to do
-// with it, and until it is answered the menu must keep offering to stop that recording rather
-// than to start a second one.
-@Test @MainActor func aMeetingWaitingOutItsStopPromptIsStillARecording() throws {
+// Rebuilding means a new object with an empty memory, and a refusal lives in that memory. The
+// meeting application is still holding the devices, so the very next poll would start recording
+// the meeting the owner has just refused — and then silence would save it. Reading the menu's
+// own question here, where a refusal counts as "ready", is exactly the defect this test pins.
+@Test @MainActor func aRefusedMeetingIsNotSomethingToRebuildAround() throws {
     let harness = try Harness()
     harness.processes = [telemost]
     harness.coordinator.poll(now: noon)
-    harness.coordinator.answer(.confirm, at: noon.addingTimeInterval(2))
+    harness.coordinator.answer(.decline, at: noon.addingTimeInterval(4))
 
-    harness.processes = [telemostIdle]
-    harness.coordinator.poll(now: noon.addingTimeInterval(3))
-    harness.coordinator.poll(now: noon.addingTimeInterval(config.silenceSeconds + 4))
-
-    #expect(harness.coordinator.activity == .recording(since: noon))
+    #expect(harness.coordinator.activity == .ready)
+    #expect(!harness.coordinator.canBeRebuilt)
 }
 
-// Stopping a recording nobody ever confirmed leaves the question "keep it?" on the panel, and
-// only the panel can answer it. A menu item offering to start another meeting in the meantime
-// would do nothing at all when pressed.
-@Test @MainActor func anUnansweredSavePromptLeavesTheMenuNothingToOffer() async throws {
+// An orphan prompt lives in the coordinator rather than in the machine, so a machine at rest is
+// not enough of an answer: rebuilding while one is up throws away the question the owner is
+// looking at.
+@Test @MainActor func anOrphanPromptOnScreenIsNotSomethingToRebuildAround() throws {
     let harness = try Harness()
-    harness.processes = [telemost]
-    harness.coordinator.poll(now: noon)
+    _ = try orphanDraft(in: harness.queue)
+    harness.coordinator.adoptOrphans(at: noon)
 
-    harness.coordinator.stopPressed(at: noon.addingTimeInterval(90))
-    #expect(harness.coordinator.activity == .awaitingAnswer)
-
-    harness.coordinator.answer(.keep, at: noon.addingTimeInterval(95))
-    await harness.coordinator.settle()
     #expect(harness.coordinator.activity == .ready)
+    #expect(!harness.coordinator.canBeRebuilt)
+}
+
+@Test @MainActor func anIdleCoordinatorWithNothingPendingMayBeRebuilt() throws {
+    let harness = try Harness()
+    harness.coordinator.adoptOrphans(at: noon)
+
+    #expect(harness.coordinator.canBeRebuilt)
 }

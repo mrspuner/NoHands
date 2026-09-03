@@ -139,19 +139,19 @@ private struct MeetingContent: View {
             )
         case .stopPrompt(let duration):
             prompt(
-                "Встреча кончилась? Сохранить запись \(ElapsedTime.minutes(duration)) мин",
+                "Встреча кончилась? Сохранить запись \(Self.length(duration))",
                 yes: ("Сохранить", .keep),
                 no: ("Удалить", .delete)
             )
         case .savePrompt(let duration):
             prompt(
-                "Сохранить запись \(ElapsedTime.minutes(duration)) мин?",
+                "Сохранить запись \(Self.length(duration))?",
                 yes: ("Сохранить", .keep),
                 no: ("Удалить", .delete)
             )
         case .orphanFound(let duration):
             prompt(
-                "Найдена незавершённая запись \(ElapsedTime.minutes(duration)) мин",
+                "Найдена незавершённая запись \(Self.length(duration))",
                 yes: ("Сохранить", .keep),
                 no: ("Удалить", .delete)
             )
@@ -160,6 +160,15 @@ private struct MeetingContent: View {
         case .failure(let message):
             notice(message, failed: true)
         }
+    }
+
+    /// How long the recording being asked about ran. Minutes, because the question is whether
+    /// an hour of meeting is worth keeping and seconds are noise at that scale — but never
+    /// "0 мин": rounding a recording that exists down to nothing would answer the question
+    /// wrongly, and the owner has no way to see that something was in fact recorded.
+    private static func length(_ duration: TimeInterval) -> String {
+        let minutes = ElapsedTime.minutes(duration)
+        return minutes < 1 ? "меньше минуты" : "\(minutes) мин"
     }
 
     /// The collapsed strip while a meeting records: a red light and a clock.
