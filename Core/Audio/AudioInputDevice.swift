@@ -11,6 +11,16 @@ public struct AudioInputDevice: Sendable {
     public let sampleRate: Double
     public let channelCount: UInt32
 
+    /// Below this rate macOS has switched the input into its narrowband mode. A Bluetooth
+    /// headset does that to the whole audio device the moment its microphone is used, and
+    /// `DESIGN.md` names that the worst input this application can have: the top of the
+    /// spectrum is gone, and the top is where similar consonants differ.
+    public static let narrowbandThreshold: Double = 32000
+
+    public var isNarrowband: Bool {
+        sampleRate < Self.narrowbandThreshold
+    }
+
     public static func current() -> AudioInputDevice? {
         guard let deviceID = defaultInputDeviceID(),
               let name = deviceName(deviceID),

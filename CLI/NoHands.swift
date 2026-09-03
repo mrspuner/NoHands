@@ -49,7 +49,7 @@ func readFile(_ path: String) -> String {
 /// Recording is still allowed at any rate; this only makes the tradeoff explicit instead of a
 /// generic "качество будет заниженным" line that named neither the rate nor the likely cause.
 func narrowbandWarning(sampleRate: Double) -> String? {
-    guard sampleRate < 32000 else { return nil }
+    guard sampleRate < AudioInputDevice.narrowbandThreshold else { return nil }
     return """
     ВНИМАНИЕ: вход \(Int(sampleRate)) Гц — узкополосный режим, такая запись не годится для \
     оценки качества распознавания. Типичная причина — подключённая Bluetooth-гарнитура \

@@ -14,6 +14,8 @@ final class PanelModel: ObservableObject {
     /// guess the panel presented as fact.
     @Published var frontmostName: String?
     @Published var frontmostIcon: NSImage?
+    /// Sample rate of the input when it is narrowband, nil otherwise.
+    @Published var narrowbandHz: Double?
 
     func push(level: Float) {
         levels.removeFirst()

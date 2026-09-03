@@ -100,7 +100,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     MainActor.assumeIsolated {
                         panel.setLevel(level)
                     }
-                }
+                },
+                onNarrowbandInput: { [panel] hz in panel.setInputWarning(hz: hz) }
             )
             try coordinator.start()
             self.coordinator = coordinator

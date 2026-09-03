@@ -17,6 +17,10 @@ public final class DictationCoordinator {
     private let showPanel: (PanelState) -> Void
     private let hidePanel: (TimeInterval) -> Void
     private let onLevel: @Sendable (Float) -> Void
+    /// The input's sample rate when it is below the narrowband threshold, and nil when the band
+    /// is fine. Reported once, at the start of each recording. A fact rather than a sentence:
+    /// interface wording belongs to the `App` target.
+    private let onNarrowbandInput: (Double?) -> Void
 
     private var machine: DictationMachine
     private var monitor: FnKeyMonitor?
@@ -60,7 +64,8 @@ public final class DictationCoordinator {
         sounds: SoundPlayer,
         showPanel: @escaping (PanelState) -> Void,
         hidePanel: @escaping (TimeInterval) -> Void,
-        onLevel: @escaping @Sendable (Float) -> Void
+        onLevel: @escaping @Sendable (Float) -> Void,
+        onNarrowbandInput: @escaping (Double?) -> Void
     ) {
         self.recorder = recorder
         self.transcriber = transcriber
@@ -71,6 +76,7 @@ public final class DictationCoordinator {
         self.showPanel = showPanel
         self.hidePanel = hidePanel
         self.onLevel = onLevel
+        self.onNarrowbandInput = onNarrowbandInput
         self.machine = DictationMachine(limits: DictationMachine.Limits(config: config))
     }
 
@@ -211,6 +217,9 @@ public final class DictationCoordinator {
     }
 
     private func startRecording() {
+        onNarrowbandInput(
+            AudioInputDevice.current().flatMap { $0.isNarrowband ? $0.sampleRate : nil }
+        )
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("nohands-dictation-\(UUID().uuidString).wav")
         audioURL = url

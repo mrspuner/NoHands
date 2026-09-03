@@ -59,6 +59,7 @@ final class DictationPanel {
         pendingHide?.cancel()
         let work = DispatchWorkItem { [weak self] in
             self?.model.state = nil
+            self?.model.narrowbandHz = nil
         }
         pendingHide = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
@@ -71,6 +72,10 @@ final class DictationPanel {
     func setFrontmost(name: String?, icon: NSImage?) {
         model.frontmostName = name
         model.frontmostIcon = icon
+    }
+
+    func setInputWarning(hz: Double?) {
+        model.narrowbandHz = hz
     }
 
     private func position() {

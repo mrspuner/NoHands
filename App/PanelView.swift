@@ -45,6 +45,12 @@ struct PanelView: View {
                     .font(.system(size: 12, weight: .medium))
                     .lineLimit(1)
             }
+            if let hz = model.narrowbandHz {
+                Text("узкая полоса, \(Int(hz / 1000)) кГц")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
