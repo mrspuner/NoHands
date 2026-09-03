@@ -51,10 +51,23 @@ private final class FakeCapture: MeetingCapture {
     /// What the queue directory held at the moment the capture was asked to close. A rename that
     /// did not wait for this would show up here as a folder without its leading dot.
     private(set) var queueWhenStopped: [String] = []
+    /// What the real recorder hands its stream delegate.
+    private let onFailureWhileRecording: @Sendable (String) -> Void
 
-    init(folder: URL, excluded: [String]) {
+    init(folder: URL, excluded: [String], onFailureWhileRecording: @escaping @Sendable (String) -> Void) {
         self.folder = folder
         self.excluded = excluded
+        self.onFailureWhileRecording = onFailureWhileRecording
+    }
+
+    /// The stream dying mid-meeting, as the delegate would report it.
+    ///
+    /// Deliberately as dumb as `SCStream` is: it reports whenever it likes, including after the
+    /// capture was stopped and including twice. The real recorder is what filters those, and it
+    /// is tested for it separately — here the point is that the coordinator survives them too,
+    /// so anything this fake refused to send would leave that untested.
+    func die(_ message: String) {
+        onFailureWhileRecording(message)
     }
 
     func start() async throws {
@@ -114,8 +127,12 @@ private final class Harness {
                 guard let self else { return [] }
                 return processes
             },
-            makeCapture: { [weak self] folder, excluded in
-                let capture = FakeCapture(folder: folder, excluded: excluded)
+            makeCapture: { [weak self] folder, excluded, onFailureWhileRecording in
+                let capture = FakeCapture(
+                    folder: folder,
+                    excluded: excluded,
+                    onFailureWhileRecording: onFailureWhileRecording
+                )
                 capture.startError = self?.startError
                 capture.stopError = self?.stopError
                 capture.failure = self?.captureFailure
@@ -459,19 +476,19 @@ private func isFailure(_ state: MeetingPanelState?) -> Bool {
     #expect(harness.blocked == [true, false])
 }
 
-// Spec §10: a stream that died mid-meeting stops the recording and keeps the folder as it is,
-// with the reason named. Forty minutes of audio are not thrown away because the last minute
-// went wrong.
-@Test @MainActor func aCaptureThatDiedMidMeetingKeepsTheFolderAndNamesTheReason() async throws {
+// What the capture only discovers at the end — a track that received nothing at all — is named
+// as well, and the folder is kept. Renamed from a title that promised the stream dying
+// mid-meeting: that path arrives through the handler below, not through the stop.
+@Test @MainActor func aFailureFoundOnlyWhenTheCaptureClosedIsNamedAndTheFolderKept() async throws {
     let harness = try Harness()
-    harness.captureFailure = "the capture stopped: display disconnected"
+    harness.captureFailure = "no audio arrived on the system track"
     harness.coordinator.startPressed(at: noon)
 
     harness.coordinator.stopPressed(at: noon.addingTimeInterval(2400))
     await harness.coordinator.settle()
 
     #expect(harness.handedOver.count == 1)
-    #expect(harness.shown.contains(.failure("the capture stopped: display disconnected")))
+    #expect(harness.shown.contains(.failure("no audio arrived on the system track")))
 }
 
 // A failure shown while the save prompt is up would replace it, and the owner would be left with
@@ -506,6 +523,82 @@ private func isFailure(_ state: MeetingPanelState?) -> Bool {
     await harness.coordinator.settle()
 
     #expect(harness.entries.isEmpty)
+    #expect(!harness.shown.contains { if case .failure = $0 { return true } else { return false } })
+}
+
+// MARK: - A stream that dies while the meeting is still going
+
+/// Lets the hop from the capture's queue to the main actor land. The handler is called from
+/// outside the actor, so what it starts is a task of its own, and `settle` cannot wait for a
+/// task that has not been created yet.
+@MainActor
+private func drainMainActor() async {
+    for _ in 0..<8 { await Task.yield() }
+}
+
+// Spec §10: a stream that died mid-meeting stops the recording and keeps the folder as it is,
+// with the reason named. Without this path the recording would go on believing in itself until
+// the owner pressed stop — an hour of silence noticed only in the archive.
+@Test @MainActor func aStreamDyingMidMeetingKeepsTheFolderAndNamesTheReason() async throws {
+    let harness = try Harness()
+    // The real recorder remembers the death and reports it again when the capture is closed, so
+    // a fake that forgot it would make this an easier meeting than production ever gets.
+    harness.captureFailure = "the capture stopped: display disconnected"
+    harness.coordinator.startPressed(at: noon)
+    await harness.coordinator.settle()
+
+    harness.captures[0].die("the capture stopped: display disconnected")
+    await drainMainActor()
+    await harness.coordinator.settle()
+
+    #expect(harness.drafts.isEmpty)
+    #expect(harness.captures[0].stopped)
+    // Kept, not discarded: this is the whole difference from a capture that never started.
+    let kept = try #require(harness.handedOver.first)
+    #expect(harness.handedOver.count == 1)
+    #expect(try harness.metadata(of: kept).stopReason == .failure)
+    // Both channels say the same sentence — the machine when the death is reported, the hand-off
+    // when the closed capture repeats it — so whichever lands last, the panel names the reason.
+    #expect(harness.shown.last == .failure("the capture stopped: display disconnected"))
+    #expect(harness.blocked == [true, false])
+}
+
+// The meeting is over and its folder has been handed on. A straggler must not raise a panel
+// about a recording nobody is making, and must not rewrite what was already filed.
+@Test @MainActor func aStreamFailureArrivingAfterTheMeetingEndedChangesNothing() async throws {
+    let harness = try Harness()
+    harness.coordinator.startPressed(at: noon)
+    harness.coordinator.stopPressed(at: noon.addingTimeInterval(600))
+    await harness.coordinator.settle()
+    let shownBefore = harness.shown
+
+    harness.captures[0].die("the capture stopped: display disconnected")
+    await drainMainActor()
+    await harness.coordinator.settle()
+
+    #expect(harness.shown == shownBefore)
+    #expect(harness.handedOver.count == 1)
+    #expect(try harness.metadata(of: try #require(harness.handedOver.first)).stopReason == .manual)
+}
+
+// The dangerous straggler: the message crosses to the main actor asynchronously, and by then the
+// next meeting may already be recording. Acting on it there would stop a healthy capture and file
+// a live meeting as failed — the same hazard the closing task documents about metadata.
+@Test @MainActor func aStreamThatDiedInTheLastMeetingDoesNotStopTheNextOne() async throws {
+    let harness = try Harness()
+    harness.coordinator.startPressed(at: noon)
+    harness.coordinator.stopPressed(at: noon.addingTimeInterval(600))
+    await harness.coordinator.settle()
+    harness.coordinator.startPressed(at: noon.addingTimeInterval(601))
+    await harness.coordinator.settle()
+
+    harness.captures[0].die("the capture stopped: display disconnected")
+    await drainMainActor()
+    await harness.coordinator.settle()
+
+    #expect(harness.captures.count == 2)
+    #expect(!harness.captures[1].stopped)
+    #expect(harness.drafts.count == 1)
     #expect(!harness.shown.contains { if case .failure = $0 { return true } else { return false } })
 }
 

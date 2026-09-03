@@ -41,7 +41,7 @@ public final class MeetingCoordinator {
     private let hidePanel: (TimeInterval) -> Void
     private let onDictationBlocked: (Bool) -> Void
     private let readProcesses: () -> [AudioProcessMonitor.State]?
-    private let makeCapture: (URL, [String]) -> any MeetingCapture
+    private let makeCapture: (URL, [String], @escaping @Sendable (String) -> Void) -> any MeetingCapture
 
     private var machine: MeetingMachine
     private var poller: Timer?
@@ -61,6 +61,16 @@ public final class MeetingCoordinator {
     private var metadata: MeetingMetadata?
     private var knownPIDs: Set<Int32> = []
 
+    /// Which capture the coordinator is listening to, or `nil` while nothing is recording.
+    ///
+    /// A dying stream reports from its own queue, and the message reaches the main actor a hop
+    /// later. In that window this meeting may have ended — and the next one may already be
+    /// recording, in which case acting on the message would stop a healthy capture and file a
+    /// live meeting as failed. Identity rather than "is anything recording" is what tells those
+    /// two apart; `stopCapture` documents the same hazard about metadata.
+    private var liveCaptureID: Int?
+    private var capturesStarted = 0
+
     /// Drafts found on disk at startup, oldest first, waiting for the owner to say keep or
     /// delete. Emptied one at a time: each answer resolves the first and offers the next.
     private var pendingOrphans: [URL] = []
@@ -78,10 +88,10 @@ public final class MeetingCoordinator {
     ///     temporary directory instead of the owner's `~/Meetings`.
     ///   - readProcesses: `nil` from this is a failed system call, never an empty room — see
     ///     `AudioProcessMonitor.current`.
-    ///   - makeCapture: takes the folder and the exclusion list, in that order. The list is
-    ///     handed straight through from the config: it cuts applications out of the audio mix,
-    ///     so anything added to it "just in case" would produce a valid recording full of
-    ///     silence, and nothing downstream would notice.
+    ///   - makeCapture: takes the folder, the exclusion list and the handler for a stream that
+    ///     dies mid-meeting, in that order. The list is handed straight through from the config:
+    ///     it cuts applications out of the audio mix, so anything added to it "just in case"
+    ///     would produce a valid recording full of silence, and nothing downstream would notice.
     public init(
         config: MeetingsConfig,
         queue: URL = MeetingFolder.queueURL,
@@ -89,8 +99,8 @@ public final class MeetingCoordinator {
         hidePanel: @escaping (TimeInterval) -> Void,
         onDictationBlocked: @escaping (Bool) -> Void,
         readProcesses: @escaping () -> [AudioProcessMonitor.State]? = AudioProcessMonitor.current,
-        makeCapture: @escaping (URL, [String]) -> any MeetingCapture = {
-            MeetingAudioRecorder(folder: $0, excludedBundleIDs: $1)
+        makeCapture: @escaping (URL, [String], @escaping @Sendable (String) -> Void) -> any MeetingCapture = {
+            MeetingAudioRecorder(folder: $0, excludedBundleIDs: $1, onFailureWhileRecording: $2)
         }
     ) {
         self.config = config
@@ -246,7 +256,15 @@ public final class MeetingCoordinator {
             try metadata.write(to: draft.appendingPathComponent(MeetingMetadata.fileName))
             self.metadata = metadata
 
-            let capture = makeCapture(draft, config.excludedApps)
+            capturesStarted += 1
+            let id = capturesStarted
+            liveCaptureID = id
+            let capture = makeCapture(draft, config.excludedApps) { message in
+                // The capture reports from its own queue, so this is the crossing to the main
+                // actor, written out rather than assumed. `@MainActor` on the coordinator makes
+                // a weak reference to it safe to carry across.
+                Task { @MainActor [weak self] in self?.captureDied(message, id: id) }
+            }
             self.capture = capture
             captureTask = Task { @MainActor [weak self] in
                 do {
@@ -260,6 +278,19 @@ public final class MeetingCoordinator {
         } catch {
             apply(.captureFailedAtStart(Self.describe(error)))
         }
+    }
+
+    /// The stream died while the meeting was still being recorded.
+    ///
+    /// Nothing is decided here beyond whether the message still belongs to anything: what a dead
+    /// stream costs — the recording stops, the folder is kept as it is rather than thrown away —
+    /// is the machine's rule, and it differs from a capture that never started by exactly that.
+    ///
+    /// The timestamp is taken here because there is nowhere else to take it from: unlike every
+    /// other event, this one is not raised by a poll or a click that already knows the time.
+    private func captureDied(_ message: String, id: Int) {
+        guard liveCaptureID == id else { return }
+        apply(.captureFailedWhileRecording(message, at: Date()))
     }
 
     /// Closes the capture and writes the finished `meeting.json`.
@@ -279,6 +310,8 @@ public final class MeetingCoordinator {
     private func stopCapture(at: Date, reason: MeetingMetadata.StopReason) {
         guard let capture, let folder else { return }
         self.capture = nil
+        // From here on this capture speaks about a meeting that is over.
+        liveCaptureID = nil
         let pendingStart = captureTask
         captureTask = nil
         let metadataURL = folder.appendingPathComponent(MeetingMetadata.fileName)
@@ -344,6 +377,7 @@ public final class MeetingCoordinator {
         // start has already thrown, which is what brought us here.
         capture = nil
         captureTask = nil
+        liveCaptureID = nil
         let closing = self.closing
         self.closing = nil
         housekeeping = Task { @MainActor [weak self] in

@@ -80,6 +80,41 @@ private func targetFormat() throws -> AVAudioFormat {
     ))
 }
 
+/// The two tracks of one capture, in a folder of the test's own. Most tests here do not care
+/// about the failure handler, so it defaults to one that ignores everything.
+private func makeWriter(
+    in folder: URL,
+    onFailureWhileRecording: @escaping @Sendable (String) -> Void = { _ in }
+) throws -> TrackWriter {
+    try TrackWriter(
+        systemURL: folder.appendingPathComponent("system.wav"),
+        microphoneURL: folder.appendingPathComponent("mic.wav"),
+        onFailureWhileRecording: onFailureWhileRecording
+    )
+}
+
+/// Collects what the capture reported, from whichever thread it reported it on.
+private final class FailureLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var collected: [String] = []
+
+    func append(_ message: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        collected.append(message)
+    }
+
+    var messages: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return collected
+    }
+}
+
+private struct StreamDeath: LocalizedError {
+    var errorDescription: String? { "display disconnected" }
+}
+
 // The one thing a single stream buys over two independent captures is that both tracks are
 // stamped by the same clock. That is worth nothing unless the stamps are carried out: the two
 // outputs still start whenever they start, and phase 2б needs the difference.
@@ -117,10 +152,7 @@ private func targetFormat() throws -> AVAudioFormat {
 @Test func eachOutputTypeLandsInItsOwnFile() throws {
     let folder = try temporaryFolder()
     defer { try? FileManager.default.removeItem(at: folder) }
-    let writer = try TrackWriter(
-        systemURL: folder.appendingPathComponent("system.wav"),
-        microphoneURL: folder.appendingPathComponent("mic.wav")
-    )
+    let writer = try makeWriter(in: folder)
 
     writer.receive(try sampleBuffer(at: 100), of: .audio)
     writer.receive(try sampleBuffer(at: 100.25), of: .microphone)
@@ -138,10 +170,7 @@ private func targetFormat() throws -> AVAudioFormat {
 @Test func aTrackThatGotNothingIsNamedAndThePathsStillCome() throws {
     let folder = try temporaryFolder()
     defer { try? FileManager.default.removeItem(at: folder) }
-    let writer = try TrackWriter(
-        systemURL: folder.appendingPathComponent("system.wav"),
-        microphoneURL: folder.appendingPathComponent("mic.wav")
-    )
+    let writer = try makeWriter(in: folder)
 
     writer.receive(try sampleBuffer(at: 7), of: .audio)
     let outcome = writer.finish()
@@ -159,10 +188,7 @@ private func targetFormat() throws -> AVAudioFormat {
 @Test func silenceOnBothTracksIsNamedForTheSystemTrackFirst() throws {
     let folder = try temporaryFolder()
     defer { try? FileManager.default.removeItem(at: folder) }
-    let writer = try TrackWriter(
-        systemURL: folder.appendingPathComponent("system.wav"),
-        microphoneURL: folder.appendingPathComponent("mic.wav")
-    )
+    let writer = try makeWriter(in: folder)
 
     let outcome = writer.finish()
 
@@ -174,10 +200,7 @@ private func targetFormat() throws -> AVAudioFormat {
 @Test func aBufferArrivingAfterTheHandoffDoesNotTruncateTheRecording() throws {
     let folder = try temporaryFolder()
     defer { try? FileManager.default.removeItem(at: folder) }
-    let writer = try TrackWriter(
-        systemURL: folder.appendingPathComponent("system.wav"),
-        microphoneURL: folder.appendingPathComponent("mic.wav")
-    )
+    let writer = try makeWriter(in: folder)
 
     writer.receive(try sampleBuffer(at: 1), of: .audio)
     writer.receive(try sampleBuffer(at: 1), of: .microphone)
@@ -194,10 +217,7 @@ private func targetFormat() throws -> AVAudioFormat {
 @Test func bothFilesAreSixteenKilohertzMono() throws {
     let folder = try temporaryFolder()
     defer { try? FileManager.default.removeItem(at: folder) }
-    let writer = try TrackWriter(
-        systemURL: folder.appendingPathComponent("system.wav"),
-        microphoneURL: folder.appendingPathComponent("mic.wav")
-    )
+    let writer = try makeWriter(in: folder)
 
     writer.receive(try sampleBuffer(at: 0), of: .audio)
     writer.receive(try sampleBuffer(at: 0, sampleRate: 44100), of: .microphone)
@@ -211,8 +231,68 @@ private func targetFormat() throws -> AVAudioFormat {
 }
 
 @Test func stoppingWithoutAStartIsAnError() async {
-    let recorder = MeetingAudioRecorder(folder: FileManager.default.temporaryDirectory, excludedBundleIDs: [])
+    let recorder = MeetingAudioRecorder(
+        folder: FileManager.default.temporaryDirectory,
+        excludedBundleIDs: [],
+        onFailureWhileRecording: { _ in }
+    )
     await #expect(throws: MeetingCaptureError.self) {
         _ = try await recorder.stop()
     }
+}
+
+// MARK: - A stream that dies while the meeting is still going
+
+// The reason this exists at all: a stream that died on the fifth minute used to be visible only
+// in the outcome of `stop`, so for the remaining fifty-five minutes the application believed it
+// was recording an hour that was not being recorded.
+@Test func aStreamThatDiesWhileRecordingIsReportedWithoutWaitingForTheStop() throws {
+    let folder = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let log = FailureLog()
+    let writer = try makeWriter(in: folder) { log.append($0) }
+
+    writer.receive(try sampleBuffer(at: 1), of: .audio)
+    writer.streamDied(StreamDeath())
+    writer.queue.sync {}
+
+    #expect(log.messages == ["the capture stopped: display disconnected"])
+    // The same sentence the stop reports, so the panel and `meeting.json` cannot disagree about
+    // what went wrong.
+    #expect(writer.finish().failure == "the capture stopped: display disconnected")
+}
+
+// Nothing retries a dead stream, and ScreenCaptureKit is free to say so more than once. A second
+// report would be a second failure panel about the same thing.
+@Test func aDeadStreamIsReportedOnceHoweverOftenItIsAnnounced() throws {
+    let folder = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let log = FailureLog()
+    let writer = try makeWriter(in: folder) { log.append($0) }
+
+    writer.streamDied(StreamDeath())
+    writer.streamDied(StreamDeath())
+    writer.streamDied(StreamDeath())
+    writer.queue.sync {}
+
+    #expect(log.messages.count == 1)
+}
+
+// The meeting is over and the folder has already been handed on. A straggling failure would
+// raise a panel about a recording nobody is making — the same class of mistake as the late
+// buffer that used to truncate a finished file.
+@Test func aStreamFailureArrivingAfterTheHandoffIsNotReported() throws {
+    let folder = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let log = FailureLog()
+    let writer = try makeWriter(in: folder) { log.append($0) }
+
+    writer.receive(try sampleBuffer(at: 1), of: .audio)
+    writer.receive(try sampleBuffer(at: 1), of: .microphone)
+    _ = writer.finish()
+
+    writer.streamDied(StreamDeath())
+    writer.queue.sync {}
+
+    #expect(log.messages.isEmpty)
 }

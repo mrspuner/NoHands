@@ -75,6 +75,7 @@ public actor MeetingAudioRecorder {
 
     private let folder: URL
     private let excludedBundleIDs: [String]
+    private let onFailureWhileRecording: @Sendable (String) -> Void
     private var stream: SCStream?
     private var writer: TrackWriter?
 
@@ -87,9 +88,27 @@ public actor MeetingAudioRecorder {
     ///   valid file containing an hour of silence. Nothing downstream would notice either.
     ///   This list is for the things that must not end up in a meeting — a music player, a
     ///   noisy game — never for the application the meeting is happening in.
-    public init(folder: URL, excludedBundleIDs: [String]) {
+    ///
+    /// - Parameter onFailureWhileRecording: called at most once, with the reason, when the
+    ///   stream dies while the meeting is still being recorded.
+    ///
+    ///   Nothing here restarts the capture, so this is not a retry hook: it exists because a
+    ///   stream that died on the fifth minute is otherwise noticed only by `stop`, and the
+    ///   fifty-five minutes in between are spent recording nothing while the application says
+    ///   it is recording. The caller decides what a dead stream means for the meeting — this
+    ///   type only names it.
+    ///
+    ///   Called on the capture's own queue, not the caller's. Nothing after the recording has
+    ///   been handed over ever reaches it, so the caller does not have to guard against a
+    ///   failure about a meeting that is already filed.
+    public init(
+        folder: URL,
+        excludedBundleIDs: [String],
+        onFailureWhileRecording: @escaping @Sendable (String) -> Void
+    ) {
         self.folder = folder
         self.excludedBundleIDs = excludedBundleIDs
+        self.onFailureWhileRecording = onFailureWhileRecording
     }
 
     public func start() async throws {
@@ -139,7 +158,8 @@ public actor MeetingAudioRecorder {
 
         let writer = try TrackWriter(
             systemURL: folder.appendingPathComponent(Self.systemFileName),
-            microphoneURL: folder.appendingPathComponent(Self.microphoneFileName)
+            microphoneURL: folder.appendingPathComponent(Self.microphoneFileName),
+            onFailureWhileRecording: onFailureWhileRecording
         )
         // The stream holds its delegate weakly; `writer` stays alive because this actor keeps
         // it until `stop`.
@@ -391,7 +411,14 @@ final class TrackWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked 
     private var streamFailure: String?
     private var closed = false
 
-    init(systemURL: URL, microphoneURL: URL) throws {
+    private let onFailureWhileRecording: @Sendable (String) -> Void
+
+    init(
+        systemURL: URL,
+        microphoneURL: URL,
+        onFailureWhileRecording: @escaping @Sendable (String) -> Void
+    ) throws {
+        self.onFailureWhileRecording = onFailureWhileRecording
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
             sampleRate: MeetingAudioRecorder.sampleRate,
@@ -429,14 +456,28 @@ final class TrackWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked 
         }
     }
 
-    /// The stream dying mid-meeting is the one failure nobody asks for. Remembered so `stop`
-    /// can name it instead of handing back a truncated recording as a success.
     func stream(_ stream: SCStream, didStopWithError error: Error) {
+        streamDied(error)
+    }
+
+    /// The stream dying mid-meeting is the one failure nobody asks for. Remembered so `stop` can
+    /// name it instead of handing back a truncated recording as a success — and reported at once,
+    /// because until this fires the meeting goes on believing it is being recorded.
+    ///
+    /// Internal rather than private for the same reason as `receive`: the delegate method above
+    /// takes an `SCStream`, which a test process cannot build.
+    func streamDied(_ error: Error) {
         // `async`, never `sync`: this can arrive on the sample handler queue itself.
         queue.async { [self] in
-            if streamFailure == nil {
-                streamFailure = "the capture stopped: \(error.localizedDescription)"
-            }
+            // Both guards are the same serial queue's, so "once" and "not after the hand-off"
+            // need no lock of their own. Nothing restarts a dead stream, so a second report is
+            // the same failure said twice; and after `finish` the recording has already been
+            // handed over, so a straggler would name a meeting that is no longer happening —
+            // the same mistake a late buffer used to make with the file.
+            guard !closed, streamFailure == nil else { return }
+            let message = "the capture stopped: \(error.localizedDescription)"
+            streamFailure = message
+            onFailureWhileRecording(message)
         }
     }
 
