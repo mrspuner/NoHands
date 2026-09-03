@@ -56,7 +56,12 @@ private func recordingConfirmed() -> MeetingMachine {
 @Test func decliningDeletesTheDraftImmediately() {
     var subject = drafting()
     let effects = subject.handle(.declinePressed(at: start.addingTimeInterval(5)))
-    #expect(effects == [.stopCapture, .discardDraft, .blockDictation(false), .hide(after: 0)])
+    #expect(effects == [
+        .stopCapture(at: start.addingTimeInterval(5), reason: .manual),
+        .discardDraft,
+        .blockDictation(false),
+        .hide(after: 0),
+    ])
     #expect(subject.state == .declined(pid: 501))
 }
 
@@ -88,7 +93,12 @@ private func recordingConfirmed() -> MeetingMachine {
     var subject = drafting()
     _ = subject.handle(.confirmPressed(at: start.addingTimeInterval(5)))
     let effects = subject.handle(.stopPressed(at: start.addingTimeInterval(600)))
-    #expect(effects == [.stopCapture, .keepDraft, .blockDictation(false), .hide(after: 0)])
+    #expect(effects == [
+        .stopCapture(at: start.addingTimeInterval(600), reason: .manual),
+        .keepDraft,
+        .blockDictation(false),
+        .hide(after: 0),
+    ])
     #expect(subject.state == .idle)
 }
 
@@ -97,21 +107,25 @@ private func recordingConfirmed() -> MeetingMachine {
 @Test func stoppingADraftByHandClosesTheFilesAndAsksWhetherToKeepThem() {
     var subject = drafting()
     let effects = subject.handle(.stopPressed(at: start.addingTimeInterval(600)))
-    #expect(effects == [.stopCapture, .blockDictation(false), .show(.savePrompt(duration: 600))])
+    #expect(effects == [
+        .stopCapture(at: start.addingTimeInterval(600), reason: .manual),
+        .blockDictation(false),
+        .show(.savePrompt(duration: 600)),
+    ])
     #expect(subject.state == .savePending(since: start, stoppedAt: start.addingTimeInterval(600)))
 }
 
 @Test func savingFromTheSavePromptPromotesTheFolder() {
     var subject = drafting()
     _ = subject.handle(.stopPressed(at: start.addingTimeInterval(600)))
-    #expect(subject.handle(.keepPressed) == [.keepDraft, .hide(after: 0)])
+    #expect(subject.handle(.keepPressed(at: start.addingTimeInterval(605))) == [.keepDraft, .hide(after: 0)])
     #expect(subject.state == .idle)
 }
 
 @Test func deletingFromTheSavePromptRemovesTheFolder() {
     var subject = drafting()
     _ = subject.handle(.stopPressed(at: start.addingTimeInterval(600)))
-    #expect(subject.handle(.deletePressed) == [.discardDraft, .hide(after: 0)])
+    #expect(subject.handle(.deletePressed(at: start.addingTimeInterval(605))) == [.discardDraft, .hide(after: 0)])
     #expect(subject.state == .idle)
 }
 
@@ -159,9 +173,10 @@ private func recordingConfirmed() -> MeetingMachine {
 // captured — a forty-minute meeting must not be thrown away over a transient capture error.
 @Test func captureFailingWhileRecordingKeepsTheDraftFromRecording() {
     var subject = recordingConfirmed()
-    let effects = subject.handle(.captureFailedWhileRecording("поток захвата прервался"))
+    let died = start.addingTimeInterval(2400)
+    let effects = subject.handle(.captureFailedWhileRecording("поток захвата прервался", at: died))
     #expect(effects == [
-        .stopCapture,
+        .stopCapture(at: died, reason: .failure),
         .keepDraft,
         .blockDictation(false),
         .show(.failure("поток захвата прервался")),
@@ -175,9 +190,10 @@ private func recordingConfirmed() -> MeetingMachine {
     let quiet = start.addingTimeInterval(60)
     _ = subject.handle(.streamsChanged(app: telemost, input: false, output: false, at: quiet))
     _ = subject.handle(.tick(quiet.addingTimeInterval(61)))
-    let effects = subject.handle(.captureFailedWhileRecording("поток захвата прервался"))
+    let died = quiet.addingTimeInterval(70)
+    let effects = subject.handle(.captureFailedWhileRecording("поток захвата прервался", at: died))
     #expect(effects == [
-        .stopCapture,
+        .stopCapture(at: died, reason: .failure),
         .keepDraft,
         .blockDictation(false),
         .show(.failure("поток захвата прервался")),
@@ -211,7 +227,7 @@ private func recordingConfirmed() -> MeetingMachine {
     _ = subject.handle(.streamsChanged(app: telemost, input: false, output: false, at: quiet))
     let effects = subject.handle(.tick(quiet.addingTimeInterval(61)))
     #expect(effects == [.show(.stopPrompt(duration: 121))])
-    #expect(subject.state == .stopOffered(app: telemost, since: start, confirmed: true, offeredAt: quiet.addingTimeInterval(61)))
+    #expect(subject.state == .stopOffered(app: telemost, since: start, confirmed: true, offeredAt: quiet.addingTimeInterval(61), cause: .automatic))
 }
 
 // The meeting came back to life — the prompt is withdrawn, recording continues in the same file.
@@ -241,7 +257,12 @@ private func recordingConfirmed() -> MeetingMachine {
     let offered = quiet.addingTimeInterval(61)
     _ = subject.handle(.tick(offered))
     let effects = subject.handle(.tick(offered.addingTimeInterval(121)))
-    #expect(effects == [.stopCapture, .keepDraft, .blockDictation(false), .hide(after: 0)])
+    #expect(effects == [
+        .stopCapture(at: offered.addingTimeInterval(121), reason: .automatic),
+        .keepDraft,
+        .blockDictation(false),
+        .hide(after: 0),
+    ])
     #expect(subject.state == .idle)
 }
 
@@ -250,7 +271,13 @@ private func recordingConfirmed() -> MeetingMachine {
     let quiet = start.addingTimeInterval(60)
     _ = subject.handle(.streamsChanged(app: telemost, input: false, output: false, at: quiet))
     _ = subject.handle(.tick(quiet.addingTimeInterval(61)))
-    #expect(subject.handle(.keepPressed) == [.stopCapture, .keepDraft, .blockDictation(false), .hide(after: 0)])
+    let pressed = quiet.addingTimeInterval(70)
+    #expect(subject.handle(.keepPressed(at: pressed)) == [
+        .stopCapture(at: pressed, reason: .automatic),
+        .keepDraft,
+        .blockDictation(false),
+        .hide(after: 0),
+    ])
 }
 
 @Test func answeringTheStopPromptWithDeleteRemovesTheFolder() {
@@ -258,7 +285,13 @@ private func recordingConfirmed() -> MeetingMachine {
     let quiet = start.addingTimeInterval(60)
     _ = subject.handle(.streamsChanged(app: telemost, input: false, output: false, at: quiet))
     _ = subject.handle(.tick(quiet.addingTimeInterval(61)))
-    #expect(subject.handle(.deletePressed) == [.stopCapture, .discardDraft, .blockDictation(false), .hide(after: 0)])
+    let pressed = quiet.addingTimeInterval(70)
+    #expect(subject.handle(.deletePressed(at: pressed)) == [
+        .stopCapture(at: pressed, reason: .automatic),
+        .discardDraft,
+        .blockDictation(false),
+        .hide(after: 0),
+    ])
 }
 
 // The length limit stops at once rather than asking: it exists precisely so a forgotten
@@ -267,7 +300,7 @@ private func recordingConfirmed() -> MeetingMachine {
     var subject = recordingConfirmed()
     let effects = subject.handle(.tick(start.addingTimeInterval(14400)))
     #expect(effects == [
-        .stopCapture,
+        .stopCapture(at: start.addingTimeInterval(14400), reason: .lengthLimit),
         .keepDraft,
         .blockDictation(false),
         .show(.limitReached),
@@ -295,7 +328,10 @@ private func recordingConfirmed() -> MeetingMachine {
     let offered = quiet.addingTimeInterval(61)
     _ = subject.handle(.tick(offered))
     #expect(subject.handle(.tick(offered.addingTimeInterval(121))) == [
-        .stopCapture, .keepDraft, .blockDictation(false), .hide(after: 0),
+        .stopCapture(at: offered.addingTimeInterval(121), reason: .automatic),
+        .keepDraft,
+        .blockDictation(false),
+        .hide(after: 0),
     ])
 }
 
@@ -307,7 +343,7 @@ private func recordingConfirmed() -> MeetingMachine {
     _ = subject.handle(.streamsChanged(app: telemost, input: false, output: false, at: quiet))
     let offered = quiet.addingTimeInterval(61)
     _ = subject.handle(.tick(offered))
-    #expect(subject.state == .stopOffered(app: telemost, since: start, confirmed: false, offeredAt: offered))
+    #expect(subject.state == .stopOffered(app: telemost, since: start, confirmed: false, offeredAt: offered, cause: .automatic))
 
     let alive = offered.addingTimeInterval(9)
     let revival = subject.handle(.streamsChanged(app: telemost, input: true, output: true, at: alive))
@@ -316,7 +352,7 @@ private func recordingConfirmed() -> MeetingMachine {
 
     let stop = subject.handle(.stopPressed(at: alive.addingTimeInterval(10)))
     #expect(stop == [
-        .stopCapture,
+        .stopCapture(at: alive.addingTimeInterval(10), reason: .manual),
         .blockDictation(false),
         .show(.savePrompt(duration: 140)),
     ])
@@ -328,6 +364,96 @@ private func recordingConfirmed() -> MeetingMachine {
     _ = subject.handle(.streamsChanged(app: telemost, input: false, output: false, at: quiet))
     _ = subject.handle(.tick(quiet.addingTimeInterval(61)))
     let effects = subject.handle(.stopPressed(at: quiet.addingTimeInterval(70)))
-    #expect(effects == [.stopCapture, .keepDraft, .blockDictation(false), .hide(after: 0)])
+    #expect(effects == [
+        .stopCapture(at: quiet.addingTimeInterval(70), reason: .manual),
+        .keepDraft,
+        .blockDictation(false),
+        .hide(after: 0),
+    ])
     #expect(subject.state == .idle)
+}
+
+// MARK: - Why the recording stopped
+
+// The whole reason the field exists: a meeting whose application quit and a meeting that merely
+// went quiet finish through the same tick, and only this tells them apart afterwards. The cause
+// has to be carried from the offer to the stop, because the stop always arrives later.
+@Test func aMeetingWhoseApplicationQuitSaysSoWhenItStops() {
+    var subject = recordingConfirmed()
+    let exited = start.addingTimeInterval(600)
+    _ = subject.handle(.appExited(pid: 501, at: exited))
+    let stopped = exited.addingTimeInterval(121)
+    #expect(subject.handle(.tick(stopped)) == [
+        .stopCapture(at: stopped, reason: .appExited),
+        .keepDraft,
+        .blockDictation(false),
+        .hide(after: 0),
+    ])
+}
+
+@Test func aMeetingThatOnlyWentQuietStopsAutomatically() {
+    var subject = recordingConfirmed()
+    let quiet = start.addingTimeInterval(60)
+    _ = subject.handle(.streamsChanged(app: telemost, input: false, output: false, at: quiet))
+    let offered = quiet.addingTimeInterval(61)
+    _ = subject.handle(.tick(offered))
+    let stopped = offered.addingTimeInterval(121)
+    #expect(subject.handle(.tick(stopped)).first == .stopCapture(at: stopped, reason: .automatic))
+}
+
+// Answering the prompt does not change what ended the meeting: the application had already quit,
+// and the click only says what to do with what was recorded.
+@Test func answeringTheStopPromptKeepsTheCauseThatRaisedIt() {
+    var subject = recordingConfirmed()
+    _ = subject.handle(.appExited(pid: 501, at: start.addingTimeInterval(600)))
+    let pressed = start.addingTimeInterval(605)
+    #expect(subject.handle(.keepPressed(at: pressed)).first
+        == .stopCapture(at: pressed, reason: .appExited))
+}
+
+// Stopping by hand from the prompt is the owner's own decision, not the cause that raised it.
+@Test func stoppingByHandFromTheStopPromptIsManual() {
+    var subject = recordingConfirmed()
+    _ = subject.handle(.appExited(pid: 501, at: start.addingTimeInterval(600)))
+    let pressed = start.addingTimeInterval(605)
+    #expect(subject.handle(.stopPressed(at: pressed)).first
+        == .stopCapture(at: pressed, reason: .manual))
+}
+
+@Test func theLengthLimitNamesItselfInTheMetadata() {
+    var subject = recordingConfirmed()
+    let stopped = start.addingTimeInterval(14400)
+    #expect(subject.handle(.tick(stopped)).first == .stopCapture(at: stopped, reason: .lengthLimit))
+}
+
+@Test func stoppingARecordingByHandIsManual() {
+    var subject = recordingConfirmed()
+    let stopped = start.addingTimeInterval(600)
+    #expect(subject.handle(.stopPressed(at: stopped)).first
+        == .stopCapture(at: stopped, reason: .manual))
+}
+
+// MARK: - A refusal that ends
+
+// Refusing remembers one process until it lets the devices go — and a process that quit lets
+// them go without ever saying so, because it disappears from the list instead of reporting
+// empty streams. Without this the refusal would outlive the meeting it refused.
+@Test func aRefusedMeetingIsForgottenWhenItsApplicationQuits() {
+    var subject = drafting()
+    _ = subject.handle(.declinePressed(at: start.addingTimeInterval(5)))
+    #expect(subject.handle(.appExited(pid: 501, at: start.addingTimeInterval(10))) == [])
+    #expect(subject.state == .idle)
+}
+
+// The manual start is the owner's last resort for when detection let them down, so it may never
+// be the thing that stopped working: refusing one meeting must not disable the menu item.
+@Test func theManualStartWorksEvenAfterARefusal() {
+    var subject = drafting()
+    _ = subject.handle(.declinePressed(at: start.addingTimeInterval(5)))
+    let pressed = start.addingTimeInterval(10)
+    #expect(subject.handle(.startPressed(app: telemost, at: pressed)) == [
+        .startCapture(app: telemost, at: pressed),
+        .blockDictation(true),
+        .show(.recording(since: pressed, confirmed: true)),
+    ])
 }

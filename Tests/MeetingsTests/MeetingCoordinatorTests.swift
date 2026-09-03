@@ -292,6 +292,39 @@ private func orphanDraft(in queue: URL, startedAt: Date = noon, broken: Bool = f
     #expect(harness.shown.filter { if case .orphanFound = $0 { return true } else { return false } }.count == 2)
 }
 
+// A named reason is worth nothing if the next prompt pushes it off the panel a second later.
+// It gets the same dwell as any other failure, and the queue waits behind it.
+@Test @MainActor func aFailedOrphanReasonKeepsThePanelBeforeTheNextPromptAppears() throws {
+    let harness = try Harness()
+    let first = try orphanDraft(in: harness.queue, startedAt: noon)
+    _ = try orphanDraft(in: harness.queue, startedAt: noon.addingTimeInterval(3600))
+    // Block the hand-off of the first draft: the name it would be renamed to is already taken.
+    try FileManager.default.createDirectory(
+        at: harness.queue.appendingPathComponent(
+            String(first.lastPathComponent.dropFirst(MeetingFolder.draftPrefix.count))
+        ),
+        withIntermediateDirectories: false
+    )
+    harness.coordinator.adoptOrphans(at: noon)
+
+    harness.coordinator.answer(.keep, at: noon)
+    #expect(isFailure(harness.shown.last))
+
+    harness.coordinator.poll(now: noon.addingTimeInterval(1))
+    #expect(isFailure(harness.shown.last))
+
+    harness.coordinator.poll(now: noon.addingTimeInterval(MeetingMachine.failureDwell + 1))
+    guard case .orphanFound = harness.shown.last else {
+        Issue.record("expected the second draft to be offered, got \(harness.shown)")
+        return
+    }
+}
+
+private func isFailure(_ state: MeetingPanelState?) -> Bool {
+    if case .failure = state { return true }
+    return false
+}
+
 // MARK: - The folder of a live meeting
 
 @Test @MainActor func startingARecordingCreatesADraftThatAlreadyKnowsWhenItBegan() async throws {
@@ -381,6 +414,34 @@ private func orphanDraft(in queue: URL, startedAt: Date = noon, broken: Bool = f
     #expect(harness.captures[0].excluded == ["com.spotify.client"])
 }
 
+// Closing a real capture takes as long as it takes, and the main actor is free for all of it.
+// The machine is already at rest by then — after a limit, an auto-stop or a manual stop — while
+// the meeting application usually still holds the devices, so the very next tick starts the next
+// meeting. Anything the closing half reads out of the coordinator after that suspension belongs
+// to the wrong meeting: the finished file would get the new meeting's start time, and the new
+// meeting would lose its own.
+@Test @MainActor func aMeetingStartingWhileTheLastOneIsStillClosingDoesNotStealItsMetadata() async throws {
+    let harness = try Harness()
+    harness.coordinator.startPressed(at: noon)
+    await harness.coordinator.settle()
+
+    harness.coordinator.stopPressed(at: noon.addingTimeInterval(600))
+    // Let the closing task reach its suspension inside `capture.stop()` before the next meeting
+    // begins — the window this test is about.
+    for _ in 0..<4 { await Task.yield() }
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon.addingTimeInterval(601))
+    await harness.coordinator.settle()
+
+    let finished = try harness.metadata(of: harness.handedOver[0])
+    #expect(finished.startedAt == noon)
+    #expect(finished.stoppedAt == noon.addingTimeInterval(600))
+    #expect(finished.stopReason == .manual)
+    let running = try harness.metadata(of: harness.drafts[0])
+    #expect(running.startedAt == noon.addingTimeInterval(601))
+    #expect(running.stoppedAt == nil)
+}
+
 // MARK: - The two capture failures are not the same failure
 
 // Nothing was recorded, so there is nothing to protect: the draft goes.
@@ -411,6 +472,41 @@ private func orphanDraft(in queue: URL, startedAt: Date = noon, broken: Bool = f
 
     #expect(harness.handedOver.count == 1)
     #expect(harness.shown.contains(.failure("the capture stopped: display disconnected")))
+}
+
+// A failure shown while the save prompt is up would replace it, and the owner would be left with
+// a draft they can no longer answer for — the panel takes one state at a time. The reason waits
+// until the answer decides what the folder is for.
+@Test @MainActor func aFailedCaptureDoesNotEatTheSavePromptItWouldHaveReplaced() async throws {
+    let harness = try Harness()
+    harness.captureFailure = "no audio arrived on the microphone track"
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    harness.coordinator.stopPressed(at: noon.addingTimeInterval(600))
+    for _ in 0..<8 { await Task.yield() }
+
+    #expect(harness.shown.last == .savePrompt(duration: 600))
+
+    harness.coordinator.answer(.keep, at: noon.addingTimeInterval(605))
+    await harness.coordinator.settle()
+
+    #expect(harness.handedOver.count == 1)
+    #expect(harness.shown.last == .failure("no audio arrived on the microphone track"))
+}
+
+// The owner pressed "no". Telling them the capture had trouble with a folder that no longer
+// exists answers a question nobody asked, and does it with a five-second failure panel.
+@Test @MainActor func refusingAMeetingDoesNotComplainAboutTheCaptureAfterwards() async throws {
+    let harness = try Harness()
+    harness.captureFailure = "no audio arrived on the system track"
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+
+    harness.coordinator.answer(.decline, at: noon.addingTimeInterval(4))
+    await harness.coordinator.settle()
+
+    #expect(harness.entries.isEmpty)
+    #expect(!harness.shown.contains { if case .failure = $0 { return true } else { return false } })
 }
 
 // MARK: - A monitor that answers, a monitor that fails

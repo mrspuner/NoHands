@@ -51,9 +51,9 @@ public final class MeetingCoordinator {
     /// `start` would tear down a stream that does not exist yet and leave the one still being
     /// built with nobody to close it. `DictationCoordinator` documents the same hazard.
     private var captureTask: Task<Void, Never>?
-    /// The task that closes the capture and writes the final metadata. The hand-off waits for
-    /// it — see `keepDraft`.
-    private var closing: Task<Void, Never>?
+    /// The task that closes the capture and writes the final metadata, returning whatever went
+    /// wrong. The hand-off waits for it and is what shows the failure — see `keepDraft`.
+    private var closing: Task<String?, Never>?
     /// The task that renames or removes the folder once `closing` has finished.
     private var housekeeping: Task<Void, Never>?
 
@@ -65,6 +65,10 @@ public final class MeetingCoordinator {
     /// delete. Emptied one at a time: each answer resolves the first and offers the next.
     private var pendingOrphans: [URL] = []
     private var orphanOfferedAt: Date?
+    /// Nothing is offered before this moment. Set when answering one draft went wrong, so the
+    /// named reason gets the same dwell as any other failure instead of being pushed off the
+    /// panel by the next prompt a second later.
+    private var orphanQuietUntil: Date?
 
     private var monitorFailures = 0
     private var monitorFailureReported = false
@@ -151,8 +155,8 @@ public final class MeetingCoordinator {
         switch answer {
         case .confirm: apply(.confirmPressed(at: now))
         case .decline: apply(.declinePressed(at: now))
-        case .keep: apply(.keepPressed)
-        case .delete: apply(.deletePressed)
+        case .keep: apply(.keepPressed(at: now))
+        case .delete: apply(.deletePressed(at: now))
         }
     }
 
@@ -196,62 +200,16 @@ public final class MeetingCoordinator {
     // MARK: - Performing what the machine decided
 
     private func apply(_ event: MeetingMachine.Event) {
-        let effects = machine.handle(event)
-        let reason = Self.stopReason(for: event, effects: effects)
-        let stoppedAt = Self.stoppedAt(for: event) ?? Date()
-        for effect in effects {
+        for effect in machine.handle(event) {
             switch effect {
             case .startCapture(let app, let at): startCapture(app: app, at: at)
-            case .stopCapture: stopCapture(at: stoppedAt, reason: reason)
+            case .stopCapture(let at, let reason): stopCapture(at: at, reason: reason)
             case .keepDraft: keepDraft()
             case .discardDraft: discardDraft()
             case .show(let state): showPanel(state)
             case .hide(let after): hidePanel(after)
             case .blockDictation(let blocked): onDictationBlocked(blocked)
             }
-        }
-    }
-
-    /// Why the recording stopped, in the vocabulary `meeting.json` uses.
-    ///
-    /// Not a rule about behaviour — the machine has already decided whether to stop and what to
-    /// do with the folder. This only names the cause for the file, and the cause is a property
-    /// of the event that arrived. The length limit is read off the effects rather than the
-    /// event, because it and the ordinary auto-stop both arrive as a tick and only the machine
-    /// knows which one it just handled.
-    private static func stopReason(
-        for event: MeetingMachine.Event, effects: [MeetingMachine.Effect]
-    ) -> MeetingMetadata.StopReason {
-        if effects.contains(.show(.limitReached)) { return .lengthLimit }
-        switch event {
-        case .appExited:
-            return .appExited
-        case .captureFailedAtStart, .captureFailedWhileRecording:
-            return .failure
-        case .stopPressed, .keepPressed, .deletePressed, .declinePressed:
-            return .manual
-        // A tick that stops anything is the silence threshold running out. The rest never stop a
-        // recording at all; the value is unused on those paths.
-        case .tick, .streamsChanged, .startPressed, .confirmPressed:
-            return .automatic
-        }
-    }
-
-    /// When the recording ended, taken from the event that ended it rather than from the clock.
-    ///
-    /// `.startCapture` carries its own timestamp and `.stopCapture` does not, so this is the
-    /// other half of the same pair: reading `Date()` inside the effect would put the moment the
-    /// effect happened to run into the file instead of the moment the meeting ended — a tick
-    /// that crossed a threshold can be a second late, and the difference lands in the duration
-    /// phase 2б reads. `nil` for the events that carry no time; those never stop a live capture,
-    /// except a capture failure, which has no better moment than now.
-    private static func stoppedAt(for event: MeetingMachine.Event) -> Date? {
-        switch event {
-        case .streamsChanged(_, _, _, let at), .appExited(_, let at), .startPressed(_, let at),
-             .stopPressed(let at), .confirmPressed(let at), .declinePressed(let at), .tick(let at):
-            return at
-        case .keepPressed, .deletePressed, .captureFailedAtStart, .captureFailedWhileRecording:
-            return nil
         }
     }
 
@@ -304,37 +262,49 @@ public final class MeetingCoordinator {
         }
     }
 
+    /// Closes the capture and writes the finished `meeting.json`.
+    ///
+    /// Everything this recording needs is taken out of `self` and into the task **before** it is
+    /// created, and the task never reads any of it back. The suspension at `capture.stop()`
+    /// releases the main actor for as long as a real `SCStream` takes to close, and a single
+    /// tick in that window is enough to start the next meeting: the machine is already at rest
+    /// after a limit, an auto-stop or a manual stop, while the meeting application often still
+    /// holds the devices. Reading `self.metadata` after the suspension would then write the new
+    /// meeting's start time into the old meeting's file and blank the new one's.
+    ///
+    /// The failure, if any, is *returned* rather than shown. Whoever decides the folder's fate
+    /// shows it — see `keepDraft` — because a folder about to be thrown away needs no complaint,
+    /// and because a failure shown while `.savePrompt` is up would replace the prompt and leave
+    /// the owner with no way to answer it.
     private func stopCapture(at: Date, reason: MeetingMetadata.StopReason) {
         guard let capture, let folder else { return }
         self.capture = nil
         let pendingStart = captureTask
         captureTask = nil
         let metadataURL = folder.appendingPathComponent(MeetingMetadata.fileName)
-        metadata?.stoppedAt = at
-        metadata?.stopReason = reason
-        closing = Task { @MainActor [weak self] in
+        var finished = metadata
+        finished?.stoppedAt = at
+        finished?.stopReason = reason
+        metadata = nil
+        closing = Task { @MainActor in
             await pendingStart?.value
+            var record = finished
             var failure: String?
             do {
                 let outcome = try await capture.stop()
-                self?.metadata?.systemStartedAt = outcome.systemStartedAt
-                self?.metadata?.microphoneStartedAt = outcome.microphoneStartedAt
+                record?.systemStartedAt = outcome.systemStartedAt
+                record?.microphoneStartedAt = outcome.microphoneStartedAt
                 failure = outcome.failure
             } catch {
                 failure = Self.describe(error)
             }
             do {
-                try self?.metadata?.write(to: metadataURL)
+                try record?.write(to: metadataURL)
             } catch {
                 failure = failure ?? "Cannot write \(MeetingMetadata.fileName): " +
                     "\(error.localizedDescription)"
             }
-            self?.metadata = nil
-            // Spec §10: a capture that went wrong stops the recording and keeps the folder as it
-            // is, with the reason named. The machine has already decided the folder's fate, so
-            // all that is left is to say what happened — and saying nothing is how an hour of
-            // silence would pass for a meeting.
-            if let failure { self?.report(failure) }
+            return failure
         }
     }
 
@@ -348,14 +318,20 @@ public final class MeetingCoordinator {
             // folder still being written is never picked up as finished. Waiting for the task
             // that closes the capture and rewrites the metadata is the whole guarantee; a sleep
             // in its place would only make the race rarer and harder to see.
-            await closing?.value
+            var failures: [String] = []
+            if let stopFailure = await closing?.value ?? nil { failures.append(stopFailure) }
             do {
                 try MeetingFolder.promote(folder)
             } catch {
-                self?.report(
+                failures.append(
                     "Cannot hand over \(folder.lastPathComponent): \(error.localizedDescription)"
                 )
             }
+            // Spec §10: a capture that went wrong stops the recording and keeps the folder as it
+            // is, with the reason named. The machine has already decided the folder's fate, so
+            // all that is left is to say what happened — and saying nothing is how an hour of
+            // silence would pass for a meeting.
+            if !failures.isEmpty { self?.report(failures.joined(separator: "; ")) }
         }
     }
 
@@ -373,7 +349,11 @@ public final class MeetingCoordinator {
         housekeeping = Task { @MainActor [weak self] in
             // Same wait as the hand-off, for the opposite reason: removing a folder the capture
             // is still writing into would let the next buffer recreate what was just deleted.
-            await closing?.value
+            //
+            // Whatever the capture had to complain about is dropped on purpose. The owner
+            // pressed "no"; telling them the stream had trouble writing a folder that no longer
+            // exists answers a question nobody asked.
+            _ = await closing?.value
             do {
                 try FileManager.default.removeItem(at: folder)
             } catch {
@@ -420,6 +400,10 @@ public final class MeetingCoordinator {
             guard now.timeIntervalSince(offeredAt) >= config.autoStopSeconds else { return }
             keepOrphan(now: now)
             return
+        }
+        if let quietUntil = orphanQuietUntil {
+            guard now >= quietUntil else { return }
+            orphanQuietUntil = nil
         }
         guard let draft = pendingOrphans.first else { return }
         orphanOfferedAt = now
@@ -471,9 +455,10 @@ public final class MeetingCoordinator {
     private func finishOrphan(now: Date, failure: String?) {
         orphanOfferedAt = nil
         if let failure {
-            // The named reason keeps the panel. Anything still pending waits for the next launch
-            // rather than replacing a message the owner has not read yet.
+            // The named reason keeps the panel for its dwell, and the next prompt waits behind
+            // it. A reason the owner has one second to read is a reason nobody reads.
             report(failure)
+            orphanQuietUntil = now.addingTimeInterval(MeetingMachine.failureDwell)
             return
         }
         if pendingOrphans.isEmpty {
@@ -525,7 +510,7 @@ public final class MeetingCoordinator {
     /// looking before the coordinator got there.
     func settle() async {
         await captureTask?.value
-        await closing?.value
+        _ = await closing?.value
         await housekeeping?.value
     }
 }
