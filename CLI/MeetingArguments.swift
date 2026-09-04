@@ -8,7 +8,7 @@ struct MeetingArguments {
         case levels
     }
 
-    enum ParseError: Error {
+    enum ParseError: Error, Equatable {
         case message(String)
     }
 

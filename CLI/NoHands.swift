@@ -1,7 +1,6 @@
 import Core
 import Dictation
 import Foundation
-import Meetings
 
 let usage = """
 nohands — инструмент прогонов фазы 0

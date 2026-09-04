@@ -8,11 +8,26 @@ func runMeetingProcess(_ folder: URL) async throws {
     let config = try MeetingsConfig.loadOrCreate()
     let language = (try? DictationConfig.loadOrCreate())?.language
 
+    // Checked before anything is deleted, and the order is the point. A folder whose tracks are
+    // already compressed cannot be re-run at all — the pipeline reads the raw WAVs and they are
+    // gone — so deleting its `processed.json` first would leave a finished meeting permanently
+    // marked failed, skipped by rotation for ever, and repairable only by editing files by hand.
+    // That is the same shape the queue's own `.processed` guard exists to prevent, and this
+    // command routes around that guard on purpose.
+    let fileManager = FileManager.default
+    let hasRawTrack = [MeetingAudioRecorder.systemFileName, MeetingAudioRecorder.microphoneFileName]
+        .contains { fileManager.fileExists(atPath: folder.appendingPathComponent($0).path) }
+    guard hasRawTrack else {
+        fail(
+            "Папку нельзя прогнать заново: сырых дорожек в ней нет. Если они уже сжаты, читать "
+                + "их конвейер пока не умеет — расшифровка идёт только по WAV. Ничего не изменено."
+        )
+    }
     // A processed folder is re-run, not skipped: the command exists precisely for repeated runs
     // while tuning the threshold.
     try? MeetingErrorFile.remove(in: folder)
     let record = folder.appendingPathComponent(ProcessedRecord.fileName)
-    try? FileManager.default.removeItem(at: record)
+    try? fileManager.removeItem(at: record)
 
     let queue = MeetingQueue(
         queue: folder.deletingLastPathComponent(),
