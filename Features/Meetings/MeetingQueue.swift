@@ -40,8 +40,23 @@ public actor MeetingQueue {
 
     private let queue: URL
     private let archive: URL
-    private let config: MeetingsConfig
-    private let makeTranscriber: @Sendable () async throws -> any TimedTranscriber
+    /// Reconfigured in place by `update(config:makeTranscriber:)` — the actor itself is never
+    /// torn down and rebuilt, which is why this and `makeTranscriber` below are `var`.
+    ///
+    /// The alternative looked harmless at first: throw the actor away on every settings reload
+    /// and build a fresh one, exactly like `MeetingCoordinator` does. It is not. «Перечитать
+    /// конфиг» is the single reload path for every setting in the application, and a backlog
+    /// drain can run for hours — the design document puts 40–65 hours of meetings a month at
+    /// roughly ten-to-one processing. A reload landing anywhere in that window would start a
+    /// second actor pointed at the same queue directory, and `Failure.partiallyCompressed` does
+    /// not catch it: that guard only fires when a *fresh* `process()` finds a pre-existing mixed
+    /// state, and each actor's own compress-then-delete pass is internally consistent on its
+    /// own. The second actor's `removeItem` simply gets "no such file" for a track the first one
+    /// already deleted — an ordinary error, filed as `error.txt` over a meeting that in fact
+    /// succeeded — and because folder state reads the error file before the processed record,
+    /// that meeting is retried forever afterwards, reporting `alreadyCompressed`.
+    private var config: MeetingsConfig
+    private var makeTranscriber: @Sendable () async throws -> any TimedTranscriber
     private let measureLevel: @Sendable (URL, TimeInterval, TimeInterval) throws -> Float
     private let compress: @Sendable (URL, URL, Int) async throws -> Void
     private let report: @Sendable (Outcome) -> Void
@@ -78,6 +93,18 @@ public actor MeetingQueue {
     public func enqueue(_ folder: URL) async {
         pending.append(folder)
         await drain()
+    }
+
+    /// Applies a settings reload without rebuilding the actor — see `config` for why a rebuild
+    /// is unsafe here. Safe to call at any time, including while a drain is in progress:
+    /// `process` reads `config` once at its own start, so a folder already being worked on keeps
+    /// the settings it began with, and only the next one picks up whatever this call left behind.
+    public func update(
+        config: MeetingsConfig,
+        makeTranscriber: @escaping @Sendable () async throws -> any TimedTranscriber
+    ) {
+        self.config = config
+        self.makeTranscriber = makeTranscriber
     }
 
     private func drain() async {
@@ -157,6 +184,11 @@ public actor MeetingQueue {
 
     /// - Returns: the meeting's duration in seconds.
     private func process(_ folder: URL, startedProcessingAt: Date) async throws -> TimeInterval {
+        // Snapshotted once, before any suspension point below. `update(config:makeTranscriber:)`
+        // can land on any of the awaits further down, and a folder cut into phrases with one gap
+        // value and then gated by a different microphone threshold would be a defect nobody could
+        // reproduce from outside this actor.
+        let config = self.config
         let fileManager = FileManager.default
         let metadata = try MeetingMetadata.read(
             from: folder.appendingPathComponent(MeetingMetadata.fileName)
