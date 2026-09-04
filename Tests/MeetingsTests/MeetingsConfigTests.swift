@@ -111,9 +111,10 @@ import Testing
 
 @Test func pipelineKeysHaveDefaults() throws {
     let config = try MeetingsConfig.decode(Data("{}".utf8))
-    #expect(config.phraseGapSeconds == 1.0)
+    #expect(config.phraseGapSeconds == 0.5)
     #expect(config.maxPhraseSeconds == 40)
-    #expect(config.micThresholdDBFS == -30)
+    // Measured on the live meeting of 2026-09-04, not a placeholder any more — see the constant.
+    #expect(config.micThresholdDBFS == -40)
     #expect(config.audioRetentionDays == 7)
     #expect(config.aacBitrate == 32000)
 }

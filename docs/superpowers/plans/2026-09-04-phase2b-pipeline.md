@@ -2679,7 +2679,7 @@ struct MeetingArguments {
         case levels
     }
 
-    enum ParseError: Error {
+    enum ParseError: Error, Equatable {
         case message(String)
     }
 
@@ -2712,11 +2712,26 @@ func runMeetingProcess(_ folder: URL) async throws {
     let config = try MeetingsConfig.loadOrCreate()
     let language = (try? DictationConfig.loadOrCreate())?.language
 
+    // Checked before anything is deleted, and the order is the point. A folder whose tracks are
+    // already compressed cannot be re-run at all — the pipeline reads the raw WAVs and they are
+    // gone — so deleting its `processed.json` first would leave a finished meeting permanently
+    // marked failed, skipped by rotation for ever, and repairable only by editing files by hand.
+    // That is the same shape the queue's own `.processed` guard exists to prevent, and this
+    // command routes around that guard on purpose.
+    let fileManager = FileManager.default
+    let hasRawTrack = [MeetingAudioRecorder.systemFileName, MeetingAudioRecorder.microphoneFileName]
+        .contains { fileManager.fileExists(atPath: folder.appendingPathComponent($0).path) }
+    guard hasRawTrack else {
+        fail(
+            "Папку нельзя прогнать заново: сырых дорожек в ней нет. Если они уже сжаты, читать "
+                + "их конвейер пока не умеет — расшифровка идёт только по WAV. Ничего не изменено."
+        )
+    }
     // A processed folder is re-run, not skipped: the command exists precisely for repeated runs
     // while tuning the threshold.
     try? MeetingErrorFile.remove(in: folder)
     let record = folder.appendingPathComponent(ProcessedRecord.fileName)
-    try? FileManager.default.removeItem(at: record)
+    try? fileManager.removeItem(at: record)
 
     let queue = MeetingQueue(
         queue: folder.deletingLastPathComponent(),
@@ -2768,6 +2783,9 @@ func runMeetingLevels(_ folder: URL) async throws {
     }
 }
 ```
+
+`CLI/NoHands.swift` не импортирует `Meetings`: типы этого модуля упоминают только два новых
+файла, а точка входа знает лишь про локальные для таргета `MeetingArguments` и две функции.
 
 В `CLI/NoHands.swift` дописать в `usage`:
 
@@ -2856,6 +2874,14 @@ cat ~/Meetings/2026-09-04-1053-telemost.md
 Если замер сдвинул порог — поменять дефолт в `MeetingsConfig.default` и заменить комментарий «провизорное значение» на то, чем оно стало и по какому материалу.
 
 Дописать в `docs/DECISIONS.md` запись с датой прогона: какой порог получился и почему, сколько заняла обработка против длины встречи, каким оказалось расхождение дорожек на длинной записи, и всё, что пошло не так, — тем же тоном, что записи фазы 2а.
+
+**Отдельной записью — открытый вопрос, найденный ревью команд CLI.** Аудио держится неделю ради
+того, чтобы плохую расшифровку можно было переразобрать: так сказано в решении от 2026-09-01, и
+это единственное обоснование недельного окна. Но конвейер читает только WAV, а WAV удаляются сразу
+после сжатия — значит переразобрать из сохранённого нельзя ничем, и обоснование окна не выполняется.
+Записать это как незакрытый вопрос со ссылкой на решение 2026-09-01: либо конвейер учится читать
+AAC, либо окно нужно объяснить иначе. Не чинить в этой фазе — это меняет состояния очереди, а
+умеет ли Parakeet читать AAC, никто не проверял.
 
 - [ ] **Step 5: Коммит и пуш**
 

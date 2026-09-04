@@ -41,8 +41,11 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
     /// Hard ceiling on one utterance. Without it a ten-minute monologue with no pause long
     /// enough becomes one unreadable line.
     public var maxPhraseSeconds: Double
-    /// Below this, an utterance on the microphone track is treated as the room rather than as
-    /// the owner. Provisional until measured — see the plan's last task.
+    /// Below this, an utterance on the microphone track is treated as something other than the
+    /// owner speaking. On the first meeting measured, that turned out to be the interlocutor's
+    /// own voice leaking onto the microphone track — the design had assumed headphones would keep
+    /// it out and they did not — running 23 dB below the owner's speech, which is the gap that
+    /// makes a level gate work here at all.
     public var micThresholdDBFS: Double
     /// How long compressed audio survives after the meeting started.
     ///
@@ -78,12 +81,19 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         autoStopSeconds: 120,
         startPromptSeconds: 30,
         maxMeetingSeconds: 14400,
-        phraseGapSeconds: 1.0,
+        // Measured on the live meeting of 2026-09-04, like the threshold below. At one second the
+        // owner's speech and the interlocutor's voice leaking onto the same track merged into
+        // single utterances loud enough to pass the gate whole, and the transcript then put the
+        // other person's words under the owner's name three separate times. Half a second
+        // separated all three. The cost is an occasional cut mid-sentence, which is cosmetic
+        // against saying someone said something they did not.
+        phraseGapSeconds: 0.5,
         maxPhraseSeconds: 40,
-        // A provisional value, set just so the pipeline builds. Speech at the first live meeting
-        // hit three quarters of the scale — around -2.5 dBFS — while the room across the table
-        // was reliably quieter. The real value is set by measuring with `nohands meeting levels`.
-        micThresholdDBFS: -30,
+        // Measured on the live meeting of 2026-09-04, not guessed. Own speech on the microphone
+        // track ran from -15.1 to -26.3 dBFS; the interlocutor's voice leaking onto that same
+        // track ran from -49.3 to -53.1. This sits in the middle of that 23 dB gap — 14 dB of
+        // room below the quietest speech measured, 9 dB above the loudest leak.
+        micThresholdDBFS: -40,
         audioRetentionDays: 7,
         aacBitrate: 32000
     )
