@@ -351,7 +351,7 @@ private func orphanDraft(in queue: URL, startedAt: Date = noon, broken: Bool = f
     harness.coordinator.poll(now: noon.addingTimeInterval(1))
     #expect(isFailure(harness.shown.last))
 
-    harness.coordinator.poll(now: noon.addingTimeInterval(MeetingMachine.failureDwell + 1))
+    harness.coordinator.poll(now: noon.addingTimeInterval(MeetingMachine.noticeDwell + 1))
     guard case .orphanFound = harness.shown.last else {
         Issue.record("expected the second draft to be offered, got \(harness.shown)")
         return
@@ -754,7 +754,7 @@ private let zoom = AudioProcessMonitor.State(
     #expect(isFailure(harness.shown.last))
     // A prompt the machine ignores is worse than no prompt: it takes the mouse and never leaves.
     #expect(harness.shown.last?.acceptsClicks == false)
-    #expect(harness.hidden.last == MeetingMachine.failureDwell)
+    #expect(harness.hidden.last == MeetingMachine.noticeDwell)
     #expect(harness.coordinator.activity == .ready)
     #expect(harness.coordinator.canBeRebuilt)
 }

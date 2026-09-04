@@ -164,6 +164,10 @@ private struct MeetingContent: View {
             notice("Достигнут предел длительности, запись сохранена", failed: false)
         case .failure(let message):
             notice(message, failed: true)
+        case .saved(let duration):
+            notice("Запись сохранена, \(Self.length(duration))", failed: false)
+        case .deleted:
+            notice("Запись удалена", failed: false)
         }
     }
 

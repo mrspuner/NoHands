@@ -583,7 +583,7 @@ public final class MeetingCoordinator {
             // The named reason keeps the panel for its dwell, and the next prompt waits behind
             // it. A reason the owner has one second to read is a reason nobody reads.
             report(failure)
-            orphanQuietUntil = now.addingTimeInterval(MeetingMachine.failureDwell)
+            orphanQuietUntil = now.addingTimeInterval(MeetingMachine.noticeDwell)
             return
         }
         if pendingOrphans.isEmpty {
@@ -623,7 +623,7 @@ public final class MeetingCoordinator {
 
     private func report(_ message: String) {
         showPanel(.failure(message))
-        hidePanel(MeetingMachine.failureDwell)
+        hidePanel(MeetingMachine.noticeDwell)
     }
 
     private static func describe(_ error: Error) -> String {

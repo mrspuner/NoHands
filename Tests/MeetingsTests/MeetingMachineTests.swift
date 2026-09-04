@@ -67,7 +67,8 @@ private func recordingConfirmed() -> MeetingMachine {
         .stopCapture(at: start.addingTimeInterval(5), reason: .manual),
         .discardDraft,
         .blockDictation(false),
-        .hide(after: 0),
+        .show(.deleted),
+        .hide(after: 5),
     ])
     #expect(subject.state == .declined(pid: 501))
 }
@@ -104,7 +105,8 @@ private func recordingConfirmed() -> MeetingMachine {
         .stopCapture(at: start.addingTimeInterval(600), reason: .manual),
         .keepDraft,
         .blockDictation(false),
-        .hide(after: 0),
+        .show(.saved(duration: 600)),
+        .hide(after: 5),
     ])
     // Not `.idle`: the application is still holding the devices, and coming to rest here would
     // let the next poll start the same meeting over. See "The five doors into a refusal".
@@ -129,14 +131,18 @@ private func recordingConfirmed() -> MeetingMachine {
 @Test func savingFromTheSavePromptPromotesTheFolder() {
     var subject = drafting()
     _ = subject.handle(.stopPressed(at: start.addingTimeInterval(600)))
-    #expect(subject.handle(.keepPressed(at: start.addingTimeInterval(605))) == [.keepDraft, .hide(after: 0)])
+    #expect(subject.handle(.keepPressed(at: start.addingTimeInterval(605))) == [
+        .keepDraft, .show(.saved(duration: 600)), .hide(after: 5),
+    ])
     #expect(subject.state == .declined(pid: 501))
 }
 
 @Test func deletingFromTheSavePromptRemovesTheFolder() {
     var subject = drafting()
     _ = subject.handle(.stopPressed(at: start.addingTimeInterval(600)))
-    #expect(subject.handle(.deletePressed(at: start.addingTimeInterval(605))) == [.discardDraft, .hide(after: 0)])
+    #expect(subject.handle(.deletePressed(at: start.addingTimeInterval(605))) == [
+        .discardDraft, .show(.deleted), .hide(after: 5),
+    ])
     #expect(subject.state == .declined(pid: 501))
 }
 
@@ -149,7 +155,9 @@ private func recordingConfirmed() -> MeetingMachine {
     _ = subject.handle(.stopPressed(at: stopped))
 
     #expect(subject.handle(.tick(stopped.addingTimeInterval(119))) == [])
-    #expect(subject.handle(.tick(stopped.addingTimeInterval(120))) == [.keepDraft, .hide(after: 0)])
+    #expect(subject.handle(.tick(stopped.addingTimeInterval(120))) == [
+        .keepDraft, .show(.saved(duration: 600)), .hide(after: 5),
+    ])
     #expect(subject.state == .declined(pid: 501))
 }
 
@@ -303,7 +311,8 @@ private func recordingConfirmed() -> MeetingMachine {
         .stopCapture(at: offered.addingTimeInterval(121), reason: .automatic),
         .keepDraft,
         .blockDictation(false),
-        .hide(after: 0),
+        .show(.saved(duration: 242)),
+        .hide(after: 5),
     ])
     #expect(subject.state == .idle)
 }
@@ -318,7 +327,8 @@ private func recordingConfirmed() -> MeetingMachine {
         .stopCapture(at: pressed, reason: .automatic),
         .keepDraft,
         .blockDictation(false),
-        .hide(after: 0),
+        .show(.saved(duration: 130)),
+        .hide(after: 5),
     ])
 }
 
@@ -332,7 +342,8 @@ private func recordingConfirmed() -> MeetingMachine {
         .stopCapture(at: pressed, reason: .automatic),
         .discardDraft,
         .blockDictation(false),
-        .hide(after: 0),
+        .show(.deleted),
+        .hide(after: 5),
     ])
 }
 
@@ -376,7 +387,8 @@ private func recordingConfirmed() -> MeetingMachine {
         .stopCapture(at: offered.addingTimeInterval(121), reason: .automatic),
         .keepDraft,
         .blockDictation(false),
-        .hide(after: 0),
+        .show(.saved(duration: 242)),
+        .hide(after: 5),
     ])
 }
 
@@ -413,7 +425,8 @@ private func recordingConfirmed() -> MeetingMachine {
         .stopCapture(at: quiet.addingTimeInterval(70), reason: .manual),
         .keepDraft,
         .blockDictation(false),
-        .hide(after: 0),
+        .show(.saved(duration: 130)),
+        .hide(after: 5),
     ])
     #expect(subject.state == .declined(pid: 501))
 }
@@ -432,7 +445,8 @@ private func recordingConfirmed() -> MeetingMachine {
         .stopCapture(at: stopped, reason: .appExited),
         .keepDraft,
         .blockDictation(false),
-        .hide(after: 0),
+        .show(.saved(duration: 721)),
+        .hide(after: 5),
     ])
 }
 
@@ -713,7 +727,8 @@ private func stopOfferedBySilence() -> MeetingMachine {
         .stopCapture(at: pressed, reason: .automatic),
         .keepDraft,
         .blockDictation(false),
-        .hide(after: 0),
+        .show(.saved(duration: 210)),
+        .hide(after: 5),
     ])
 }
 

@@ -15,11 +15,17 @@ public enum MeetingPanelState: Equatable, Sendable {
     case orphanFound(duration: TimeInterval)
     case limitReached
     case failure(String)
+    /// A recording ended and was kept, on any of the paths that end one — not only the length
+    /// limit, which already names itself through `.limitReached` above.
+    case saved(duration: TimeInterval)
+    /// A recording ended and was thrown away — a "no" on the start prompt, or an explicit
+    /// "Удалить" on either of the save/stop prompts.
+    case deleted
 
     public var acceptsClicks: Bool {
         switch self {
         case .startPrompt, .stopPrompt, .savePrompt, .orphanFound: true
-        case .recording, .limitReached, .failure: false
+        case .recording, .limitReached, .failure, .saved, .deleted: false
         }
     }
 }

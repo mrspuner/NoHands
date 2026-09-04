@@ -165,9 +165,10 @@ public struct MeetingMachine: Sendable {
         case blockDictation(Bool)
     }
 
-    /// How long a named failure stays on the panel. Not configurable: nothing about it depends
-    /// on the owner's habits.
-    static let failureDwell: TimeInterval = 5
+    /// How long a notice stays on the panel before collapsing — a named failure, or a plain
+    /// outcome like "saved" or "deleted". Not configurable: nothing about it depends on the
+    /// owner's habits.
+    static let noticeDwell: TimeInterval = 5
 
     public let limits: Limits
     public private(set) var state: State = .idle
@@ -207,7 +208,8 @@ public struct MeetingMachine: Sendable {
                 .stopCapture(at: at, reason: .manual),
                 .discardDraft,
                 .blockDictation(false),
-                .hide(after: 0),
+                .show(.deleted),
+                .hide(after: Self.noticeDwell),
             ]
 
         case (.recording(let app, let since, let confirmed, _, _), .stopPressed(let at)):
@@ -217,7 +219,8 @@ public struct MeetingMachine: Sendable {
                     .stopCapture(at: at, reason: .manual),
                     .keepDraft,
                     .blockDictation(false),
-                    .hide(after: 0),
+                    .show(.saved(duration: at.timeIntervalSince(since))),
+                    .hide(after: Self.noticeDwell),
                 ]
             }
             state = .savePending(app: app, since: since, stoppedAt: at)
@@ -230,13 +233,17 @@ public struct MeetingMachine: Sendable {
         // Every way out of this state settles the process, because the door into it was a stop
         // by hand: what the owner then said about the folder does not change the fact that they
         // ended this meeting's recording themselves.
-        case (.savePending(let app, _, _), .keepPressed):
+        case (.savePending(let app, let since, let stoppedAt), .keepPressed):
             state = Self.settled(app)
-            return [.keepDraft, .hide(after: 0)]
+            return [
+                .keepDraft,
+                .show(.saved(duration: stoppedAt.timeIntervalSince(since))),
+                .hide(after: Self.noticeDwell),
+            ]
 
         case (.savePending(let app, _, _), .deletePressed):
             state = Self.settled(app)
-            return [.discardDraft, .hide(after: 0)]
+            return [.discardDraft, .show(.deleted), .hide(after: Self.noticeDwell)]
 
         // A refusal ends two ways and both need the process to be there to end it: empty streams,
         // or an exit — and the coordinator reports an exit once, when the process leaves the
@@ -254,10 +261,14 @@ public struct MeetingMachine: Sendable {
         // holding it would go on taking the mouse over the Dock for the rest of the day.
         // Deliberately the effects of `keepPressed` above, minus the ones that already ran when
         // this state was entered: the capture is closed and dictation is unblocked by now.
-        case (.savePending(let app, _, let stoppedAt), .tick(let now)):
+        case (.savePending(let app, let since, let stoppedAt), .tick(let now)):
             guard now.timeIntervalSince(stoppedAt) >= limits.autoStop else { return [] }
             state = Self.settled(app)
-            return [.keepDraft, .hide(after: 0)]
+            return [
+                .keepDraft,
+                .show(.saved(duration: stoppedAt.timeIntervalSince(since))),
+                .hide(after: Self.noticeDwell),
+            ]
 
         case (.declined(let pid), .streamsChanged(let app, let input, let output, _))
             where app.pid == pid:
@@ -279,7 +290,7 @@ public struct MeetingMachine: Sendable {
                 .discardDraft,
                 .blockDictation(false),
                 .show(.failure(message)),
-                .hide(after: Self.failureDwell),
+                .hide(after: Self.noticeDwell),
             ]
 
         // Settled rather than at rest, and for a reason the other doors do not have: whatever
@@ -295,7 +306,7 @@ public struct MeetingMachine: Sendable {
                 .keepDraft,
                 .blockDictation(false),
                 .show(.failure(message)),
-                .hide(after: Self.failureDwell),
+                .hide(after: Self.noticeDwell),
             ]
 
         case (.recording(let app, let since, let confirmed, let promptShown, let quiet), .streamsChanged(let changed, let input, let output, let at))
@@ -351,13 +362,13 @@ public struct MeetingMachine: Sendable {
                 return stopAtLimit(app: app, at: now)
             }
             guard now.timeIntervalSince(offeredAt) >= limits.autoStop else { return [] }
-            return keepAndFinish(at: now, reason: cause)
+            return keepAndFinish(since: since, at: now, reason: cause)
 
         // Answering keeps the cause that raised the prompt rather than calling itself manual:
         // the meeting was already over — the application had quit, or the room had gone quiet —
         // and the click only says what to do with what was recorded.
-        case (.stopOffered(_, _, _, _, let cause), .keepPressed(let at)):
-            return keepAndFinish(at: at, reason: cause)
+        case (.stopOffered(_, let since, _, _, let cause), .keepPressed(let at)):
+            return keepAndFinish(since: since, at: at, reason: cause)
 
         case (.stopOffered(let app, _, _, _, let cause), .deletePressed(let at)):
             state = Self.settled(app)
@@ -365,18 +376,20 @@ public struct MeetingMachine: Sendable {
                 .stopCapture(at: at, reason: cause),
                 .discardDraft,
                 .blockDictation(false),
-                .hide(after: 0),
+                .show(.deleted),
+                .hide(after: Self.noticeDwell),
             ]
 
         // Unlike the answer above, this is the owner reaching for the menu while the prompt is
         // up: their own decision, not the cause that raised it.
-        case (.stopOffered(let app, _, _, _, _), .stopPressed(let at)):
+        case (.stopOffered(let app, let since, _, _, _), .stopPressed(let at)):
             state = Self.settled(app)
             return [
                 .stopCapture(at: at, reason: .manual),
                 .keepDraft,
                 .blockDictation(false),
-                .hide(after: 0),
+                .show(.saved(duration: at.timeIntervalSince(since))),
+                .hide(after: Self.noticeDwell),
             ]
 
         default:
@@ -424,14 +437,15 @@ public struct MeetingMachine: Sendable {
     /// Silence saves. The draft flag stops mattering here: an unanswered stop prompt is not a
     /// refusal, and the only thing that deletes is an explicit "delete".
     private mutating func keepAndFinish(
-        at now: Date, reason: MeetingMetadata.StopReason
+        since: Date, at now: Date, reason: MeetingMetadata.StopReason
     ) -> [Effect] {
         state = .idle
         return [
             .stopCapture(at: now, reason: reason),
             .keepDraft,
             .blockDictation(false),
-            .hide(after: 0),
+            .show(.saved(duration: now.timeIntervalSince(since))),
+            .hide(after: Self.noticeDwell),
         ]
     }
 
@@ -448,7 +462,7 @@ public struct MeetingMachine: Sendable {
             .keepDraft,
             .blockDictation(false),
             .show(.limitReached),
-            .hide(after: Self.failureDwell),
+            .hide(after: Self.noticeDwell),
         ]
     }
 
