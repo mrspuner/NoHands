@@ -114,9 +114,17 @@ private final class Harness {
     var captureFailure: String?
     var coordinator: MeetingCoordinator!
 
-    init(config: MeetingsConfig = config) throws {
+    /// - Parameter queueIsAFile: puts an ordinary file where the queue directory belongs, which
+    ///   is how a folder that cannot be created is produced without filling the disk. Every
+    ///   `createDraft` then throws from inside the effect loop — the one synchronous failure
+    ///   path either coordinator has.
+    init(config: MeetingsConfig = config, queueIsAFile: Bool = false) throws {
         queue = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: queue, withIntermediateDirectories: true)
+        if queueIsAFile {
+            FileManager.default.createFile(atPath: queue.path, contents: Data())
+        } else {
+            try FileManager.default.createDirectory(at: queue, withIntermediateDirectories: true)
+        }
         coordinator = MeetingCoordinator(
             config: config,
             queue: queue,
@@ -474,6 +482,28 @@ private func isFailure(_ state: MeetingPanelState?) -> Bool {
         return false
     })
     #expect(harness.blocked == [true, false])
+}
+
+// The one failure that happens *inside* the loop performing the effects of another event: the
+// folder cannot be created, so `.startCapture` throws before the two effects behind it have run.
+// Feeding that failure straight back into the machine let those two be performed on top of the
+// recovery it had just finished — dictation was unblocked and then blocked again with nothing
+// left to unblock it, and the start prompt went back up over a machine that no longer answers
+// it, holding the panel open over the Dock until the application was restarted.
+@Test @MainActor func aFolderThatCannotBeCreatedLeavesNoBlockedDictationAndNoPrompt() async throws {
+    let harness = try Harness(queueIsAFile: true)
+    harness.processes = [telemost]
+
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+
+    #expect(harness.blocked.last == false)
+    #expect(isFailure(harness.shown.last))
+    // A prompt the machine ignores is worse than no prompt: it takes the mouse and never leaves.
+    #expect(harness.shown.last?.acceptsClicks == false)
+    #expect(harness.hidden.last == MeetingMachine.failureDwell)
+    #expect(harness.coordinator.activity == .ready)
+    #expect(harness.coordinator.canBeRebuilt)
 }
 
 // What the capture only discovers at the end — a track that received nothing at all — is named

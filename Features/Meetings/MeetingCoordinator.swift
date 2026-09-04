@@ -236,17 +236,42 @@ public final class MeetingCoordinator {
 
     // MARK: - Performing what the machine decided
 
+    /// Events raised while an earlier one is still having its effects performed.
+    ///
+    /// An effect can fail on the spot: `startCapture` throws when the meeting folder cannot be
+    /// created, and the machine has to hear about it. Handing it back the moment it happens ran
+    /// the failure's whole recovery from inside the loop, and the loop then went on performing
+    /// the rest of the *first* event's list over the top of it — blocking dictation again with
+    /// nothing left to unblock it, and putting back a prompt the machine no longer answers.
+    /// Queued instead: a failure is handled after the list it happened in, never inside it.
+    ///
+    /// `DictationCoordinator` splits the same two jobs, `apply` and `perform`, and never needed
+    /// this: every failure it can raise comes back through a task, so it is already a separate
+    /// turn on the main actor by the time it arrives. This is the only synchronous one.
+    private var pending: [MeetingMachine.Event] = []
+    private var applying = false
+
     private func apply(_ event: MeetingMachine.Event) {
-        for effect in machine.handle(event) {
-            switch effect {
-            case .startCapture(let app, let at): startCapture(app: app, at: at)
-            case .stopCapture(let at, let reason): stopCapture(at: at, reason: reason)
-            case .keepDraft: keepDraft()
-            case .discardDraft: discardDraft()
-            case .show(let state): showPanel(state)
-            case .hide(let after): hidePanel(after)
-            case .blockDictation(let blocked): onDictationBlocked(blocked)
+        pending.append(event)
+        guard !applying else { return }
+        applying = true
+        defer { applying = false }
+        while !pending.isEmpty {
+            for effect in machine.handle(pending.removeFirst()) {
+                perform(effect)
             }
+        }
+    }
+
+    private func perform(_ effect: MeetingMachine.Effect) {
+        switch effect {
+        case .startCapture(let app, let at): startCapture(app: app, at: at)
+        case .stopCapture(let at, let reason): stopCapture(at: at, reason: reason)
+        case .keepDraft: keepDraft()
+        case .discardDraft: discardDraft()
+        case .show(let state): showPanel(state)
+        case .hide(let after): hidePanel(after)
+        case .blockDictation(let blocked): onDictationBlocked(blocked)
         }
     }
 
