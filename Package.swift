@@ -3,10 +3,11 @@ import PackageDescription
 
 let package = Package(
     name: "NoHands",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v15)],
     products: [
         .library(name: "Core", targets: ["Core"]),
         .library(name: "Dictation", targets: ["Dictation"]),
+        .library(name: "Meetings", targets: ["Meetings"]),
         .executable(name: "nohands", targets: ["CLI"]),
         .executable(name: "NoHandsApp", targets: ["App"]),
     ],
@@ -26,6 +27,11 @@ let package = Package(
             dependencies: ["Core"],
             path: "Features/Dictation"
         ),
+        .target(
+            name: "Meetings",
+            dependencies: ["Core"],
+            path: "Features/Meetings"
+        ),
         .executableTarget(
             name: "CLI",
             dependencies: ["Core", "Dictation"],
@@ -33,7 +39,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "App",
-            dependencies: ["Core", "Dictation"],
+            dependencies: ["Core", "Dictation", "Meetings"],
             path: "App",
             // Info.plist belongs to the bundle the script assembles, not to the binary; without
             // this SwiftPM treats it as an unhandled resource and warns on every build.
@@ -48,6 +54,11 @@ let package = Package(
             name: "DictationTests",
             dependencies: ["Dictation"],
             path: "Tests/DictationTests"
+        ),
+        .testTarget(
+            name: "MeetingsTests",
+            dependencies: ["Meetings"],
+            path: "Tests/MeetingsTests"
         ),
         .testTarget(
             name: "CLITests",

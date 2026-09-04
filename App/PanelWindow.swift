@@ -1,22 +1,37 @@
 import AppKit
 import Dictation
+import Meetings
 import SwiftUI
 
-/// The floating strip above the Dock.
+/// The floating strip above the Dock. Serves both features — dictation and meetings — which is
+/// why it is not named after either.
 ///
 /// `.nonactivatingPanel` and refusing key status are not decoration: a panel that can become
 /// key steals the focus, and the dictated text lands in the panel instead of the field the
 /// owner was aiming at.
 @MainActor
-final class DictationPanel {
+final class PanelWindow {
     private final class Panel: NSPanel {
         override var canBecomeKey: Bool { false }
         override var canBecomeMain: Bool { false }
     }
 
+    /// A click into a window belonging to an application that is not frontmost is a "first
+    /// mouse" click, and AppKit hands those to the view only if it asks for them. This window
+    /// never becomes key by design, so every click on a prompt's buttons is one of those:
+    /// without this, the first click would be spent on nothing and the owner would have to
+    /// press twice.
+    private final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    }
+
     private let model = PanelModel()
     private let panel: Panel
     private var pendingHide: DispatchWorkItem?
+    /// Separate from `pendingHide`: the two features collapse on their own schedules, and one
+    /// timer would let a dictation ending cancel a meeting prompt's dwell, or the other way
+    /// round.
+    private var pendingMeetingHide: DispatchWorkItem?
 
     init() {
         panel = Panel(
@@ -35,7 +50,7 @@ final class DictationPanel {
         panel.hidesOnDeactivate = false
         panel.ignoresMouseEvents = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        panel.contentView = NSHostingView(rootView: PanelView(model: model))
+        panel.contentView = FirstMouseHostingView(rootView: PanelView(model: model))
 
         // Shown from launch and never ordered out again: the collapsed strip above the Dock is
         // how the owner knows the application is running at all. Nothing there means nothing is
@@ -53,6 +68,7 @@ final class DictationPanel {
         model.state = state
         position()
         panel.orderFrontRegardless()
+        updateAcceptsClicks()
         // AppKit caches a borderless transparent window's shadow from the backing store's alpha.
         // The content just changed shape (capsule to wide panel), so the cached shadow would keep
         // the old outline until something else forces a recompute.
@@ -66,9 +82,49 @@ final class DictationPanel {
             self?.model.state = nil
             self?.model.narrowbandHz = nil
             self?.panel.invalidateShadow()
+            self?.updateAcceptsClicks()
         }
         pendingHide = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    func show(meeting state: MeetingPanelState) {
+        pendingMeetingHide?.cancel()
+        pendingMeetingHide = nil
+        model.meeting = state
+        position()
+        panel.orderFrontRegardless()
+        updateAcceptsClicks()
+    }
+
+    func hideMeeting(after delay: TimeInterval) {
+        pendingMeetingHide?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.model.meeting = nil
+            // Goes with the recording it described, exactly as the dictation warning goes with
+            // its dictation: the next meeting reads the input device again and says its own.
+            self?.model.meetingNarrowbandHz = nil
+            self?.panel.invalidateShadow()
+            self?.updateAcceptsClicks()
+        }
+        pendingMeetingHide = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    func setMeetingAnswer(_ handler: @escaping (MeetingCoordinator.Answer) -> Void) {
+        model.onMeetingAnswer = handler
+    }
+
+    /// The panel is deaf to the mouse by default, and that is not a detail: a click it accepts
+    /// is a click the field the owner is dictating into does not get. A prompt is the one thing
+    /// here that needs the mouse, and it gets it for exactly as long as it is up — the rule for
+    /// which states those are lives in `MeetingPanelState.acceptsClicks`, where it is testable.
+    ///
+    /// Never while dictation is on top of it: the prompt is then not what is on screen, and a
+    /// window swallowing clicks over something the owner cannot even see is the worst of both.
+    private func updateAcceptsClicks() {
+        let accepts = model.state == nil && (model.meeting?.acceptsClicks ?? false)
+        panel.ignoresMouseEvents = !accepts
     }
 
     func setLevel(_ level: Float) {
@@ -82,6 +138,10 @@ final class DictationPanel {
 
     func setInputWarning(hz: Double?) {
         model.narrowbandHz = hz
+    }
+
+    func setMeetingInputWarning(hz: Double?) {
+        model.meetingNarrowbandHz = hz
     }
 
     /// Distance from the top of the Dock to the bottom of the strip. The content is

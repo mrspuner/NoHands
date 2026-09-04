@@ -80,6 +80,25 @@ public final class DictationCoordinator {
         self.machine = DictationMachine(limits: DictationMachine.Limits(config: config))
     }
 
+    /// Set by whoever owns the meeting recording, which is the one thing dictation must not run
+    /// alongside. A pass-through rather than a copy: the flag lives in the machine, where the
+    /// refusal is decided, and a second copy here would be a second version of the same truth.
+    public var isBlocked: Bool {
+        get { machine.isBlocked }
+        set { machine.isBlocked = newValue }
+    }
+
+    /// True from the moment fn goes down until the text has landed or the attempt has failed.
+    ///
+    /// The other direction of the same one-microphone rule, and read rather than pushed for the
+    /// same reason as `isBlocked`: spec §6 lets a dictation already under way finish before a
+    /// meeting starts recording, so whoever watches for meetings has to be able to ask. Every
+    /// state but `.idle` counts — recognition and cleanup still own the file the recording made,
+    /// and a meeting starting on top of them is the case §7 exists to prevent.
+    public var isDictating: Bool {
+        machine.state != .idle
+    }
+
     public func start() throws {
         let monitor = FnKeyMonitor { [weak self] kind in
             MainActor.assumeIsolated {
