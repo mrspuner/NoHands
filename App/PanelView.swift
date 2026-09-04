@@ -230,7 +230,13 @@ private struct MeetingContent: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(Surface(recording: false))
+        // The lit theme, not the resting one, and this is the only state besides a live
+        // dictation that gets it. A prompt is the one thing on this panel that needs an
+        // answer, it is up for between thirty seconds and two minutes, and it appears while
+        // the owner is looking at a meeting in full screen — grey and still, it was missed.
+        // The cost the theme carries elsewhere does not apply here: it animates for as long
+        // as the question stands, not for the hour the recording lasts.
+        .background(Surface(recording: true))
         .frame(maxWidth: 520)
     }
 
