@@ -85,11 +85,60 @@ public actor MeetingQueue {
         draining = true
         while !pending.isEmpty {
             let folder = pending.removeFirst()
+            // A folder that already carries `processed.json` is finished. Running it again would
+            // find its tracks compressed, write that failure over a perfectly good record, and —
+            // because the error file is read before the record — leave a finished meeting looking
+            // broken for good. Nothing to do here, and nothing to say either: a notice would
+            // announce a meeting the owner has already seen.
+            if case .processed = MeetingFolderState.of(folder) { continue }
             report(await run(folder))
         }
         // Nothing left to do: the model goes, and the resting footprint is what it was before.
         transcriber = nil
         draining = false
+    }
+
+    /// Everything in the queue that has not been through the pipeline: leftovers from a
+    /// previous run and folders a previous attempt failed on. Failures are retried at launch
+    /// rather than on a timer — the typical one either fixes itself by the next launch (the
+    /// model could not download) or never fixes itself (a broken file), and three quick
+    /// attempts on a broken file are three wasted minutes.
+    public func scanAll() async {
+        for folder in folders() {
+            switch MeetingFolderState.of(folder) {
+            case .waiting, .failed:
+                pending.append(folder)
+            case .recording, .processed:
+                continue
+            }
+        }
+        await drain()
+    }
+
+    /// Drops the compressed audio of meetings older than the retention window.
+    ///
+    /// Only folders that have actually been processed. Rotation exists to throw away a copy of
+    /// the audio, never a meeting: an untranscribed folder means the transcript does not exist
+    /// yet, and deleting it would destroy the only record. Folders carrying `error.txt` are
+    /// spared for the same reason, however old they are.
+    public func sweep(now: Date = Date()) async {
+        let window = TimeInterval(config.audioRetentionDays) * 86400
+        for folder in folders() {
+            guard case .processed = MeetingFolderState.of(folder) else { continue }
+            let metadataURL = folder.appendingPathComponent(MeetingMetadata.fileName)
+            guard let metadata = try? MeetingMetadata.read(from: metadataURL) else { continue }
+            guard now.timeIntervalSince(metadata.startedAt) > window else { continue }
+            try? FileManager.default.removeItem(at: folder)
+        }
+    }
+
+    private func folders() -> [URL] {
+        let contents = try? FileManager.default.contentsOfDirectory(
+            at: queue, includingPropertiesForKeys: [.isDirectoryKey], options: []
+        )
+        return (contents ?? [])
+            .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
     private func run(_ folder: URL) async -> Outcome {
