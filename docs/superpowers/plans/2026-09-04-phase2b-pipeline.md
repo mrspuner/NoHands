@@ -261,19 +261,19 @@ func timedTranscriptionOfALongFileHasGlobalTimestamps() async throws {
     let transcriber = try await ParakeetTranscriber.load(language: "ru")
     let words = try await transcriber.transcribeTimed(audio: url)
 
-    #expect(!words.isEmpty, "в записи не нашлось ни одного слова")
+    #expect(!words.isEmpty, "no words in the recording")
 
     // Куски у FluidAudio по тридцать секунд. Слово, начинающееся позже, доказывает, что времена
     // не сбрасываются на границе куска.
     let latest = words.map(\.start).max() ?? 0
-    #expect(latest > 30, "все слова уместились в первые 30 с — таймкоды похожи на локальные")
+    #expect(latest > 30, "every word fell inside the first 30 s — timestamps look chunk-local")
 
     let file = try AVAudioFile(forReading: url)
     let duration = Double(file.length) / file.processingFormat.sampleRate
-    #expect(latest <= duration + 1, "слово начинается позже конца файла")
+    #expect(latest <= duration + 1, "a word starts past the end of the file")
 
     for (previous, next) in zip(words, words.dropFirst()) {
-        #expect(previous.start <= next.start, "слова пришли не по порядку")
+        #expect(previous.start <= next.start, "words arrived out of order")
     }
 }
 ```
@@ -316,18 +316,51 @@ public actor ParakeetTranscriber: Transcriber, TimedTranscriber {
     /// into an error here would make every such meeting unprocessable. Both tracks coming back
     /// empty is a real failure, and it is caught one level up, where both are in hand.
     public func transcribeTimed(audio url: URL) async throws -> [TimedWord] {
+        try await decode(url) { TokenWordAssembler.words(from: $0.tokenTimings ?? []) }
+    }
+```
+
+Обе публичные функции различаются одной строкой — тем, что берут из результата, — поэтому всё
+остальное живёт в одном месте. Иначе новая ветка в разборе `ASRError` появлялась бы в двух
+копиях, и ничто не заставило бы их совпасть.
+
+```swift
+    /// The decode both public methods run, differing only in what they take from the result.
+    ///
+    /// Extracted rather than copied: the error mapping below is the part that will grow — a new
+    /// `ASRError` case, a new distinction worth making — and two copies of it would drift apart
+    /// silently, because nothing fails when only one of them learns something.
+    private func decode<T>(
+        _ url: URL,
+        extract: (ASRResult) throws -> T
+    ) async throws -> T {
         try TranscriberChecks.validateReadable(url)
 
+        // `AsrManager.transcribe(_:decoderState:language:)` reads and resamples the file itself
+        // through FluidAudio's own `AudioConverter` — the library's docs warn against hand-
+        // decoding audio, so this deliberately does not touch the file's bytes beyond the
+        // readability check above.
         var decoderState = TdtDecoderState.make(decoderLayers: decoderLayers)
         do {
             let result = try await manager.transcribe(url, decoderState: &decoderState, language: language)
-            return TokenWordAssembler.words(from: result.tokenTimings ?? [])
+            return try extract(result)
         } catch let error as ASRError {
             if case .invalidAudioData = error {
                 throw TranscriptionError.audioTooShort(try Self.duration(of: url))
             }
+            // Every other ASRError (not initialized, model load, processing, compilation,
+            // unsupported platform, encoder instantiation) is a broken local model, not a bad
+            // request — `modelUnavailable` is the case for that.
             throw TranscriptionError.modelUnavailable(error.localizedDescription)
         }
+    }
+```
+
+`transcribe(audio:)` переписывается на тот же вызов, сохраняя свою проверку на пустоту:
+
+```swift
+    public func transcribe(audio url: URL) async throws -> String {
+        try await decode(url) { try TranscriberChecks.nonEmpty($0.text) }
     }
 ```
 
@@ -1189,7 +1222,7 @@ private func makeToneFile(seconds: Double) throws -> URL {
 
     let sourceSize = try FileManager.default.attributesOfItem(atPath: source.path)[.size] as! Int
     let resultSize = try FileManager.default.attributesOfItem(atPath: destination.path)[.size] as! Int
-    #expect(resultSize < sourceSize / 2, "AAC 32 кбит/с должен быть кратно меньше WAV 16 бит")
+    #expect(resultSize < sourceSize / 2, "AAC at 32 kbit/s must be several times smaller than 16-bit WAV")
 
     let asset = AVURLAsset(url: destination)
     let duration = try await asset.load(.duration).seconds
