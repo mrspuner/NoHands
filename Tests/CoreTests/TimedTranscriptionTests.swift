@@ -8,9 +8,9 @@ private var fixtureURL: URL? {
     return URL(fileURLWithPath: path)
 }
 
-// Единственная проверка в проекте, которой нужны и модель, и настоящий длинный файл. Пропускается,
-// когда записи нет: она про то, чего не видно в чистых тестах — что таймкоды у длинного файла
-// сквозные, а не отсчитываются заново в каждом куске по тридцать секунд.
+// The only check in the project that needs both the model and a real long file. Skipped when
+// the recording is missing: it is about something invisible in clean unit tests — that a long
+// file's timestamps run continuously, rather than resetting at every thirty-second chunk.
 @Test(.enabled(if: fixtureURL != nil))
 func timedTranscriptionOfALongFileHasGlobalTimestamps() async throws {
     let url = try #require(fixtureURL)
@@ -19,8 +19,8 @@ func timedTranscriptionOfALongFileHasGlobalTimestamps() async throws {
 
     #expect(!words.isEmpty, "no words in the recording")
 
-    // Куски у FluidAudio по тридцать секунд. Слово, начинающееся позже, доказывает, что времена
-    // не сбрасываются на границе куска.
+    // FluidAudio's chunks are thirty seconds long. A word starting later proves that timestamps
+    // do not reset at the chunk boundary.
     let latest = words.map(\.start).max() ?? 0
     #expect(latest > 30, "every word fell inside the first 30 s — timestamps look chunk-local")
 

@@ -20,7 +20,7 @@ private func timing(_ token: String, _ start: Double, _ end: Double, _ confidenc
     #expect(words[1].end == 0.7)
 }
 
-// Первый токен обычно приходит без ведущего пробела: он открывает слово тем, что он первый.
+// The first token usually arrives without a leading space: it starts a word simply by being first.
 @Test func firstTokenWithoutSpaceStillStartsAWord() {
     let words = TokenWordAssembler.words(from: [
         timing("да", 1.0, 1.2),
@@ -29,8 +29,9 @@ private func timing(_ token: String, _ start: Double, _ end: Double, _ confidenc
     #expect(words.map(\.text) == ["да", "нет"])
 }
 
-// Маркер SentencePiece обрабатывается наравне с пробелом: `normalizedTimingToken` заменяет его
-// всегда, но у библиотеки обе формы проверяются, и полагаться на одну — лишний риск даром.
+// The SentencePiece marker is handled the same as a space: `normalizedTimingToken` always
+// replaces it, but the library's output shows both forms, and relying on just one would be
+// a needless risk.
 @Test func sentencePieceMarkerAlsoStartsAWord() {
     let words = TokenWordAssembler.words(from: [
         timing("\u{2581}один", 0.0, 0.3),
