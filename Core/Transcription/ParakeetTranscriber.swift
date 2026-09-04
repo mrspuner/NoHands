@@ -94,17 +94,12 @@ public actor ParakeetTranscriber: Transcriber, TimedTranscriber {
             return try extract(result)
         } catch let error as ASRError {
             if case .invalidAudioData = error {
-                throw TranscriptionError.audioTooShort(try Self.duration(of: url))
+                throw TranscriptionError.audioTooShort(try AudioDuration.seconds(of: url))
             }
             // Every other ASRError (not initialized, model load, processing, compilation,
             // unsupported platform, encoder instantiation) is a broken local model, not a bad
             // request — `modelUnavailable` is the case for that.
             throw TranscriptionError.modelUnavailable(error.localizedDescription)
         }
-    }
-
-    private static func duration(of url: URL) throws -> TimeInterval {
-        let file = try AVAudioFile(forReading: url)
-        return Double(file.length) / file.processingFormat.sampleRate
     }
 }

@@ -44,4 +44,17 @@ public enum AudioLevel {
         }
         return Float((sum / Double(count)).squareRoot())
     }
+
+    /// The same accumulation over float samples, which is what `AVAudioFile` hands back when it
+    /// is read through its processing format. Public because `PhraseLevel` reads meeting tracks
+    /// off disk; the `Int16` path above stays private to the real-time capture that owns it.
+    public static func rms(_ samples: UnsafePointer<Float>, count: Int) -> Float {
+        guard count > 0 else { return 0 }
+        var sum = 0.0
+        for index in 0..<count {
+            let value = Double(samples[index])
+            sum += value * value
+        }
+        return Float((sum / Double(count)).squareRoot())
+    }
 }
