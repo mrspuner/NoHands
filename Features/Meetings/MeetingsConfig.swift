@@ -47,7 +47,12 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
             TriggerApp(bundleID: "us.zoom.xos", slug: "zoom"),
         ],
         excludedApps: [],
-        silenceSeconds: 60,
+        // Zero, not a minute: the first live meeting showed the wait felt pointless. It is safe
+        // precisely because the prompt does not end anything by itself — the recording keeps
+        // running while it stands, devices coming back to life withdraws it without cutting the
+        // meeting in two, and only `autoStopSeconds` of silence *after* the prompt actually
+        // stops. The protection was always in those two rules, never in this delay.
+        silenceSeconds: 0,
         autoStopSeconds: 120,
         startPromptSeconds: 30,
         maxMeetingSeconds: 14400

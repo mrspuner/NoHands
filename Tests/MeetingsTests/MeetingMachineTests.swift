@@ -247,6 +247,22 @@ private func recordingConfirmed() -> MeetingMachine {
     #expect(subject.handle(.tick(quiet.addingTimeInterval(59))) == [])
 }
 
+// `MeetingsConfig.default.silenceSeconds` is 0: the prompt is meant to come up the moment both
+// devices are free, not a tick later. `MeetingCoordinator.poll` delivers the freed-devices event
+// and the following tick within the same call, both stamped with the same `now` — this is the
+// predicate at the boundary, `>=` against a quiet-since equal to `now` itself, and it has to hold
+// in that same poll rather than waiting for the clock to move.
+@Test func aZeroThresholdOffersToStopOnTheSameTickTheDevicesGoFree() {
+    var subject = MeetingMachine(limits: MeetingMachine.Limits(
+        silence: 0, autoStop: 120, startPrompt: 30, maxMeeting: 14400
+    ))
+    _ = subject.handle(.streamsChanged(app: telemost, input: true, output: true, at: start))
+    _ = subject.handle(.confirmPressed(at: start.addingTimeInterval(5)))
+    let quiet = start.addingTimeInterval(60)
+    #expect(subject.handle(.streamsChanged(app: telemost, input: false, output: false, at: quiet)) == [])
+    #expect(subject.handle(.tick(quiet)) == [.show(.stopPrompt(duration: 60))])
+}
+
 @Test func silenceLongerThanTheThresholdOffersToStopWhileStillRecording() {
     var subject = recordingConfirmed()
     let quiet = start.addingTimeInterval(60)
