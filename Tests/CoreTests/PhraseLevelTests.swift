@@ -74,7 +74,9 @@ private func makeTwoHalvesFile() throws -> URL {
 @Test func gateKeepsLoudUtterancesAndDropsQuietOnes() throws {
     let loud = Utterance(speaker: .me, start: 0, end: 1, text: "своя речь")
     let quiet = Utterance(speaker: .me, start: 2, end: 3, text: "комната")
-    let kept = try PhraseLevel.passing([loud, quiet], thresholdDBFS: -30) { utterance in
+    // No `try`: `passing` only rethrows, and this closure does not throw. The queue's call
+    // site does need one, because measuring a real file can fail.
+    let kept = PhraseLevel.passing([loud, quiet], thresholdDBFS: -30) { utterance in
         utterance.start == 0 ? -6 : -45
     }
     #expect(kept.map(\.text) == ["своя речь"])
@@ -84,6 +86,6 @@ private func makeTwoHalvesFile() throws -> URL {
 // used to tune the threshold.
 @Test func gateKeepsAnUtteranceWhole() throws {
     let utterance = Utterance(speaker: .me, start: 0, end: 5, text: "длинная своя реплика целиком")
-    let kept = try PhraseLevel.passing([utterance], thresholdDBFS: -30) { _ in -10 }
+    let kept = PhraseLevel.passing([utterance], thresholdDBFS: -30) { _ in -10 }
     #expect(kept == [utterance])
 }
