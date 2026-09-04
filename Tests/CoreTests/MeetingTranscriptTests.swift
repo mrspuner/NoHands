@@ -22,6 +22,9 @@ private func theirs(_ start: Double, _ text: String) -> Utterance {
     #expect(merged.map(\.text) == ["они", "я"])
     #expect(abs(merged[0].start - 0) < 0.001)
     #expect(abs(merged[1].start - 0.865) < 0.001)
+    // The shift moves the whole utterance, not just its beginning: shifting `start` alone would
+    // silently stretch every reply on the later track by the drift.
+    #expect(abs(merged[1].end - 1.865) < 0.001)
 }
 
 @Test func repliesInterleaveByTime() {

@@ -71,7 +71,7 @@ private func makeTwoHalvesFile() throws -> URL {
     #expect(abs(try AudioDuration.seconds(of: url) - 1.0) < 0.01)
 }
 
-@Test func gateKeepsLoudUtterancesAndDropsQuietOnes() throws {
+@Test func gateKeepsLoudUtterancesAndDropsQuietOnes() {
     let loud = Utterance(speaker: .me, start: 0, end: 1, text: "своя речь")
     let quiet = Utterance(speaker: .me, start: 2, end: 3, text: "комната")
     // No `try`: `passing` only rethrows, and this closure does not throw. The queue's call
@@ -84,7 +84,7 @@ private func makeTwoHalvesFile() throws -> URL {
 
 // A phrase is dropped whole, not word by word: "... yeah ... got it ..." can neither be read nor
 // used to tune the threshold.
-@Test func gateKeepsAnUtteranceWhole() throws {
+@Test func gateKeepsAnUtteranceWhole() {
     let utterance = Utterance(speaker: .me, start: 0, end: 5, text: "длинная своя реплика целиком")
     let kept = PhraseLevel.passing([utterance], thresholdDBFS: -30) { _ in -10 }
     #expect(kept == [utterance])

@@ -24,8 +24,11 @@ public enum MeetingTranscript {
         let shifted = shift(mine, by: mineOffset) + shift(theirs, by: theirsOffset)
         return shifted.sorted { left, right in
             if left.start != right.start { return left.start < right.start }
-            // A deterministic tie-break, so the same recording always renders the same file.
-            // The other side goes first: they are the reason there is a meeting to transcribe.
+            // A deterministic tie-break across the two sides: the other side goes first, because
+            // they are the reason there is a meeting to transcribe. Two utterances from the SAME
+            // side starting at the same instant this cannot separate — their order then comes
+            // from `sorted(by:)` being stable and from `mine` being concatenated before `theirs`,
+            // which together still make the same recording render the same file every time.
             return left.speaker == .others && right.speaker == .me
         }
     }
