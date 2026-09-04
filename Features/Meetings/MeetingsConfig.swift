@@ -45,8 +45,17 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
     /// the owner. Provisional until measured — see the plan's last task.
     public var micThresholdDBFS: Double
     /// How long compressed audio survives after the meeting started.
+    ///
+    /// The disk is 256 GB and fifteen hours of meetings a week is 3.4 GB of raw WAV; a week's
+    /// sliding window of compressed tracks is around 400 MB instead. Deleting immediately was
+    /// rejected in phase 2а for a different reason than space: it would make the first
+    /// transcription attempt the only one, leaving nothing to re-run against when the audio
+    /// turns out to be bad.
     public var audioRetentionDays: Int
     /// AAC bitrate for the archived tracks.
+    ///
+    /// 32 kbit/s is roughly 14 MB per hour per track — speech at 16 kHz survives it, and this
+    /// is the number that turns the arithmetic above from gigabytes into megabytes.
     public var aacBitrate: Int
 
     /// Both identifiers are read off the applications installed on the owner's machine, not
