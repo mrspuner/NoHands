@@ -306,6 +306,24 @@ public struct MeetingMachine: Sendable {
             state = .recording(app: app, since: since, confirmed: confirmed, promptShown: false, quietSince: nil)
             return [.show(.recording(since: since, confirmed: confirmed))]
 
+        // The twin of the `.savePending` branch above, and needed for exactly the same reason.
+        // This prompt is the one silence raises, so unlike the prompt an exit raises it still
+        // carries a live application — until the owner closes the conferencing window while it
+        // is up, which is the ordinary end of an ordinary meeting. That exit is reported once and
+        // never again, so an answer that went on to remember this process would settle into a
+        // refusal nothing can lift: no streams to go free, no second exit. Detection would be
+        // dead until a restart, and dead for every other application too, because there is one
+        // refusal cell for all of them.
+        //
+        // The prompt itself stays up: it is still a question about a recording that is still
+        // open, and `cause` still names what raised it — the silence, not this exit.
+        case (.stopOffered(let app, let since, let confirmed, let offeredAt, let cause), .appExited(let gone, _))
+            where gone == app?.pid:
+            state = .stopOffered(
+                app: nil, since: since, confirmed: confirmed, offeredAt: offeredAt, cause: cause
+            )
+            return []
+
         case (.recording(let app, let since, let confirmed, _, let quiet), .tick(let now)):
             if now.timeIntervalSince(since) >= limits.maxMeeting {
                 return stopAtLimit(app: app, at: now)

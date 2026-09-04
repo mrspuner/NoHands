@@ -11,7 +11,7 @@ import Testing
 private let noon = Date(timeIntervalSince1970: 1_788_000_000)
 
 private let config = MeetingsConfig(
-    triggerApps: [MeetingsConfig.TriggerApp(bundleID: "ru.yandex.telemost", slug: "telemost")],
+    triggerApps: [MeetingsConfig.TriggerApp(bundleID: "ru.yandex.desktop.telemost", slug: "telemost")],
     excludedApps: ["com.spotify.client"],
     silenceSeconds: 60,
     autoStopSeconds: 120,
@@ -21,7 +21,7 @@ private let config = MeetingsConfig(
 
 private let telemost = AudioProcessMonitor.State(
     pid: 4242,
-    bundleID: "ru.yandex.telemost",
+    bundleID: "ru.yandex.desktop.telemost",
     name: "Телемост",
     isRunningInput: true,
     isRunningOutput: true
@@ -30,7 +30,7 @@ private let telemost = AudioProcessMonitor.State(
 /// The same process holding nothing: what letting go of both devices looks like to the watcher.
 private let telemostIdle = AudioProcessMonitor.State(
     pid: 4242,
-    bundleID: "ru.yandex.telemost",
+    bundleID: "ru.yandex.desktop.telemost",
     name: "Телемост",
     isRunningInput: false,
     isRunningOutput: false
@@ -218,7 +218,7 @@ private func orphanDraft(in queue: URL, startedAt: Date = noon, broken: Bool = f
     try MeetingMetadata(
         startedAt: startedAt,
         stoppedAt: nil,
-        app: MeetingMetadata.App(bundleID: "ru.yandex.telemost", name: "Телемост", slug: "telemost"),
+        app: MeetingMetadata.App(bundleID: "ru.yandex.desktop.telemost", name: "Телемост", slug: "telemost"),
         sampleRate: 16000,
         channelCount: 1,
         inputDevice: nil,
@@ -431,7 +431,7 @@ private func isFailure(_ state: MeetingPanelState?) -> Bool {
     #expect(metadata.startedAt == noon)
     #expect(metadata.stoppedAt == noon.addingTimeInterval(600))
     #expect(metadata.app == MeetingMetadata.App(
-        bundleID: "ru.yandex.telemost", name: "Телемост", slug: "telemost"
+        bundleID: "ru.yandex.desktop.telemost", name: "Телемост", slug: "telemost"
     ))
     #expect(metadata.sampleRate == MeetingAudioRecorder.sampleRate)
     #expect(metadata.channelCount == Int(MeetingAudioRecorder.channelCount))
@@ -666,6 +666,58 @@ private func isFailure(_ state: MeetingPanelState?) -> Bool {
 
     #expect(harness.captures.count == 2)
     #expect(harness.drafts.count == 1)
+}
+
+// MARK: - An application that quits while a prompt is up
+
+private let twoTriggers = MeetingsConfig(
+    triggerApps: [
+        MeetingsConfig.TriggerApp(bundleID: "ru.yandex.desktop.telemost", slug: "telemost"),
+        MeetingsConfig.TriggerApp(bundleID: "us.zoom.xos", slug: "zoom"),
+    ],
+    excludedApps: [],
+    silenceSeconds: 60,
+    autoStopSeconds: 120,
+    startPromptSeconds: 30,
+    maxMeetingSeconds: 14400
+)
+
+private let zoom = AudioProcessMonitor.State(
+    pid: 777, bundleID: "us.zoom.xos", name: "Zoom", isRunningInput: true, isRunningOutput: true
+)
+
+// The whole ordinary sequence, through the poll that makes it dangerous: the meeting ends, the
+// devices go free, a minute of silence raises the stop prompt while the application is still
+// running, and only then does the owner close it. The coordinator notices the exit exactly once —
+// the pid leaves `knownPIDs` and never comes back — so an answer that remembered the process
+// afterwards would leave a refusal nothing can lift. Detection would be dead until a restart, and
+// dead for Zoom too: there is one refusal cell for all applications.
+@Test @MainActor func aMeetingClosedWhileItsStopPromptWasUpDoesNotKillDetection() async throws {
+    let harness = try Harness(config: twoTriggers)
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    harness.coordinator.answer(.confirm, at: noon.addingTimeInterval(5))
+
+    // Everyone leaves: the devices go free, and a minute later the prompt comes up.
+    harness.processes = [telemostIdle]
+    harness.coordinator.poll(now: noon.addingTimeInterval(600))
+    harness.coordinator.poll(now: noon.addingTimeInterval(661))
+    #expect(harness.shown.last == .stopPrompt(duration: 661))
+
+    // Now the window is closed. This is the one and only exit report for this pid.
+    harness.processes = []
+    harness.coordinator.poll(now: noon.addingTimeInterval(700))
+    harness.coordinator.answer(.delete, at: noon.addingTimeInterval(710))
+    await harness.coordinator.settle()
+    #expect(harness.entries.isEmpty)
+
+    // Detection has to be alive — for this application and for every other one.
+    harness.processes = [zoom]
+    harness.coordinator.poll(now: noon.addingTimeInterval(720))
+    await harness.coordinator.settle()
+
+    #expect(harness.drafts.count == 1)
+    #expect(harness.drafts[0].hasSuffix("-zoom"))
 }
 
 // MARK: - The two capture failures are not the same failure

@@ -5,7 +5,14 @@ import Testing
 private let start = Date(timeIntervalSince1970: 1_000_000)
 
 private let telemost = MeetingMachine.MeetingApp(
-    bundleID: "ru.yandex.telemost", name: "Телемост", slug: "telemost", pid: 501
+    bundleID: "ru.yandex.desktop.telemost", name: "Телемост", slug: "telemost", pid: 501
+)
+
+/// A second trigger application, for the tests that have to show detection is still alive —
+/// there is one refusal cell for all applications, so a refusal that outlives its process takes
+/// every other meeting down with it.
+private let zoom = MeetingMachine.MeetingApp(
+    bundleID: "us.zoom.xos", name: "Zoom", slug: "zoom", pid: 777
 )
 
 private func machine() -> MeetingMachine {
@@ -604,6 +611,60 @@ private func recordingConfirmed() -> MeetingMachine {
     _ = subject.handle(.appExited(pid: 501, at: start.addingTimeInterval(600)))
     _ = subject.handle(.deletePressed(at: start.addingTimeInterval(605)))
     #expect(subject.state == .idle)
+}
+
+/// Drives a machine to a stop prompt raised by silence — the prompt that still carries a live
+/// application, unlike the one an exit raises.
+private func stopOfferedBySilence() -> MeetingMachine {
+    var subject = recordingConfirmed()
+    let quiet = start.addingTimeInterval(60)
+    _ = subject.handle(.streamsChanged(app: telemost, input: false, output: false, at: quiet))
+    _ = subject.handle(.tick(quiet.addingTimeInterval(61)))
+    return subject
+}
+
+// The ordinary end of an ordinary meeting: everyone leaves, the devices go free, a minute later
+// the prompt comes up — carrying a live application, because nothing has quit yet — and *then*
+// the owner closes the conferencing window. The exit is spent here, on a state that has no use
+// for it, and the pid leaves the list of known processes for good. Answering afterwards used to
+// remember a process that can never report anything again: no streams, no second exit. Detection
+// was then dead until the application was restarted — and dead for every other application too,
+// because there is one refusal cell for all of them.
+@Test func anApplicationThatQuitWhileTheStopPromptWasUpIsNotRememberedAfterwards() {
+    var subject = stopOfferedBySilence()
+    let gone = start.addingTimeInterval(200)
+    #expect(subject.handle(.appExited(pid: 501, at: gone)) == [])
+
+    _ = subject.handle(.deletePressed(at: gone.addingTimeInterval(10)))
+
+    #expect(subject.state == .idle)
+    let another = gone.addingTimeInterval(20)
+    #expect(subject.handle(.streamsChanged(app: zoom, input: true, output: false, at: another)).first
+        == .startCapture(app: zoom, at: another))
+}
+
+// "Остановить запись" out of the same prompt, and the same hazard.
+@Test func stoppingByHandAfterTheApplicationQuitDuringTheStopPromptRemembersNothing() {
+    var subject = stopOfferedBySilence()
+    _ = subject.handle(.appExited(pid: 501, at: start.addingTimeInterval(200)))
+    _ = subject.handle(.stopPressed(at: start.addingTimeInterval(210)))
+    #expect(subject.state == .idle)
+}
+
+// The prompt itself must survive the exit: it is still a question about a recording that is
+// still open, and the answer still has to close it.
+@Test func theStopPromptOutlivesTheApplicationThatWasStillRunningWhenItAppeared() {
+    var subject = stopOfferedBySilence()
+    _ = subject.handle(.appExited(pid: 501, at: start.addingTimeInterval(200)))
+    let pressed = start.addingTimeInterval(210)
+    #expect(subject.handle(.keepPressed(at: pressed)) == [
+        // The cause is what raised the prompt, and that was the silence. The exit only took away
+        // the process there was left to watch.
+        .stopCapture(at: pressed, reason: .automatic),
+        .keepDraft,
+        .blockDictation(false),
+        .hide(after: 0),
+    ])
 }
 
 // The manual start is the owner's last resort for when detection let them down, so it may never
