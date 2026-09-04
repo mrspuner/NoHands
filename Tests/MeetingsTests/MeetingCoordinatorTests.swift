@@ -112,6 +112,9 @@ private final class Harness {
     var startError: Error?
     var stopError: Error?
     var captureFailure: String?
+    /// Whether a dictation is in flight right now — what the real coordinator asks the dictation
+    /// coordinator once a second.
+    var dictating = false
     var coordinator: MeetingCoordinator!
 
     /// - Parameter queueIsAFile: puts an ordinary file where the queue directory belongs, which
@@ -131,6 +134,7 @@ private final class Harness {
             showPanel: { [weak self] in self?.shown.append($0) },
             hidePanel: { [weak self] in self?.hidden.append($0) },
             onDictationBlocked: { [weak self] in self?.blocked.append($0) },
+            isDictating: { [weak self] in self?.dictating ?? false },
             readProcesses: { [weak self] in
                 guard let self else { return [] }
                 return processes
@@ -465,6 +469,59 @@ private func isFailure(_ state: MeetingPanelState?) -> Bool {
     let running = try harness.metadata(of: harness.drafts[0])
     #expect(running.startedAt == noon.addingTimeInterval(601))
     #expect(running.stoppedAt == nil)
+}
+
+// MARK: - A dictation already under way
+
+// Spec §6: a meeting starting while a dictation is in flight waits for it — the draft begins a
+// second later instead of cutting the owner off mid-sentence. Not politeness: without it an
+// `SCStream` configured with `captureMicrophone` and the dictation's `AVAudioEngine` would hold
+// the same input in the same process at the same time, which is the one thing §7 blocks
+// dictation during meetings to avoid.
+@Test @MainActor func aMeetingDoesNotStartWhileADictationIsStillInFlight() async throws {
+    let harness = try Harness()
+    harness.dictating = true
+    harness.processes = [telemost]
+
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+
+    #expect(harness.captures.isEmpty)
+    #expect(harness.entries.isEmpty)
+    #expect(harness.shown.isEmpty)
+    #expect(harness.blocked.isEmpty)
+}
+
+// "Ждать секунды", exactly as the spec puts it: the poll that follows the dictation notices the
+// same meeting and starts the draft.
+@Test @MainActor func theMeetingStartsOnTheFirstPollAfterTheDictationEnds() async throws {
+    let harness = try Harness()
+    harness.dictating = true
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+
+    harness.dictating = false
+    harness.coordinator.poll(now: noon.addingTimeInterval(1))
+    await harness.coordinator.settle()
+
+    #expect(harness.drafts.count == 1)
+    #expect(harness.shown == [.startPrompt(appName: "Телемост")])
+    // The second poll is where this meeting began, not the first: the draft that waited carries
+    // the later timestamp, and phase 2б places words against it.
+    #expect(try harness.metadata(of: harness.drafts[0]).startedAt == noon.addingTimeInterval(1))
+}
+
+// The source going quiet is about the devices, not about time: a prompt that stopped counting
+// down while somebody dictated would stand until they happened to stop.
+@Test @MainActor func timeKeepsPassingWhileTheSourceIsQuiet() throws {
+    let harness = try Harness()
+    _ = try orphanDraft(in: harness.queue)
+    harness.coordinator.adoptOrphans(at: noon)
+    harness.dictating = true
+
+    harness.coordinator.poll(now: noon.addingTimeInterval(config.autoStopSeconds))
+
+    #expect(harness.handedOver.count == 1)
 }
 
 // MARK: - Stopping by hand, and then the very next poll

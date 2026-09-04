@@ -109,7 +109,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             hidePanel: { [panel] delay in panel.hideMeeting(after: delay) },
             // The one thing dictation must not run alongside: both want the microphone, and the
             // dictated speech would land in the meeting's own track.
-            onDictationBlocked: { [weak self] blocked in self?.coordinator?.isBlocked = blocked }
+            onDictationBlocked: { [weak self] blocked in self?.coordinator?.isBlocked = blocked },
+            // And the same rule the other way round, per spec §6: a dictation already under way
+            // finishes before a meeting starts recording. Asked live rather than captured — the
+            // dictation coordinator is rebuilt by a config reload, and a captured one would go
+            // on answering for an object nobody is dictating into.
+            isDictating: { [weak self] in self?.coordinator?.isDictating ?? false }
         )
         // Drafts a crash left behind are found in here: `start` looks for them before it begins
         // polling, and offers the first one on the panel.

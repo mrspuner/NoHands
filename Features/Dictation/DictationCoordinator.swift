@@ -88,6 +88,17 @@ public final class DictationCoordinator {
         set { machine.isBlocked = newValue }
     }
 
+    /// True from the moment fn goes down until the text has landed or the attempt has failed.
+    ///
+    /// The other direction of the same one-microphone rule, and read rather than pushed for the
+    /// same reason as `isBlocked`: spec §6 lets a dictation already under way finish before a
+    /// meeting starts recording, so whoever watches for meetings has to be able to ask. Every
+    /// state but `.idle` counts — recognition and cleanup still own the file the recording made,
+    /// and a meeting starting on top of them is the case §7 exists to prevent.
+    public var isDictating: Bool {
+        machine.state != .idle
+    }
+
     public func start() throws {
         let monitor = FnKeyMonitor { [weak self] kind in
             MainActor.assumeIsolated {

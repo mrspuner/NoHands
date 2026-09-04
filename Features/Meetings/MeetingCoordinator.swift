@@ -40,6 +40,7 @@ public final class MeetingCoordinator {
     private let showPanel: (MeetingPanelState) -> Void
     private let hidePanel: (TimeInterval) -> Void
     private let onDictationBlocked: (Bool) -> Void
+    private let isDictating: () -> Bool
     private let readProcesses: () -> [AudioProcessMonitor.State]?
     private let makeCapture: (URL, [String], @escaping @Sendable (String) -> Void) -> any MeetingCapture
 
@@ -86,6 +87,9 @@ public final class MeetingCoordinator {
     /// - Parameters:
     ///   - queue: where meeting folders are created. Injected only so tests can work in a
     ///     temporary directory instead of the owner's `~/Meetings`.
+    ///   - isDictating: whether a dictation is in flight this second. Asked rather than pushed,
+    ///     for the reason `activity` gives about its own direction: a copy kept here would be a
+    ///     second version of a fact that lives in the dictation machine.
     ///   - readProcesses: `nil` from this is a failed system call, never an empty room — see
     ///     `AudioProcessMonitor.current`.
     ///   - makeCapture: takes the folder, the exclusion list and the handler for a stream that
@@ -98,6 +102,7 @@ public final class MeetingCoordinator {
         showPanel: @escaping (MeetingPanelState) -> Void,
         hidePanel: @escaping (TimeInterval) -> Void,
         onDictationBlocked: @escaping (Bool) -> Void,
+        isDictating: @escaping () -> Bool,
         readProcesses: @escaping () -> [AudioProcessMonitor.State]? = AudioProcessMonitor.current,
         makeCapture: @escaping (URL, [String], @escaping @Sendable (String) -> Void) -> any MeetingCapture = {
             MeetingAudioRecorder(folder: $0, excludedBundleIDs: $1, onFailureWhileRecording: $2)
@@ -108,6 +113,7 @@ public final class MeetingCoordinator {
         self.showPanel = showPanel
         self.hidePanel = hidePanel
         self.onDictationBlocked = onDictationBlocked
+        self.isDictating = isDictating
         self.readProcesses = readProcesses
         self.makeCapture = makeCapture
         self.machine = MeetingMachine(limits: MeetingMachine.Limits(config: config))
@@ -200,6 +206,21 @@ public final class MeetingCoordinator {
     // MARK: - Polling
 
     func poll(now: Date = Date()) {
+        // Spec §6: a meeting that begins while a dictation is in flight waits for it — "ждать
+        // секунды" — instead of cutting the owner off in the middle of a sentence. This is the
+        // source going quiet, not a rule: while the microphone belongs to a dictation, this poll
+        // has nothing it may say about who is holding the audio devices, so it says nothing, and
+        // the machine hears exactly what it would hear from a meeting that has not started yet.
+        // Written here rather than as a case in the machine because it is not a decision about
+        // meetings at all: it is one feature declining to speak while the other has the input.
+        //
+        // The clock keeps running for the same reason it does when the monitor refuses below:
+        // the length limit and the auto-stop must depend on nothing but time.
+        guard !isDictating() else {
+            apply(.tick(now))
+            refreshOrphanPrompt(now: now)
+            return
+        }
         guard let states = readProcesses() else {
             noteMonitorFailure()
             // The clock keeps running regardless: the length limit and the auto-stop must not
