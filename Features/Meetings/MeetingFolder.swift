@@ -3,8 +3,14 @@ import Foundation
 /// Names, creates and hands over the folder of one meeting.
 ///
 /// The whole hand-off to phase 2б is a rename. A folder whose name starts with a dot is still
-/// being written; renaming it is atomic, so the queue never has to guess whether a file is
-/// finished, and Obsidian — which reads the same `~/Meetings` — never sees the unfinished ones.
+/// being written; renaming it is atomic, so the queue never has to guess whether a recording is
+/// finished — a name without the dot means nothing is writing into it any more, and no lock or
+/// metadata read is needed to establish that.
+///
+/// The dot is not what keeps any of this away from Obsidian, and reading it that way would be a
+/// mistake worth avoiding: everything here lives inside `.queue`, which is hidden as a whole, so
+/// a draft and a finished folder are equally invisible in `~/Meetings`. What Obsidian is meant to
+/// see is the markdown phase 2б will write beside `.queue` — nothing in this file produces it.
 public enum MeetingFolder {
     static let draftPrefix = ".draft-"
 

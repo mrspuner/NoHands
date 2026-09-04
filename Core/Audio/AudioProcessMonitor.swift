@@ -47,7 +47,12 @@ public enum AudioProcessMonitor {
 
     /// `nil` only for a failed system call. A `size` of zero is a legitimate answer — no process
     /// is touching audio right now — and is reported as an empty array, not as failure.
-    private static func processObjects() -> [AudioObjectID]? {
+    ///
+    /// Internal rather than private so the smoke test can ask a real process object whether it
+    /// actually has the properties this file reads off it. Every one of them fails the way
+    /// CoreAudio always fails — silently, with a zero — so a wrong constant is invisible from
+    /// the outside, and the object is the only thing that can be asked.
+    static func processObjects() -> [AudioObjectID]? {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyProcessObjectList,
             mScope: kAudioObjectPropertyScopeGlobal,
