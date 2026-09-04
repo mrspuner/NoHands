@@ -1065,7 +1065,7 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
     )
     #expect(rendered.hasPrefix("---\n"))
     #expect(rendered.contains("duration: 4m\n"))
-    #expect(rendered.contains("app: Телемост\n"))
+    #expect(rendered.contains("app: \"Телемост\"\n"))
     #expect(rendered.contains("## Транскрипт\n"))
     #expect(rendered.contains("[00:00:03] Собеседник: привет\n"))
     #expect(rendered.contains("[00:00:11] Я: привет и тебе\n"))
@@ -1080,6 +1080,34 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
         startedAt: started, durationSeconds: 60, appName: "Телемост"
     )
     #expect(!rendered.contains("participants"))
+}
+
+// The other half of what this phase deliberately does not write. Nothing but a test can hold
+// this line: a TODO comment was ruled out, so a later change reintroducing these headings here
+// would otherwise go unnoticed until phase 2в wrote them a second time.
+@Test func summaryAndDecisionsAreNotWritten() {
+    let rendered = MeetingMarkdown.render(
+        transcript: [Utterance(speaker: .me, start: 0, end: 1, text: "раз")],
+        startedAt: started, durationSeconds: 60, appName: "Телемост"
+    )
+    #expect(!rendered.contains("Саммари"))
+    #expect(!rendered.contains("Решения"))
+}
+
+// The application name comes from `NSRunningApplication`, so it is outside this code's control.
+@Test func anApplicationNameCannotBreakTheFrontMatter() {
+    let rendered = MeetingMarkdown.render(
+        transcript: [Utterance(speaker: .me, start: 0, end: 1, text: "раз")],
+        startedAt: started, durationSeconds: 60,
+        appName: "Zoom: \"Meetings\"\nfake: value"
+    )
+    // The injected text survives as data inside the quoted value, and that is fine — what must
+    // not happen is it becoming a key of its own, which is exactly what the unescaped newline
+    // would have made it.
+    let frontMatter = rendered.components(separatedBy: "---")[1]
+    let lines = frontMatter.split(separator: "\n")
+    #expect(!lines.contains { $0.hasPrefix("fake:") })
+    #expect(lines.contains { $0 == #"app: "Zoom: \"Meetings\"fake: value""# })
 }
 
 @Test func anUnknownApplicationLeavesTheLineOut() {
@@ -1117,6 +1145,9 @@ import Foundation
 /// is why it writes only what phase 2б actually knows.
 public enum MeetingMarkdown {
     public static func timestamp(_ seconds: TimeInterval) -> String {
+        // Clamped rather than allowed negative: merging two tracks could in principle hand this
+        // a start before zero, and `%02d` on a negative renders a malformed stamp. The clamp
+        // makes such a bug show up as replies stacked at 00:00:00 instead of as broken text.
         let total = max(0, Int(seconds.rounded(.down)))
         return String(format: "%02d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
     }
@@ -1131,7 +1162,7 @@ public enum MeetingMarkdown {
         lines.append("date: \(format(startedAt, as: "yyyy-MM-dd"))")
         lines.append("started: \(format(startedAt, as: "HH:mm"))")
         lines.append("duration: \(Int((durationSeconds / 60).rounded()))m")
-        if let appName { lines.append("app: \(appName)") }
+        if let appName { lines.append("app: \(quoted(appName))") }
         lines.append("---")
         lines.append("")
         lines.append("## Транскрипт")
@@ -1141,6 +1172,21 @@ public enum MeetingMarkdown {
         }
         lines.append("")
         return lines.joined(separator: "\n")
+    }
+
+    /// The one value in the front matter that comes from outside this code: the display name of
+    /// whatever process was holding the audio devices, straight from `NSRunningApplication`.
+    /// A colon or a newline in it would break the `---` block for Obsidian and for phase 2г,
+    /// which re-reads this file to pick up edited speaker names. Quoted and escaped rather than
+    /// trusted — the archive outlives every assumption about what applications are called.
+    static func quoted(_ value: String) -> String {
+        let withoutControls = String(
+            String.UnicodeScalarView(value.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
+        )
+        let escaped = withoutControls
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"\(escaped)\""
     }
 
     private static func label(_ speaker: Utterance.Speaker) -> String {
