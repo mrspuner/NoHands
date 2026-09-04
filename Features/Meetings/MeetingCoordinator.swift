@@ -89,6 +89,24 @@ public final class MeetingCoordinator {
     private var monitorFailures = 0
     private var monitorFailureReported = false
 
+    /// Events raised while an earlier one is still having its effects performed, and whether
+    /// that is happening right now.
+    ///
+    /// An effect can fail on the spot: `startCapture` throws when the meeting folder cannot be
+    /// created — no disk space, no `~/Meetings` — and the machine has to hear about it. Handing
+    /// it back the moment it happened ran the failure's whole recovery from inside the loop, and
+    /// the loop then went on performing the rest of the *first* event's list over the top of it:
+    /// dictation blocked again with nothing left to unblock it, and a prompt put back that the
+    /// machine no longer answers, holding the panel over the Dock until a restart. Queued
+    /// instead, so a failure is always handled after the list it happened in, never inside it.
+    ///
+    /// `DictationCoordinator` splits the same two jobs — `apply` decides, `perform` does — and
+    /// never needed a queue: every failure it can raise comes back through a task, so it is
+    /// already a separate turn on the main actor by the time it arrives. This is the only
+    /// synchronous one in either coordinator.
+    private var pending: [MeetingMachine.Event] = []
+    private var applying = false
+
     /// - Parameters:
     ///   - queue: where meeting folders are created. Injected only so tests can work in a
     ///     temporary directory instead of the owner's `~/Meetings`.
@@ -265,21 +283,6 @@ public final class MeetingCoordinator {
     }
 
     // MARK: - Performing what the machine decided
-
-    /// Events raised while an earlier one is still having its effects performed.
-    ///
-    /// An effect can fail on the spot: `startCapture` throws when the meeting folder cannot be
-    /// created, and the machine has to hear about it. Handing it back the moment it happens ran
-    /// the failure's whole recovery from inside the loop, and the loop then went on performing
-    /// the rest of the *first* event's list over the top of it — blocking dictation again with
-    /// nothing left to unblock it, and putting back a prompt the machine no longer answers.
-    /// Queued instead: a failure is handled after the list it happened in, never inside it.
-    ///
-    /// `DictationCoordinator` splits the same two jobs, `apply` and `perform`, and never needed
-    /// this: every failure it can raise comes back through a task, so it is already a separate
-    /// turn on the main actor by the time it arrives. This is the only synchronous one.
-    private var pending: [MeetingMachine.Event] = []
-    private var applying = false
 
     private func apply(_ event: MeetingMachine.Event) {
         pending.append(event)
