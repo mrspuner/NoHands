@@ -83,8 +83,9 @@ public struct MeetingMachine: Sendable {
         /// the question is answered the process has to be remembered afterwards — see
         /// `settled`. It goes to nil if that application quits while the question is up.
         case savePending(app: MeetingApp?, since: Date, stoppedAt: Date)
-        /// This process has been dealt with — refused, stopped by hand, deleted, or cut off by
-        /// the length limit. Nothing it does raises a prompt until it lets both devices go.
+        /// This process has been dealt with — refused, stopped by hand, deleted, cut off by the
+        /// length limit, or left by a capture that died. Nothing it does raises a prompt until it
+        /// lets both devices go.
         case declined(pid: Int32)
 
         /// The same state in the three terms the menu bar is written in.
@@ -281,9 +282,14 @@ public struct MeetingMachine: Sendable {
                 .hide(after: Self.failureDwell),
             ]
 
-        case (.recording, .captureFailedWhileRecording(let message, let at)),
-             (.stopOffered, .captureFailedWhileRecording(let message, let at)):
-            state = .idle
+        // Settled rather than at rest, and for a reason the other doors do not have: whatever
+        // killed this capture — a full disk above all — kills the next one on its first buffer
+        // too, while the application goes on holding the devices. Coming to rest here would mean
+        // a new folder, a new failure and another empty recording promoted into the queue every
+        // few seconds, for the length of the meeting.
+        case (.recording(let app, _, _, _, _), .captureFailedWhileRecording(let message, let at)),
+             (.stopOffered(let app, _, _, _, _), .captureFailedWhileRecording(let message, let at)):
+            state = Self.settled(app)
             return [
                 .stopCapture(at: at, reason: .failure),
                 .keepDraft,
@@ -380,14 +386,16 @@ public struct MeetingMachine: Sendable {
 
     /// Where the machine goes once this meeting has been dealt with.
     ///
-    /// Four doors lead here — "no", a stop pressed by hand, "delete", and the length limit — and
-    /// they all say the same thing about the same process: this meeting has been settled, and
-    /// recording it again is not what anybody wants. The watcher repeats itself once a second and
-    /// every repeat reads as "an application has just taken the input", so a state that forgot
-    /// would start the meeting over on the next tick: a fresh draft, a prompt that collapses in
-    /// thirty seconds, and a recording that runs to the end of the meeting. Deleting is worse
-    /// still — the new draft is unconfirmed, and silence saves it — and the limit is worse again,
-    /// because nobody is watching by then at all.
+    /// Five doors lead here — "no", a stop pressed by hand, "delete", the length limit, and a
+    /// capture that died mid-meeting — and they all say the same thing about the same process:
+    /// this meeting has been settled, and recording it again is not what anybody wants. The
+    /// watcher repeats itself once a second and every repeat reads as "an application has just
+    /// taken the input", so a state that forgot would start the meeting over on the next tick:
+    /// a fresh draft, a prompt that collapses in thirty seconds, and a recording that runs to the
+    /// end of the meeting. Deleting is worse — the new draft is unconfirmed, and silence saves
+    /// it. The limit is worse again, because nobody is watching by then at all. And a dead
+    /// capture is worst: it dies again on the next first buffer, so the loop files an empty
+    /// recording into the queue every few seconds.
     ///
     /// Deliberately not every ending. "Save" on a stop prompt is not a door: that prompt is
     /// raised by the room going quiet, so the devices are already free, and answering it settles

@@ -107,7 +107,7 @@ private func recordingConfirmed() -> MeetingMachine {
         .hide(after: 0),
     ])
     // Not `.idle`: the application is still holding the devices, and coming to rest here would
-    // let the next poll start the same meeting over. See "The four doors into a refusal".
+    // let the next poll start the same meeting over. See "The five doors into a refusal".
     #expect(subject.state == .declined(pid: 501))
 }
 
@@ -206,7 +206,9 @@ private func recordingConfirmed() -> MeetingMachine {
         .show(.failure("поток захвата прервался")),
         .hide(after: 5),
     ])
-    #expect(subject.state == .idle)
+    // Not `.idle`: whatever killed this capture will kill the next one too, and the application
+    // is still holding the devices. See "The five doors into a refusal".
+    #expect(subject.state == .declined(pid: 501))
 }
 
 @Test func captureFailingWhileRecordingKeepsTheDraftFromStopOffered() {
@@ -223,7 +225,7 @@ private func recordingConfirmed() -> MeetingMachine {
         .show(.failure("поток захвата прервался")),
         .hide(after: 5),
     ])
-    #expect(subject.state == .idle)
+    #expect(subject.state == .declined(pid: 501))
 }
 
 // Muting releases the input and leaves the output taken: the app keeps playing back the
@@ -331,7 +333,7 @@ private func recordingConfirmed() -> MeetingMachine {
         .hide(after: 5),
     ])
     // Not `.idle`: the meeting is still going and still holding the devices, so resting here
-    // would start the next four hours a second later. See "The four doors into a refusal",
+    // would start the next four hours a second later. See "The five doors into a refusal",
     // which the limit made four.
     #expect(subject.state == .declined(pid: 501))
 }
@@ -472,7 +474,7 @@ private func recordingConfirmed() -> MeetingMachine {
     #expect(subject.state == .idle)
 }
 
-// MARK: - The four doors into a refusal
+// MARK: - The five doors into a refusal
 
 // The watcher repeats itself once a second, and every repeat reads as "an application has just
 // taken the input". Without a memory of the process, a meeting stopped by hand starts over on
@@ -559,6 +561,38 @@ private func recordingConfirmed() -> MeetingMachine {
     _ = subject.handle(.tick(quiet.addingTimeInterval(61)))
     _ = subject.handle(.tick(start.addingTimeInterval(14400)))
     #expect(subject.state == .declined(pid: 501))
+}
+
+// The fifth way a meeting ends without the owner ending it, and the one that repeats itself. A
+// capture that died because the disk is full will die again on the first buffer of the next
+// recording, and the application is still in the meeting holding both devices — so a machine that
+// came to rest here would start, fail and file a folder every few seconds, promoting an empty
+// recording into the queue on every turn.
+@Test func aCaptureThatDiedRemembersTheProcessSoItDoesNotImmediatelyTryAgain() {
+    var subject = recordingConfirmed()
+    let died = start.addingTimeInterval(600)
+    _ = subject.handle(.captureFailedWhileRecording("cannot write system.wav: no space", at: died))
+    #expect(subject.state == .declined(pid: 501))
+    #expect(subject.handle(
+        .streamsChanged(app: telemost, input: true, output: true, at: died.addingTimeInterval(1))
+    ) == [])
+}
+
+@Test func aCaptureThatDiedUnderTheStopPromptRemembersTheProcessToo() {
+    var subject = stopOfferedBySilence()
+    _ = subject.handle(.captureFailedWhileRecording("cannot write system.wav: no space", at: start.addingTimeInterval(600)))
+    #expect(subject.state == .declined(pid: 501))
+}
+
+// And forgotten the same way as the others, so a later meeting — once whatever went wrong has
+// been dealt with — is noticed again.
+@Test func aCaptureThatDiedIsForgottenWhenTheDevicesGoFree() {
+    var subject = recordingConfirmed()
+    _ = subject.handle(.captureFailedWhileRecording("cannot write system.wav: no space", at: start.addingTimeInterval(600)))
+    _ = subject.handle(
+        .streamsChanged(app: telemost, input: false, output: false, at: start.addingTimeInterval(700))
+    )
+    #expect(subject.state == .idle)
 }
 
 // And forgotten the same way as the other three, so the meeting after this one is still noticed.

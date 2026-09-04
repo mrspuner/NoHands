@@ -846,6 +846,29 @@ private func drainMainActor() async {
     #expect(harness.blocked == [true, false])
 }
 
+// Whatever killed this capture — a full disk above all — will kill the next one on its first
+// buffer, and the meeting application is still holding both devices. Starting over on the next
+// poll would mean a new folder, a new failure and a new empty recording promoted into the queue
+// every few seconds, for as long as the meeting lasts.
+@Test @MainActor func aCaptureThatDiedDoesNotStartTheSameMeetingOverASecondLater() async throws {
+    let harness = try Harness()
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+
+    harness.captures[0].die("cannot write system.wav: no space left on device")
+    await drainMainActor()
+    await harness.coordinator.settle()
+
+    harness.coordinator.poll(now: noon.addingTimeInterval(1))
+    harness.coordinator.poll(now: noon.addingTimeInterval(2))
+    await harness.coordinator.settle()
+
+    #expect(harness.captures.count == 1)
+    #expect(harness.handedOver.count == 1)
+    #expect(harness.drafts.isEmpty)
+}
+
 // The meeting is over and its folder has been handed on. A straggler must not raise a panel
 // about a recording nobody is making, and must not rewrite what was already filed.
 @Test @MainActor func aStreamFailureArrivingAfterTheMeetingEndedChangesNothing() async throws {
