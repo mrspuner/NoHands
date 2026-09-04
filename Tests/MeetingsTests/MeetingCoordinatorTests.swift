@@ -16,7 +16,12 @@ private let config = MeetingsConfig(
     silenceSeconds: 60,
     autoStopSeconds: 120,
     startPromptSeconds: 30,
-    maxMeetingSeconds: 14400
+    maxMeetingSeconds: 14400,
+    phraseGapSeconds: 1.0,
+    maxPhraseSeconds: 40,
+    micThresholdDBFS: -30,
+    audioRetentionDays: 7,
+    aacBitrate: 32000
 )
 
 private let telemost = AudioProcessMonitor.State(
@@ -656,7 +661,12 @@ private func isFailure(_ state: MeetingPanelState?) -> Bool {
         silenceSeconds: config.silenceSeconds,
         autoStopSeconds: config.autoStopSeconds,
         startPromptSeconds: config.startPromptSeconds,
-        maxMeetingSeconds: 600
+        maxMeetingSeconds: 600,
+        phraseGapSeconds: config.phraseGapSeconds,
+        maxPhraseSeconds: config.maxPhraseSeconds,
+        micThresholdDBFS: config.micThresholdDBFS,
+        audioRetentionDays: config.audioRetentionDays,
+        aacBitrate: config.aacBitrate
     ))
     harness.processes = [telemost]
     harness.coordinator.poll(now: noon)
@@ -705,7 +715,12 @@ private let twoTriggers = MeetingsConfig(
     silenceSeconds: 60,
     autoStopSeconds: 120,
     startPromptSeconds: 30,
-    maxMeetingSeconds: 14400
+    maxMeetingSeconds: 14400,
+    phraseGapSeconds: 1.0,
+    maxPhraseSeconds: 40,
+    micThresholdDBFS: -30,
+    audioRetentionDays: 7,
+    aacBitrate: 32000
 )
 
 private let zoom = AudioProcessMonitor.State(

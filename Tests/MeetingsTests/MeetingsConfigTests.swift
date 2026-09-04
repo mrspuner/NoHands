@@ -108,3 +108,27 @@ import Testing
     #expect(config == MeetingsConfig.default)
     #expect(!FileManager.default.fileExists(atPath: url.path))
 }
+
+@Test func pipelineKeysHaveDefaults() throws {
+    let config = try MeetingsConfig.decode(Data("{}".utf8))
+    #expect(config.phraseGapSeconds == 1.0)
+    #expect(config.maxPhraseSeconds == 40)
+    #expect(config.micThresholdDBFS == -30)
+    #expect(config.audioRetentionDays == 7)
+    #expect(config.aacBitrate == 32000)
+}
+
+@Test func pipelineKeysAreReadFromTheFile() throws {
+    let json = """
+    {"phraseGapSeconds": 1.5, "maxPhraseSeconds": 20, "micThresholdDBFS": -42,
+     "audioRetentionDays": 3, "aacBitrate": 24000}
+    """
+    let config = try MeetingsConfig.decode(Data(json.utf8))
+    #expect(config.phraseGapSeconds == 1.5)
+    #expect(config.maxPhraseSeconds == 20)
+    #expect(config.micThresholdDBFS == -42)
+    #expect(config.audioRetentionDays == 3)
+    #expect(config.aacBitrate == 24000)
+    // Keys absent from the file stayed at their defaults — the general rule for this config.
+    #expect(config.autoStopSeconds == MeetingsConfig.default.autoStopSeconds)
+}

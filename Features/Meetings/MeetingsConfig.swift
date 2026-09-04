@@ -35,6 +35,19 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
     public var autoStopSeconds: Double
     public var startPromptSeconds: Double
     public var maxMeetingSeconds: Double
+    /// Pause that starts a new utterance. Speech is split on silence, not on punctuation: the
+    /// recogniser's full stops are a guess, while a second of nothing is a fact.
+    public var phraseGapSeconds: Double
+    /// Hard ceiling on one utterance. Without it a ten-minute monologue with no pause long
+    /// enough becomes one unreadable line.
+    public var maxPhraseSeconds: Double
+    /// Below this, an utterance on the microphone track is treated as the room rather than as
+    /// the owner. Provisional until measured — see the plan's last task.
+    public var micThresholdDBFS: Double
+    /// How long compressed audio survives after the meeting started.
+    public var audioRetentionDays: Int
+    /// AAC bitrate for the archived tracks.
+    public var aacBitrate: Int
 
     /// Both identifiers are read off the applications installed on the owner's machine, not
     /// guessed from their names — `ru.yandex.telemost` was a guess, and the desktop client calls
@@ -55,7 +68,15 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         silenceSeconds: 0,
         autoStopSeconds: 120,
         startPromptSeconds: 30,
-        maxMeetingSeconds: 14400
+        maxMeetingSeconds: 14400,
+        phraseGapSeconds: 1.0,
+        maxPhraseSeconds: 40,
+        // A provisional value, set just so the pipeline builds. Speech at the first live meeting
+        // hit three quarters of the scale — around -2.5 dBFS — while the room across the table
+        // was reliably quieter. The real value is set by measuring with `nohands meeting levels`.
+        micThresholdDBFS: -30,
+        audioRetentionDays: 7,
+        aacBitrate: 32000
     )
 
     public init(
@@ -64,7 +85,12 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         silenceSeconds: Double,
         autoStopSeconds: Double,
         startPromptSeconds: Double,
-        maxMeetingSeconds: Double
+        maxMeetingSeconds: Double,
+        phraseGapSeconds: Double,
+        maxPhraseSeconds: Double,
+        micThresholdDBFS: Double,
+        audioRetentionDays: Int,
+        aacBitrate: Int
     ) {
         self.triggerApps = triggerApps
         self.excludedApps = excludedApps
@@ -72,6 +98,11 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         self.autoStopSeconds = autoStopSeconds
         self.startPromptSeconds = startPromptSeconds
         self.maxMeetingSeconds = maxMeetingSeconds
+        self.phraseGapSeconds = phraseGapSeconds
+        self.maxPhraseSeconds = maxPhraseSeconds
+        self.micThresholdDBFS = micThresholdDBFS
+        self.audioRetentionDays = audioRetentionDays
+        self.aacBitrate = aacBitrate
     }
 
     public init(from decoder: any Decoder) throws {
@@ -89,6 +120,16 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
             ?? fallback.startPromptSeconds
         maxMeetingSeconds = try container.decodeIfPresent(Double.self, forKey: .maxMeetingSeconds)
             ?? fallback.maxMeetingSeconds
+        phraseGapSeconds = try container.decodeIfPresent(Double.self, forKey: .phraseGapSeconds)
+            ?? fallback.phraseGapSeconds
+        maxPhraseSeconds = try container.decodeIfPresent(Double.self, forKey: .maxPhraseSeconds)
+            ?? fallback.maxPhraseSeconds
+        micThresholdDBFS = try container.decodeIfPresent(Double.self, forKey: .micThresholdDBFS)
+            ?? fallback.micThresholdDBFS
+        audioRetentionDays = try container.decodeIfPresent(Int.self, forKey: .audioRetentionDays)
+            ?? fallback.audioRetentionDays
+        aacBitrate = try container.decodeIfPresent(Int.self, forKey: .aacBitrate)
+            ?? fallback.aacBitrate
     }
 
     public static func decode(_ data: Data) throws -> MeetingsConfig {

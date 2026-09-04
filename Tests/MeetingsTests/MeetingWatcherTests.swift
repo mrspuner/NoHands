@@ -9,7 +9,12 @@ private let config = MeetingsConfig(
     silenceSeconds: 60,
     autoStopSeconds: 120,
     startPromptSeconds: 30,
-    maxMeetingSeconds: 14400
+    maxMeetingSeconds: 14400,
+    phraseGapSeconds: 1.0,
+    maxPhraseSeconds: 40,
+    micThresholdDBFS: -30,
+    audioRetentionDays: 7,
+    aacBitrate: 32000
 )
 
 @Test func onlyTriggerApplicationsAreReported() {
