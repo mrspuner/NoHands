@@ -10,7 +10,7 @@ import Foundation
 /// switching what the model understands. Source:
 /// `.build/checkouts/FluidAudio/Sources/FluidAudio/Shared/TokenLanguageFilter.swift` and the
 /// `language:` doc comments on `AsrManager.transcribe`.
-public actor ParakeetTranscriber: Transcriber {
+public actor ParakeetTranscriber: Transcriber, TimedTranscriber {
     /// v3 is the multilingual build (25 European languages, including Russian). `.v2` is
     /// English-only and has no use in this project.
     public static let defaultVersion: AsrModelVersion = .v3
@@ -79,6 +79,26 @@ public actor ParakeetTranscriber: Transcriber {
             // unsupported platform, encoder instantiation) is a broken local model, not a bad
             // request — `modelUnavailable` is the case for that; nothing about the case ties it
             // to load time specifically.
+            throw TranscriptionError.modelUnavailable(error.localizedDescription)
+        }
+    }
+
+    /// Words with their times, for meetings. Deliberately does **not** apply
+    /// `TranscriberChecks.nonEmpty`: a track that recorded nothing but silence is a legitimate
+    /// outcome of a meeting — the owner may have sat the whole hour muted — and turning that
+    /// into an error here would make every such meeting unprocessable. Both tracks coming back
+    /// empty is a real failure, and it is caught one level up, where both are in hand.
+    public func transcribeTimed(audio url: URL) async throws -> [TimedWord] {
+        try TranscriberChecks.validateReadable(url)
+
+        var decoderState = TdtDecoderState.make(decoderLayers: decoderLayers)
+        do {
+            let result = try await manager.transcribe(url, decoderState: &decoderState, language: language)
+            return TokenWordAssembler.words(from: result.tokenTimings ?? [])
+        } catch let error as ASRError {
+            if case .invalidAudioData = error {
+                throw TranscriptionError.audioTooShort(try Self.duration(of: url))
+            }
             throw TranscriptionError.modelUnavailable(error.localizedDescription)
         }
     }
