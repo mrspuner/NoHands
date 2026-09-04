@@ -272,6 +272,32 @@ private func orphanDraft(in queue: URL, startedAt: Date = noon, broken: Bool = f
     }
 }
 
+// The panel says what an answer did, on the orphan path too. A panel that just collapsed left
+// the owner unable to tell a saved recording from a deleted one — the complaint that produced
+// the meeting notices in the first place, and this was the last path still silent.
+@Test @MainActor func answeringAnOrphanPromptSaysWhatItDid() throws {
+    let harness = try Harness()
+    _ = try orphanDraft(in: harness.queue)
+    harness.coordinator.adoptOrphans(at: noon)
+
+    harness.coordinator.answer(.keep, at: noon)
+
+    if case .saved = harness.shown.last {
+    } else {
+        Issue.record("keeping an orphan draft said nothing: \(String(describing: harness.shown.last))")
+    }
+}
+
+@Test @MainActor func deletingAnOrphanSaysSoRatherThanCollapsingSilently() throws {
+    let harness = try Harness()
+    _ = try orphanDraft(in: harness.queue)
+    harness.coordinator.adoptOrphans(at: noon)
+
+    harness.coordinator.answer(.delete, at: noon)
+
+    #expect(harness.shown.last == .deleted)
+}
+
 @Test @MainActor func deletingAnOrphanIsTheOnlyThingThatRemovesIt() throws {
     let harness = try Harness()
     let draft = try orphanDraft(in: harness.queue)

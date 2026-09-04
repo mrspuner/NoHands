@@ -538,6 +538,8 @@ public final class MeetingCoordinator {
     private func keepOrphan(now: Date) {
         guard !pendingOrphans.isEmpty else { return }
         let draft = pendingOrphans.removeFirst()
+        // Measured before the hand-off: after the rename this path no longer exists.
+        let span = Self.recordedSpan(of: draft, now: now)
         var failures: [String] = []
         for name in [MeetingAudioRecorder.systemFileName, MeetingAudioRecorder.microphoneFileName] {
             let url = draft.appendingPathComponent(name)
@@ -562,7 +564,11 @@ public final class MeetingCoordinator {
                 "Cannot hand over \(draft.lastPathComponent): \(error.localizedDescription)"
             )
         }
-        finishOrphan(now: now, failure: failures.isEmpty ? nil : failures.joined(separator: "; "))
+        finishOrphan(
+            now: now,
+            failure: failures.isEmpty ? nil : failures.joined(separator: "; "),
+            saved: span
+        )
     }
 
     private func deleteOrphan(now: Date) {
@@ -574,10 +580,11 @@ public final class MeetingCoordinator {
         } catch {
             failure = "Cannot remove \(draft.lastPathComponent): \(error.localizedDescription)"
         }
-        finishOrphan(now: now, failure: failure)
+        finishOrphan(now: now, failure: failure, saved: nil)
     }
 
-    private func finishOrphan(now: Date, failure: String?) {
+    /// - Parameter saved: how long the kept recording ran, or nil when it was deleted.
+    private func finishOrphan(now: Date, failure: String?, saved: TimeInterval?) {
         orphanOfferedAt = nil
         if let failure {
             // The named reason keeps the panel for its dwell, and the next prompt waits behind
@@ -586,11 +593,13 @@ public final class MeetingCoordinator {
             orphanQuietUntil = now.addingTimeInterval(MeetingMachine.noticeDwell)
             return
         }
-        if pendingOrphans.isEmpty {
-            hidePanel(0)
-            return
-        }
-        refreshOrphanPrompt(now: now)
+        // An answer is followed by a word about what it did — the same rule the meeting paths
+        // follow since the first live recording, where a panel that just collapsed left the
+        // owner unable to tell a saved recording from a deleted one. The quiet window is what
+        // keeps the next orphan prompt from replacing that word before it is read.
+        showPanel(saved.map { .saved(duration: $0) } ?? .deleted)
+        hidePanel(MeetingMachine.noticeDwell)
+        orphanQuietUntil = now.addingTimeInterval(MeetingMachine.noticeDwell)
     }
 
     /// How long the recording in this folder ran: from when it started to the last time anything
