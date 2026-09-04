@@ -110,6 +110,8 @@ private final class Harness {
     private(set) var shown: [MeetingPanelState] = []
     private(set) var hidden: [TimeInterval] = []
     private(set) var blocked: [Bool] = []
+    /// Folders handed to phase 2б. The rename is the only hand-off point, and it has two branches.
+    private(set) var handedToQueue: [URL] = []
     /// The input's sample rate when it is narrowband, nil when the band is fine — one entry per
     /// time the coordinator said so.
     private(set) var narrowband: [Double?] = []
@@ -164,7 +166,8 @@ private final class Harness {
                 capture.failure = self?.captureFailure
                 self?.captures.append(capture)
                 return capture
-            }
+            },
+            onFolderReady: { [weak self] in self?.handedToQueue.append($0) }
         )
     }
 
@@ -275,6 +278,19 @@ private func orphanDraft(in queue: URL, startedAt: Date = noon, broken: Bool = f
     for name in [MeetingAudioRecorder.systemFileName, MeetingAudioRecorder.microphoneFileName] {
         #expect(try declaredDataSize(at: folder.appendingPathComponent(name)) == 64)
     }
+}
+
+// An orphaned draft the owner chose to keep is the rename's second branch, and it is just as
+// obligated to reach the queue.
+@Test @MainActor func keepingAnOrphanedDraftAlsoHandsItToTheQueue() throws {
+    let harness = try Harness()
+    _ = try orphanDraft(in: harness.queue)
+    harness.coordinator.adoptOrphans(at: noon)
+
+    harness.coordinator.answer(.keep, at: noon)
+
+    #expect(harness.handedToQueue.count == 1)
+    #expect(harness.handedToQueue[0].lastPathComponent.hasPrefix(".draft-") == false)
 }
 
 // The panel says what an answer did, on the orphan path too. A panel that just collapsed left
@@ -434,6 +450,23 @@ private func isFailure(_ state: MeetingPanelState?) -> Bool {
     #expect(metadata.systemStartedAt == 0.25)
     #expect(metadata.microphoneStartedAt == 0.5)
     #expect(metadata.stoppedAt == noon.addingTimeInterval(2820))
+}
+
+// The rename is the only hand-off point into 2б. Without this call, a recording only reaches the
+// archive on the next app launch, and nothing about a live meeting would show that — the file
+// does show up, just a day later.
+@Test @MainActor func stoppingARecordingHandsTheFolderToTheQueue() async throws {
+    let harness = try Harness()
+    harness.processes = [telemost]
+    harness.coordinator.startPressed(at: noon)
+
+    harness.coordinator.stopPressed(at: noon.addingTimeInterval(2820))
+    await harness.coordinator.settle()
+
+    #expect(harness.handedToQueue.count == 1)
+    // The final name is handed over, not the draft: the queue must never see a folder still being written to.
+    #expect(harness.handedToQueue[0].lastPathComponent.hasPrefix(".draft-") == false)
+    #expect(harness.handedToQueue[0].lastPathComponent == harness.handedOver[0])
 }
 
 @Test @MainActor func refusingAMeetingRemovesItsDraft() async throws {

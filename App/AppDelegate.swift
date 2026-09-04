@@ -8,6 +8,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusMenu: StatusMenu?
     private var coordinator: DictationCoordinator?
     private var meetings: MeetingCoordinator?
+    private var meetingQueue: MeetingQueue?
+    /// Rebuilt alongside `meetingQueue` on every config reload, so a reload also picks up a
+    /// changed `audioRetentionDays`. The old timer is invalidated first — see `rebuildMeetings`.
+    private var sweepTimer: Timer?
     private var buildTask: Task<Void, Never>?
     private let panel = PanelWindow()
     /// Owned here rather than by the coordinator: a config reload rebuilds the coordinator, and
@@ -103,6 +107,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return "созвоны: \(error.localizedDescription)"
         }
         meetings?.stop()
+        // The queue loads the model itself, with the same language as dictation: one machine
+        // listens to the same speech, and a second key in the config would mean two settings
+        // for one ear.
+        let dictationLanguage = (try? DictationConfig.loadOrCreate())?.language
+        let queue = MeetingQueue(
+            config: config,
+            makeTranscriber: { try await ParakeetTranscriber.load(language: dictationLanguage) },
+            report: { [panel] outcome in
+                Task { @MainActor in
+                    panel.show(notice: MeetingNotice.forOutcome(outcome))
+                    panel.hideNotice(after: MeetingNotice.dwell)
+                }
+            }
+        )
+        meetingQueue = queue
         let built = MeetingCoordinator(
             config: config,
             showPanel: { [panel] state in panel.show(meeting: state) },
@@ -115,12 +134,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // finishes before a meeting starts recording. Asked live rather than captured — the
             // dictation coordinator is rebuilt by a config reload, and a captured one would go
             // on answering for an object nobody is dictating into.
-            isDictating: { [weak self] in self?.coordinator?.isDictating ?? false }
+            isDictating: { [weak self] in self?.coordinator?.isDictating ?? false },
+            // The rename in `MeetingCoordinator` is the only hand-off point into phase 2б — see
+            // its own comment. Without this, a finished recording would only reach the archive on
+            // the next launch's `scanAll`.
+            onFolderReady: { url in
+                Task { await queue.enqueue(url) }
+            }
         )
         // Drafts a crash left behind are found in here: `start` looks for them before it begins
         // polling, and offers the first one on the panel.
         built.start()
         meetings = built
+
+        // A previous timer, if any, must not go on sweeping alongside this one: `sweepTimer` is
+        // rebuilt every time the queue is, so an un-invalidated one would pile up one extra daily
+        // sweep per config reload for as long as the application keeps running.
+        sweepTimer?.invalidate()
+        Task {
+            // Sweep first. `scanAll` can return before the folders it found have been processed —
+            // if a drain is already running it hands them over and exits — so sweeping afterwards
+            // would run alongside live processing. Nothing would break, because rotation only
+            // touches folders that are already `.processed` and a folder just finished is far too
+            // fresh to sweep, but the order that needs no such argument is the better one.
+            await queue.sweep()
+            await queue.scanAll()
+        }
+        // The machine is always on, so a once-a-day timer is all the scheduler this needs.
+        sweepTimer = Timer.scheduledTimer(withTimeInterval: 86400, repeats: true) { _ in
+            Task { await queue.sweep() }
+        }
         return nil
     }
 
