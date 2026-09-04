@@ -23,7 +23,7 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
     )
     #expect(rendered.hasPrefix("---\n"))
     #expect(rendered.contains("duration: 4m\n"))
-    #expect(rendered.contains("app: Телемост\n"))
+    #expect(rendered.contains("app: \"Телемост\"\n"))
     #expect(rendered.contains("## Транскрипт\n"))
     #expect(rendered.contains("[00:00:03] Собеседник: привет\n"))
     #expect(rendered.contains("[00:00:11] Я: привет и тебе\n"))
@@ -38,6 +38,34 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
         startedAt: started, durationSeconds: 60, appName: "Телемост"
     )
     #expect(!rendered.contains("participants"))
+}
+
+// The other half of what this phase deliberately does not write. Nothing but a test can hold
+// this line: a TODO comment was ruled out, so a later change reintroducing these headings here
+// would otherwise go unnoticed until phase 2в wrote them a second time.
+@Test func summaryAndDecisionsAreNotWritten() {
+    let rendered = MeetingMarkdown.render(
+        transcript: [Utterance(speaker: .me, start: 0, end: 1, text: "раз")],
+        startedAt: started, durationSeconds: 60, appName: "Телемост"
+    )
+    #expect(!rendered.contains("Саммари"))
+    #expect(!rendered.contains("Решения"))
+}
+
+// The application name comes from `NSRunningApplication`, so it is outside this code's control.
+@Test func anApplicationNameCannotBreakTheFrontMatter() {
+    let rendered = MeetingMarkdown.render(
+        transcript: [Utterance(speaker: .me, start: 0, end: 1, text: "раз")],
+        startedAt: started, durationSeconds: 60,
+        appName: "Zoom: \"Meetings\"\nfake: value"
+    )
+    // The injected text survives as data inside the quoted value, and that is fine — what must
+    // not happen is it becoming a key of its own, which is exactly what the unescaped newline
+    // would have made it.
+    let frontMatter = rendered.components(separatedBy: "---")[1]
+    let lines = frontMatter.split(separator: "\n")
+    #expect(!lines.contains { $0.hasPrefix("fake:") })
+    #expect(lines.contains { $0 == #"app: "Zoom: \"Meetings\"fake: value""# })
 }
 
 @Test func anUnknownApplicationLeavesTheLineOut() {
