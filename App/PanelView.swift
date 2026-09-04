@@ -6,16 +6,27 @@ struct PanelView: View {
     @ObservedObject var model: PanelModel
 
     var body: some View {
-        Group {
-            // Dictation first, and only then a meeting: dictation is what the owner is doing
-            // this second, it lasts seconds, and a meeting prompt it covers comes back by
-            // itself the moment it collapses.
-            if model.state != nil {
-                active
-            } else if let meeting = model.meeting {
-                MeetingContent(model: model, state: meeting)
-            } else {
-                resting
+        VStack(spacing: 6) {
+            if let notice = model.notice {
+                Text(notice.text)
+                    .font(.system(size: 12))
+                    .foregroundStyle(notice.isFailure ? Color.red : Color.secondary)
+                    .lineLimit(1)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Surface(recording: false))
+            }
+            Group {
+                // Dictation first, and only then a meeting: dictation is what the owner is doing
+                // this second, it lasts seconds, and a meeting prompt it covers comes back by
+                // itself the moment it collapses.
+                if model.state != nil {
+                    active
+                } else if let meeting = model.meeting {
+                    MeetingContent(model: model, state: meeting)
+                } else {
+                    resting
+                }
             }
         }
         // Both views hang from the bottom of the window, so expanding and collapsing grows and

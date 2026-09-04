@@ -8,6 +8,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusMenu: StatusMenu?
     private var coordinator: DictationCoordinator?
     private var meetings: MeetingCoordinator?
+    /// Built once and reconfigured in place afterwards, never rebuilt — see its own `config` for
+    /// why a rebuild on every reload would be unsafe rather than merely wasteful.
+    private var meetingQueue: MeetingQueue?
+    /// Unlike `meetingQueue`, this one *is* recreated every time `rebuildMeetings` runs, as a
+    /// side effect of that method always rebuilding this whole block rather than only at launch.
+    /// The old timer is invalidated first, so a reload never leaves two of them sweeping.
+    private var sweepTimer: Timer?
     private var buildTask: Task<Void, Never>?
     private let panel = PanelWindow()
     /// Owned here rather than by the coordinator: a config reload rebuilds the coordinator, and
@@ -70,11 +77,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.setStatus("Уже перезагружаюсь, подождите…")
             return
         }
-        // Meetings are rebuilt outside the task, and before it: they need no model, and making
-        // them wait for one would leave a launch unable to notice a meeting for as long as the
-        // model takes to load.
-        let meetingsNote = rebuildMeetings()
         buildTask = Task { [weak self] in
+            // Meetings are rebuilt first and awaited before the dictation build starts, rather
+            // than synchronously before this task the way they used to be: `rebuildMeetings` now
+            // has to cross into `MeetingQueue`'s isolation to reconfigure it in place, and that
+            // crossing needs `await`. It still costs nothing next to loading a 470 MB model, so
+            // meetings are ready long before `buildCoordinator` finishes — the property this
+            // ordering exists to keep.
+            let meetingsNote = await self?.rebuildMeetings() ?? nil
             await self?.buildCoordinator(menu: menu, meetingsNote: meetingsNote)
             self?.buildTask = nil
         }
@@ -82,11 +92,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Builds the meeting coordinator, or returns the line saying why it did not.
     ///
+    /// `async` because reconfiguring `MeetingQueue` in place (`update(config:makeTranscriber:)`)
+    /// requires crossing into its actor, which building a fresh one every time did not. See
+    /// `startBuild` for how the caller keeps that crossing from delaying meetings behind the
+    /// dictation model load.
+    ///
     /// A line for the status line rather than something shown here: the panel is where a
     /// meeting reports what became of a recording, and a settings file that could not be read
     /// is not that — it is the same "why is this not working" that the dictation build already
     /// answers in the menu, and the menu is where the owner has just clicked to reload.
-    private func rebuildMeetings() -> String? {
+    private func rebuildMeetings() async -> String? {
         // Never around anything the old coordinator is still holding — a recording, an
         // unanswered prompt, a refusal. `canBeRebuilt` is deliberately not the same question as
         // "what may the menu offer": it says so itself, at length, and this line asking the
@@ -103,6 +118,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return "созвоны: \(error.localizedDescription)"
         }
         meetings?.stop()
+
+        let dictationLanguage = (try? DictationConfig.loadOrCreate())?.language
+        // The queue loads the model itself, with the same language as dictation: one machine
+        // listens to the same speech, and a second key in the config would mean two settings
+        // for one ear.
+        let makeTranscriber: @Sendable () async throws -> any TimedTranscriber = {
+            try await ParakeetTranscriber.load(language: dictationLanguage)
+        }
+        // Built once and afterwards only re-configured. «Перечитать конфиг» is the single reload
+        // path for every setting in this application, and a backlog drain can run for hours, so
+        // replacing the actor here would routinely leave two of them working the same folder —
+        // see `MeetingQueue.config` for what that costs. `startBuild`'s task guard exists for the
+        // same reason on the dictation side.
+        if let existing = meetingQueue {
+            await existing.update(config: config, makeTranscriber: makeTranscriber)
+        } else {
+            meetingQueue = MeetingQueue(
+                config: config,
+                makeTranscriber: makeTranscriber,
+                report: { [panel] outcome in
+                    Task { @MainActor in
+                        panel.show(notice: MeetingNotice.forOutcome(outcome))
+                        panel.hideNotice(after: MeetingNotice.dwell)
+                    }
+                }
+            )
+        }
+        guard let queue = meetingQueue else { return nil }
         let built = MeetingCoordinator(
             config: config,
             showPanel: { [panel] state in panel.show(meeting: state) },
@@ -115,12 +158,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // finishes before a meeting starts recording. Asked live rather than captured — the
             // dictation coordinator is rebuilt by a config reload, and a captured one would go
             // on answering for an object nobody is dictating into.
-            isDictating: { [weak self] in self?.coordinator?.isDictating ?? false }
+            isDictating: { [weak self] in self?.coordinator?.isDictating ?? false },
+            // The rename in `MeetingCoordinator` is the only hand-off point into phase 2б — see
+            // its own comment. Without this, a finished recording would only reach the archive on
+            // the next launch's `scanAll`.
+            onFolderReady: { url in
+                Task { await queue.enqueue(url) }
+            }
         )
         // Drafts a crash left behind are found in here: `start` looks for them before it begins
         // polling, and offers the first one on the panel.
         built.start()
         meetings = built
+
+        // A previous timer, if any, must not go on sweeping alongside this one: `rebuildMeetings`
+        // runs on every config reload, not just at launch, and an un-invalidated timer would pile
+        // up one extra daily sweep per reload for as long as the application keeps running.
+        sweepTimer?.invalidate()
+        Task {
+            // Sweep first. `scanAll` can return before the folders it found have been processed —
+            // if a drain is already running it hands them over and exits — so sweeping afterwards
+            // would run alongside live processing. Nothing would break, because rotation only
+            // touches folders that are already `.processed` and a folder just finished is far too
+            // fresh to sweep, but the order that needs no such argument is the better one.
+            await queue.sweep()
+            await queue.scanAll()
+        }
+        // The machine is always on, so a once-a-day timer is all the scheduler this needs.
+        let timer = Timer.scheduledTimer(withTimeInterval: 86400, repeats: true) { _ in
+            Task { await queue.sweep() }
+        }
+        // `.common`, not the default mode: this file has already paid for the alternative twice,
+        // on `MeetingCoordinator`'s poller and `DictationCoordinator`'s ticker — a default-mode
+        // timer stops firing while a menu is open, and the menu is one of this application's two
+        // surfaces.
+        RunLoop.main.add(timer, forMode: .common)
+        sweepTimer = timer
         return nil
     }
 

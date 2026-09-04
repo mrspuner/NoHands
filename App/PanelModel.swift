@@ -30,6 +30,11 @@ final class PanelModel: ObservableObject {
     /// same reason `meeting` is kept apart from `state`: the two live on different clocks, and a
     /// dictation collapsing would otherwise wipe the warning off an hour-long recording.
     @Published var meetingNarrowbandHz: Double?
+    /// The transcription notice, kept apart from `state` and `meeting` rather than merged into
+    /// either. A finished transcript lands seconds after a meeting ends — exactly when dictation
+    /// has just been unblocked and may well be in use — so it must not take the row a dictation
+    /// is drawing on.
+    @Published var notice: MeetingNotice?
 
     func push(level: Float) {
         levels.removeFirst()

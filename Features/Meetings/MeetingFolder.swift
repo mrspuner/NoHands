@@ -20,6 +20,12 @@ public enum MeetingFolder {
             .appendingPathComponent(".queue")
     }
 
+    /// `~/Meetings` — where the markdown lands and what Obsidian opens. The queue is the hidden
+    /// folder inside it, so this is simply one level up.
+    public static var archiveURL: URL {
+        queueURL.deletingLastPathComponent()
+    }
+
     /// `2026-09-03-1430-telemost`. Local time on purpose: the archive is read by a human who
     /// remembers when the meeting was, not by a machine reconciling time zones.
     public static func baseName(startedAt: Date, slug: String) -> String {

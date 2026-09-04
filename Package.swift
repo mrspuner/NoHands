@@ -34,7 +34,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "CLI",
-            dependencies: ["Core", "Dictation"],
+            dependencies: ["Core", "Dictation", "Meetings"],
             path: "CLI"
         ),
         .executableTarget(

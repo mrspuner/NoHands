@@ -25,6 +25,14 @@ nohands record <секунд> <выход.wav>
 nohands dictate [--raw]
     Диктовка целиком: запись микрофона до Enter, распознавание Parakeet,
     чистка через DeepSeek, вывод текста. --raw печатает текст без чистки.
+
+nohands meeting process <папка встречи>
+    Прогоняет папку из ~/Meetings/.queue заново и перезаписывает markdown.
+    Не запускать, пока работает приложение: две очереди над одной папкой её портят.
+
+nohands meeting levels <папка встречи>
+    Печатает реплики дорожки микрофона с их уровнем в dBFS. Крестик слева — реплика
+    не проходит текущий порог micThresholdDBFS. Инструмент подбора порога.
 """
 
 func fail(_ message: String) -> Never {
@@ -81,6 +89,19 @@ struct NoHands {
                 try await runRecord(arguments)
             case "dictate":
                 try await runDictate(arguments)
+            case "meeting":
+                let parsed: MeetingArguments
+                do {
+                    parsed = try MeetingArguments.parse(arguments)
+                } catch MeetingArguments.ParseError.message(let message) {
+                    fail(message)
+                }
+                switch parsed.subcommand {
+                case .process:
+                    try await runMeetingProcess(parsed.folder)
+                case .levels:
+                    try await runMeetingLevels(parsed.folder)
+                }
             default:
                 fail("Неизвестная команда: \(command)\n\n\(usage)")
             }

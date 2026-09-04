@@ -48,6 +48,9 @@ public final class MeetingCoordinator {
     private let readInputDevice: () -> AudioInputDevice?
     private let readProcesses: () -> [AudioProcessMonitor.State]?
     private let makeCapture: (URL, [String], @escaping @Sendable (String) -> Void) -> any MeetingCapture
+    /// The hand-off to phase 2б. Called with the folder's final name, after the rename that
+    /// makes it visible to the queue — never with the draft.
+    private let onFolderReady: (URL) -> Void
 
     private var machine: MeetingMachine
     private var poller: Timer?
@@ -119,6 +122,10 @@ public final class MeetingCoordinator {
     ///     dies mid-meeting, in that order. The list is handed straight through from the config:
     ///     it cuts applications out of the audio mix, so anything added to it "just in case"
     ///     would produce a valid recording full of silence, and nothing downstream would notice.
+    ///   - onFolderReady: called once per hand-off, with the folder's final URL. Defaults to
+    ///     doing nothing — this initializer already has a dozen parameters and about fifteen call
+    ///     sites in the tests, and "hand off to nobody" is exactly the behaviour that existed
+    ///     before phase 2б had a queue to hand off to.
     public init(
         config: MeetingsConfig,
         queue: URL = MeetingFolder.queueURL,
@@ -131,7 +138,8 @@ public final class MeetingCoordinator {
         readProcesses: @escaping () -> [AudioProcessMonitor.State]? = AudioProcessMonitor.current,
         makeCapture: @escaping (URL, [String], @escaping @Sendable (String) -> Void) -> any MeetingCapture = {
             MeetingAudioRecorder(folder: $0, excludedBundleIDs: $1, onFailureWhileRecording: $2)
-        }
+        },
+        onFolderReady: @escaping (URL) -> Void = { _ in }
     ) {
         self.config = config
         self.queue = queue
@@ -143,6 +151,7 @@ public final class MeetingCoordinator {
         self.readInputDevice = readInputDevice
         self.readProcesses = readProcesses
         self.makeCapture = makeCapture
+        self.onFolderReady = onFolderReady
         self.machine = MeetingMachine(limits: MeetingMachine.Limits(config: config))
     }
 
@@ -445,7 +454,8 @@ public final class MeetingCoordinator {
             var failures: [String] = []
             if let stopFailure = await closing?.value ?? nil { failures.append(stopFailure) }
             do {
-                try MeetingFolder.promote(folder)
+                let ready = try MeetingFolder.promote(folder)
+                self?.onFolderReady(ready)
             } catch {
                 failures.append(
                     "Cannot hand over \(folder.lastPathComponent): \(error.localizedDescription)"
@@ -558,7 +568,8 @@ public final class MeetingCoordinator {
             // Handed over even when a repair failed: the owner asked to keep this recording, and
             // a track that cannot be repaired is still a track. The reason is named rather than
             // turned into a silent refusal to save.
-            try MeetingFolder.promote(draft)
+            let ready = try MeetingFolder.promote(draft)
+            onFolderReady(ready)
         } catch {
             failures.append(
                 "Cannot hand over \(draft.lastPathComponent): \(error.localizedDescription)"

@@ -65,7 +65,7 @@ private func timing(_ token: String, _ start: Double, _ end: Double, _ confidenc
     #expect(words[1].end == 0.7)
 }
 
-// Первый токен обычно приходит без ведущего пробела: он открывает слово тем, что он первый.
+// The first token usually arrives without a leading space: it starts a word simply by being first.
 @Test func firstTokenWithoutSpaceStillStartsAWord() {
     let words = TokenWordAssembler.words(from: [
         timing("да", 1.0, 1.2),
@@ -74,8 +74,9 @@ private func timing(_ token: String, _ start: Double, _ end: Double, _ confidenc
     #expect(words.map(\.text) == ["да", "нет"])
 }
 
-// Маркер SentencePiece обрабатывается наравне с пробелом: `normalizedTimingToken` заменяет его
-// всегда, но у библиотеки обе формы проверяются, и полагаться на одну — лишний риск даром.
+// The SentencePiece marker is handled the same as a space: `normalizedTimingToken` always
+// replaces it, but the library's output shows both forms, and relying on just one would be
+// a needless risk.
 @Test func sentencePieceMarkerAlsoStartsAWord() {
     let words = TokenWordAssembler.words(from: [
         timing("\u{2581}один", 0.0, 0.3),
@@ -252,28 +253,28 @@ private var fixtureURL: URL? {
     return URL(fileURLWithPath: path)
 }
 
-// Единственная проверка в проекте, которой нужны и модель, и настоящий длинный файл. Пропускается,
-// когда записи нет: она про то, чего не видно в чистых тестах — что таймкоды у длинного файла
-// сквозные, а не отсчитываются заново в каждом куске по тридцать секунд.
+// The only check in the project that needs both the model and a real long file. Skipped when
+// the recording is missing: it is about something invisible in clean unit tests — that a long
+// file's timestamps run continuously, rather than resetting at every thirty-second chunk.
 @Test(.enabled(if: fixtureURL != nil))
 func timedTranscriptionOfALongFileHasGlobalTimestamps() async throws {
     let url = try #require(fixtureURL)
     let transcriber = try await ParakeetTranscriber.load(language: "ru")
     let words = try await transcriber.transcribeTimed(audio: url)
 
-    #expect(!words.isEmpty, "в записи не нашлось ни одного слова")
+    #expect(!words.isEmpty, "no words in the recording")
 
-    // Куски у FluidAudio по тридцать секунд. Слово, начинающееся позже, доказывает, что времена
-    // не сбрасываются на границе куска.
+    // FluidAudio's chunks are thirty seconds long. A word starting later proves that timestamps
+    // do not reset at the chunk boundary.
     let latest = words.map(\.start).max() ?? 0
-    #expect(latest > 30, "все слова уместились в первые 30 с — таймкоды похожи на локальные")
+    #expect(latest > 30, "every word fell inside the first 30 s — timestamps look chunk-local")
 
     let file = try AVAudioFile(forReading: url)
     let duration = Double(file.length) / file.processingFormat.sampleRate
-    #expect(latest <= duration + 1, "слово начинается позже конца файла")
+    #expect(latest <= duration + 1, "a word starts past the end of the file")
 
     for (previous, next) in zip(words, words.dropFirst()) {
-        #expect(previous.start <= next.start, "слова пришли не по порядку")
+        #expect(previous.start <= next.start, "words arrived out of order")
     }
 }
 ```
@@ -316,18 +317,51 @@ public actor ParakeetTranscriber: Transcriber, TimedTranscriber {
     /// into an error here would make every such meeting unprocessable. Both tracks coming back
     /// empty is a real failure, and it is caught one level up, where both are in hand.
     public func transcribeTimed(audio url: URL) async throws -> [TimedWord] {
+        try await decode(url) { TokenWordAssembler.words(from: $0.tokenTimings ?? []) }
+    }
+```
+
+Обе публичные функции различаются одной строкой — тем, что берут из результата, — поэтому всё
+остальное живёт в одном месте. Иначе новая ветка в разборе `ASRError` появлялась бы в двух
+копиях, и ничто не заставило бы их совпасть.
+
+```swift
+    /// The decode both public methods run, differing only in what they take from the result.
+    ///
+    /// Extracted rather than copied: the error mapping below is the part that will grow — a new
+    /// `ASRError` case, a new distinction worth making — and two copies of it would drift apart
+    /// silently, because nothing fails when only one of them learns something.
+    private func decode<T>(
+        _ url: URL,
+        extract: (ASRResult) throws -> T
+    ) async throws -> T {
         try TranscriberChecks.validateReadable(url)
 
+        // `AsrManager.transcribe(_:decoderState:language:)` reads and resamples the file itself
+        // through FluidAudio's own `AudioConverter` — the library's docs warn against hand-
+        // decoding audio, so this deliberately does not touch the file's bytes beyond the
+        // readability check above.
         var decoderState = TdtDecoderState.make(decoderLayers: decoderLayers)
         do {
             let result = try await manager.transcribe(url, decoderState: &decoderState, language: language)
-            return TokenWordAssembler.words(from: result.tokenTimings ?? [])
+            return try extract(result)
         } catch let error as ASRError {
             if case .invalidAudioData = error {
                 throw TranscriptionError.audioTooShort(try Self.duration(of: url))
             }
+            // Every other ASRError (not initialized, model load, processing, compilation,
+            // unsupported platform, encoder instantiation) is a broken local model, not a bad
+            // request — `modelUnavailable` is the case for that.
             throw TranscriptionError.modelUnavailable(error.localizedDescription)
         }
+    }
+```
+
+`transcribe(audio:)` переписывается на тот же вызов, сохраняя свою проверку на пустоту:
+
+```swift
+    public func transcribe(audio url: URL) async throws -> String {
+        try await decode(url) { try TranscriberChecks.nonEmpty($0.text) }
     }
 ```
 
@@ -383,7 +417,7 @@ git commit -m "Parakeet отдаёт слова с таймкодами, про�
     #expect(config.micThresholdDBFS == -42)
     #expect(config.audioRetentionDays == 3)
     #expect(config.aacBitrate == 24000)
-    // Ключи, которых в файле не было, остались дефолтными — общее правило этого конфига.
+    // Keys absent from the file stayed at their defaults — the general rule for this config.
     #expect(config.autoStopSeconds == MeetingsConfig.default.autoStopSeconds)
 }
 ```
@@ -418,9 +452,9 @@ Expected: сборка не проходит — `value of type 'MeetingsConfig'
 ```swift
         phraseGapSeconds: 1.0,
         maxPhraseSeconds: 40,
-        // Провизорное значение, поставленное чтобы конвейер собирался. Речь на первой живой
-        // встрече била в три четверти шкалы — около -2,5 dBFS, — а комната через стол заведомо
-        // тише. Настоящее ставится замером через `nohands meeting levels`.
+        // A provisional value, set just so the pipeline builds. Speech at the first live meeting
+        // hit three quarters of the scale — around -2.5 dBFS — while the room across the table
+        // was reliably quieter. The real value is set by measuring with `nohands meeting levels`.
         micThresholdDBFS: -30,
         audioRetentionDays: 7,
         aacBitrate: 32000
@@ -502,8 +536,8 @@ private func word(_ text: String, _ start: Double, _ end: Double) -> TimedWord {
     #expect(result[0].speaker == .others)
 }
 
-// Монолог без единой достаточной паузы обязан всё равно разрезаться, иначе транскрипт получает
-// одну строку на весь экран.
+// A monologue with not one sufficient pause still has to be cut, or the transcript ends up as
+// one line filling the whole screen.
 @Test func theLengthCeilingCutsAMonologue() {
     let words = (0..<20).map { index -> TimedWord in
         let start = Double(index) * 1.0
@@ -643,7 +677,7 @@ import Foundation
 import Testing
 @testable import Core
 
-/// Пишет WAV 16 кГц моно Int16, в котором первая половина тихая, а вторая громкая.
+/// Writes a 16 kHz mono Int16 WAV where the first half is quiet and the second half is loud.
 private func makeTwoHalvesFile() throws -> URL {
     let url = FileManager.default.temporaryDirectory
         .appendingPathComponent("phrase-level-\(UUID().uuidString).wav")
@@ -651,12 +685,12 @@ private func makeTwoHalvesFile() throws -> URL {
         commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true
     )!
     let file = try AVAudioFile(forWriting: url, settings: format.settings)
-    let frames = AVAudioFrameCount(16000)  // одна секунда
+    let frames = AVAudioFrameCount(16000)  // one second
     let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
     buffer.frameLength = frames
     let channel = buffer.int16ChannelData![0]
     for index in 0..<Int(frames) {
-        // Первая половина: -60 dBFS. Вторая: около -6 dBFS. Меандр, чтобы RMS равнялся амплитуде.
+        // First half: -60 dBFS. Second half: around -6 dBFS. A square wave, so RMS equals amplitude.
         let amplitude: Int16 = index < 8000 ? 33 : 16384
         channel[index] = index % 2 == 0 ? amplitude : -amplitude
     }
@@ -678,7 +712,8 @@ private func makeTwoHalvesFile() throws -> URL {
     #expect(level < -50)
 }
 
-// Громчайшее окно, а не среднее: интервал, где тихо почти всё, но есть громкий кусок, — громкий.
+// The loudest window, not the average: a span that is quiet almost everywhere but has one loud
+// piece counts as loud.
 @Test func oneLoudWindowMakesTheWholeSpanLoud() throws {
     let url = try makeTwoHalvesFile()
     defer { try? FileManager.default.removeItem(at: url) }
@@ -707,8 +742,8 @@ private func makeTwoHalvesFile() throws -> URL {
     #expect(kept.map(\.text) == ["своя речь"])
 }
 
-// Отсекается фраза целиком, не отдельные слова: «… да … понятно …» нельзя ни прочитать, ни
-// использовать для подбора порога.
+// A phrase is dropped whole, not word by word: "... yeah ... got it ..." can neither be read nor
+// used to tune the threshold.
 @Test func gateKeepsAnUtteranceWhole() throws {
     let utterance = Utterance(speaker: .me, start: 0, end: 5, text: "длинная своя реплика целиком")
     let kept = try PhraseLevel.passing([utterance], thresholdDBFS: -30) { _ in -10 }
@@ -870,7 +905,8 @@ private func theirs(_ start: Double, _ text: String) -> Utterance {
         microphoneStartedAt: 503221.034,
         systemStartedAt: 503220.169
     )
-    // Системная дорожка началась раньше, значит её ноль и есть ноль шкалы, а микрофон едет на 0,865.
+    // The system track started earlier, so its zero is the timeline's zero, and the microphone
+    // shifts to 0.865.
     #expect(merged.map(\.text) == ["они", "я"])
     #expect(abs(merged[0].start - 0) < 0.001)
     #expect(abs(merged[1].start - 0.865) < 0.001)
@@ -886,7 +922,8 @@ private func theirs(_ start: Double, _ text: String) -> Utterance {
     #expect(merged.map(\.text) == ["первый", "второй", "третий", "четвёртый"])
 }
 
-// Дорожка, не отдавшая ни буфера, — это `nil`. Сдвигать нечего, и слов оттуда всё равно нет.
+// A track that never delivered a single buffer is `nil`. There is nothing to shift, and no words
+// come from it anyway.
 @Test func aTrackThatNeverStartedDoesNotMoveTheZero() {
     let merged = MeetingTranscript.merge(
         mine: [],
@@ -907,7 +944,8 @@ private func theirs(_ start: Double, _ text: String) -> Utterance {
     #expect(merged.map(\.start) == [1])
 }
 
-// Равные времена разводятся детерминированно, иначе один и тот же прогон давал бы разный файл.
+// Equal timestamps are resolved deterministically, or the same run would produce a different file
+// each time.
 @Test func aTieIsBrokenTowardsTheOtherSide() {
     let merged = MeetingTranscript.merge(
         mine: [mine(0, "я")],
@@ -1006,7 +1044,7 @@ import Foundation
 import Testing
 @testable import Core
 
-private let started = Date(timeIntervalSince1970: 1_788_500_000)  // фиксированный момент
+private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed moment
 
 @Test func timestampsAreHoursMinutesSeconds() {
     #expect(MeetingMarkdown.timestamp(0) == "00:00:00")
@@ -1027,20 +1065,49 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // фикси�
     )
     #expect(rendered.hasPrefix("---\n"))
     #expect(rendered.contains("duration: 4m\n"))
-    #expect(rendered.contains("app: Телемост\n"))
+    #expect(rendered.contains("app: \"Телемост\"\n"))
     #expect(rendered.contains("## Транскрипт\n"))
     #expect(rendered.contains("[00:00:03] Собеседник: привет\n"))
     #expect(rendered.contains("[00:00:11] Я: привет и тебе\n"))
 }
 
-// 2б не знает, сколько людей на встрече и как их зовут. Строка `participants` появится в 2г
-// вместе с именами; писать её сейчас значило бы выдать за знание то, чего нет.
+// Phase 2б does not know how many people are in the meeting or their names. The `participants`
+// line will appear in 2г along with the names; writing it now would claim knowledge that does
+// not exist yet.
 @Test func participantsAreNotWritten() {
     let rendered = MeetingMarkdown.render(
         transcript: [Utterance(speaker: .me, start: 0, end: 1, text: "раз")],
         startedAt: started, durationSeconds: 60, appName: "Телемост"
     )
     #expect(!rendered.contains("participants"))
+}
+
+// The other half of what this phase deliberately does not write. Nothing but a test can hold
+// this line: a TODO comment was ruled out, so a later change reintroducing these headings here
+// would otherwise go unnoticed until phase 2в wrote them a second time.
+@Test func summaryAndDecisionsAreNotWritten() {
+    let rendered = MeetingMarkdown.render(
+        transcript: [Utterance(speaker: .me, start: 0, end: 1, text: "раз")],
+        startedAt: started, durationSeconds: 60, appName: "Телемост"
+    )
+    #expect(!rendered.contains("Саммари"))
+    #expect(!rendered.contains("Решения"))
+}
+
+// The application name comes from `NSRunningApplication`, so it is outside this code's control.
+@Test func anApplicationNameCannotBreakTheFrontMatter() {
+    let rendered = MeetingMarkdown.render(
+        transcript: [Utterance(speaker: .me, start: 0, end: 1, text: "раз")],
+        startedAt: started, durationSeconds: 60,
+        appName: "Zoom: \"Meetings\"\nfake: value"
+    )
+    // The injected text survives as data inside the quoted value, and that is fine — what must
+    // not happen is it becoming a key of its own, which is exactly what the unescaped newline
+    // would have made it.
+    let frontMatter = rendered.components(separatedBy: "---")[1]
+    let lines = frontMatter.split(separator: "\n")
+    #expect(!lines.contains { $0.hasPrefix("fake:") })
+    #expect(lines.contains { $0 == #"app: "Zoom: \"Meetings\"fake: value""# })
 }
 
 @Test func anUnknownApplicationLeavesTheLineOut() {
@@ -1078,6 +1145,9 @@ import Foundation
 /// is why it writes only what phase 2б actually knows.
 public enum MeetingMarkdown {
     public static func timestamp(_ seconds: TimeInterval) -> String {
+        // Clamped rather than allowed negative: merging two tracks could in principle hand this
+        // a start before zero, and `%02d` on a negative renders a malformed stamp. The clamp
+        // makes such a bug show up as replies stacked at 00:00:00 instead of as broken text.
         let total = max(0, Int(seconds.rounded(.down)))
         return String(format: "%02d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
     }
@@ -1092,7 +1162,7 @@ public enum MeetingMarkdown {
         lines.append("date: \(format(startedAt, as: "yyyy-MM-dd"))")
         lines.append("started: \(format(startedAt, as: "HH:mm"))")
         lines.append("duration: \(Int((durationSeconds / 60).rounded()))m")
-        if let appName { lines.append("app: \(appName)") }
+        if let appName { lines.append("app: \(quoted(appName))") }
         lines.append("---")
         lines.append("")
         lines.append("## Транскрипт")
@@ -1102,6 +1172,21 @@ public enum MeetingMarkdown {
         }
         lines.append("")
         return lines.joined(separator: "\n")
+    }
+
+    /// The one value in the front matter that comes from outside this code: the display name of
+    /// whatever process was holding the audio devices, straight from `NSRunningApplication`.
+    /// A colon or a newline in it would break the `---` block for Obsidian and for phase 2г,
+    /// which re-reads this file to pick up edited speaker names. Quoted and escaped rather than
+    /// trusted — the archive outlives every assumption about what applications are called.
+    static func quoted(_ value: String) -> String {
+        let withoutControls = String(
+            String.UnicodeScalarView(value.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
+        )
+        let escaped = withoutControls
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"\(escaped)\""
     }
 
     private static func label(_ speaker: Utterance.Speaker) -> String {
@@ -1189,7 +1274,7 @@ private func makeToneFile(seconds: Double) throws -> URL {
 
     let sourceSize = try FileManager.default.attributesOfItem(atPath: source.path)[.size] as! Int
     let resultSize = try FileManager.default.attributesOfItem(atPath: destination.path)[.size] as! Int
-    #expect(resultSize < sourceSize / 2, "AAC 32 кбит/с должен быть кратно меньше WAV 16 бит")
+    #expect(resultSize < sourceSize / 2, "AAC at 32 kbit/s must be several times smaller than 16-bit WAV")
 
     let asset = AVURLAsset(url: destination)
     let duration = try await asset.load(.duration).seconds
@@ -1412,7 +1497,7 @@ private func makeFolder(_ name: String) throws -> URL {
     #expect(try ProcessedRecord.read(from: url) == record)
 }
 
-// Архив — папка выше очереди, та самая, которую открывает Obsidian.
+// The archive is the folder above the queue — the same one Obsidian opens.
 @Test func theArchiveIsTheFolderAboveTheQueue() {
     #expect(MeetingFolder.archiveURL == MeetingFolder.queueURL.deletingLastPathComponent())
 }
@@ -1591,10 +1676,10 @@ import Testing
 @testable import Meetings
 
 private struct StubTranscriber: TimedTranscriber {
-    /// Слова по имени файла: "system.wav" и "mic.wav".
+    /// Words keyed by file name: "system.wav" and "mic.wav".
     let words: [String: [TimedWord]]
-    /// Текст, а не `any Error`: поле типа `any Error` не `Sendable`, и Swift 6 отказался бы
-    /// признавать заглушку `TimedTranscriber`.
+    /// Text, not `any Error`: a field of type `any Error` is not `Sendable`, and Swift 6 would
+    /// refuse to accept this `TimedTranscriber` stub.
     var failureMessage: String?
 
     func transcribeTimed(audio url: URL) async throws -> [TimedWord] {
@@ -1609,8 +1694,8 @@ private struct Fixture {
     let folder: URL
 }
 
-/// Папка встречи с настоящими односекундными WAV: длительность конвейер читает с диска, а не
-/// получает подсказкой, поэтому подделывать файлы нечем.
+/// A meeting folder with real one-second WAV files: the pipeline reads duration from disk rather
+/// than being told it, so there is nothing to fake.
 private func makeMeetingFolder(name: String = "2026-09-04-1053-telemost") throws -> Fixture {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("mq-\(UUID().uuidString)")
     let archive = root
@@ -1690,7 +1775,7 @@ private func makeQueue(
         "mic.wav": [word("комната", 5)],
     ])
     let box = OutcomeBox()
-    // Дефолтный порог -30; отдаём -45 на всё, что спрашивают про микрофон.
+    // The default threshold is -30; return -45 for every microphone query.
     let queue = makeQueue(fixture, transcriber: transcriber, level: { _, _, _ in -45 }) { box.append($0) }
 
     await queue.enqueue(fixture.folder)
@@ -1703,8 +1788,8 @@ private func makeQueue(
     #expect(!text.contains("комната"))
 }
 
-// Обе дорожки без единого слова — это отказ, а не пустой файл: со звуком что-то не так, и аудио
-// надо сохранить, чтобы послушать.
+// Both tracks without a single word is a failure, not an empty file: something is wrong with the
+// audio, and it needs to be kept so it can be listened to.
 @Test func twoSilentTracksAreAFailureAndKeepTheAudio() async throws {
     let fixture = try makeMeetingFolder()
     let box = OutcomeBox()
@@ -1744,7 +1829,7 @@ private func makeQueue(
     #expect(MeetingErrorFile.read(in: fixture.folder) == nil)
 }
 
-/// Собирает исходы: `report` вызывается из актора, а проверяем мы снаружи.
+/// Collects outcomes: `report` is called from an actor, and the check happens outside it.
 private final class OutcomeBox: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [MeetingQueue.Outcome] = []
@@ -2058,8 +2143,8 @@ private let now = Date(timeIntervalSince1970: 1_788_500_000)
     #expect(FileManager.default.fileExists(atPath: fresh.path))
 }
 
-// Аудио, по которому не получилось, ценнее места на диске: такую папку ротация не трогает,
-// сколько бы ей ни было лет.
+// Audio that failed to process is worth more than the disk space: rotation leaves such a folder
+// alone no matter how old it gets.
 @Test func aFailedFolderIsSparedRegardlessOfAge() async throws {
     let root = try makeQueueRoot()
     let broken = try makeFolder(root.queue, "2026-08-01-1000-telemost", startedAt: now.addingTimeInterval(-30 * 86400))
@@ -2071,7 +2156,7 @@ private let now = Date(timeIntervalSince1970: 1_788_500_000)
     #expect(FileManager.default.fileExists(atPath: broken.path))
 }
 
-// Не отработанная папка не сносится никогда: ротация выбрасывает копию аудио, а не встречу.
+// An unprocessed folder is never swept: rotation discards a copy of the audio, not the meeting.
 @Test func anUnprocessedFolderIsNeverSwept() async throws {
     let root = try makeQueueRoot()
     let waiting = try makeFolder(root.queue, "2026-08-01-1100-telemost", startedAt: now.addingTimeInterval(-30 * 86400))
@@ -2196,7 +2281,7 @@ git commit -m "Очередь разбирает остатки при запу�
 В `Tests/MeetingsTests/MeetingCoordinatorTests.swift` завести в `Harness` ещё один сборщик рядом с `shown`, `hidden`, `blocked`:
 
 ```swift
-    /// Папки, отданные фазе 2б. Переименование — единственная точка передачи, и веток у него две.
+    /// Folders handed to phase 2б. The rename is the only hand-off point, and it has two branches.
     private(set) var handedToQueue: [URL] = []
 ```
 
@@ -2209,9 +2294,9 @@ git commit -m "Очередь разбирает остатки при запу�
 Затем добавить тест — последовательность та же, что в `theFolderIsHandedOverOnlyAfterTheCaptureFinishedClosingIt`:
 
 ```swift
-// Переименование — единственная точка передачи в 2б. Без этого вызова запись доезжает до архива
-// только при следующем запуске приложения, и на живой встрече это ничем не заметно: файл ведь
-// появляется, просто назавтра.
+// The rename is the only hand-off point into 2б. Without this call, a recording only reaches the
+// archive on the next app launch, and nothing about a live meeting would show that — the file
+// does show up, just a day later.
 @Test @MainActor func stoppingARecordingHandsTheFolderToTheQueue() async throws {
     let harness = try Harness()
     harness.processes = [telemost]
@@ -2221,17 +2306,17 @@ git commit -m "Очередь разбирает остатки при запу�
     await harness.coordinator.settle()
 
     #expect(harness.handedToQueue.count == 1)
-    // Отдаётся готовое имя, а не черновик: очередь не должна видеть папку, в которую ещё пишут.
+    // The final name is handed over, not the draft: the queue must never see a folder still being written to.
     #expect(harness.handedToQueue[0].lastPathComponent.hasPrefix(".draft-") == false)
     #expect(harness.handedToQueue[0].lastPathComponent == harness.handedOver[0])
 }
 
-// Осиротевший черновик, который владелец решил сохранить, — вторая ветка переименования, и она
-// точно так же обязана дойти до очереди.
+// An orphaned draft the owner chose to keep is the rename's second branch, and it is just as
+// obligated to reach the queue.
 @Test @MainActor func keepingAnOrphanedDraftAlsoHandsItToTheQueue() async throws {
     let harness = try Harness()
-    // Черновик, оставленный «упавшим» приложением: папка с точкой и двумя дорожками, которой ни
-    // один автомат не занят. Собирается так же, как в тестах про осиротевшие черновики выше.
+    // A draft left behind by a "crashed" app: a dotted folder with two tracks that no state
+    // machine has claimed. Built the same way as the orphaned-draft tests above.
     let draft = harness.queue.appendingPathComponent(".draft-2026-09-04-1053-telemost")
     try FileManager.default.createDirectory(at: draft, withIntermediateDirectories: true)
     for name in [MeetingAudioRecorder.systemFileName, MeetingAudioRecorder.microphoneFileName] {
@@ -2293,8 +2378,9 @@ Expected: сборка не проходит — у `MeetingCoordinator.init` н
         let dictationLanguage = (try? DictationConfig.loadOrCreate())?.language
         let queue = MeetingQueue(
             config: meetingsConfig,
-            // Очередь поднимает модель сама и с тем же языком, что диктовка: одна машина слушает
-            // одну и ту же речь, и второй ключ в конфиге означал бы две настройки на одно ухо.
+            // The queue loads the model itself, with the same language as dictation: one machine
+            // listens to the same speech, and a second key in the config would mean two settings
+            // for one ear.
             makeTranscriber: { try await ParakeetTranscriber.load(language: dictationLanguage) },
             report: { [panel] outcome in
                 Task { @MainActor in
@@ -2321,7 +2407,7 @@ Expected: сборка не проходит — у `MeetingCoordinator.init` н
             await queue.scanAll()
             await queue.sweep()
         }
-        // Машина всегда включена, поэтому суточный таймер — весь нужный планировщик.
+        // The machine is always on, so a once-a-day timer is all the scheduler this needs.
         sweepTimer = Timer.scheduledTimer(withTimeInterval: 86400, repeats: true) { _ in
             Task { await queue.sweep() }
         }
@@ -2385,7 +2471,7 @@ import Testing
     #expect(notice.isFailure)
 }
 
-// Отказ важнее длительности: если пришло и то и другое, говорим про отказ.
+// A failure outranks the duration: if both arrive, we speak about the failure.
 @Test func theDwellIsTheSameFiveSecondsAsEveryOtherNotice() {
     #expect(MeetingNotice.dwell == MeetingMachine.noticeDwell)
 }
@@ -2485,8 +2571,8 @@ public struct MeetingNotice: Equatable, Sendable {
 ```
 
 ```swift
-    /// Своя выдержка, третья: уведомление о расшифровке живёт по своим часам, и общий таймер
-    /// позволил бы концу диктовки погасить его на середине.
+    /// Its own dwell timer, a third one: a transcription notice lives by its own clock, and a
+    /// shared timer would let the end of a dictation cut it off halfway.
     private var pendingNoticeHide: DispatchWorkItem?
 
     func show(notice: MeetingNotice) {
@@ -2593,7 +2679,7 @@ struct MeetingArguments {
         case levels
     }
 
-    enum ParseError: Error {
+    enum ParseError: Error, Equatable {
         case message(String)
     }
 
@@ -2621,16 +2707,31 @@ import Core
 import Foundation
 import Meetings
 
-/// `nohands meeting process` — прогнать одну папку заново.
+/// `nohands meeting process` — re-run a single folder.
 func runMeetingProcess(_ folder: URL) async throws {
     let config = try MeetingsConfig.loadOrCreate()
     let language = (try? DictationConfig.loadOrCreate())?.language
 
-    // Отработанная папка перезапускается, а не пропускается: команда существует ровно для
-    // повторных прогонов при подборе порога.
+    // Checked before anything is deleted, and the order is the point. A folder whose tracks are
+    // already compressed cannot be re-run at all — the pipeline reads the raw WAVs and they are
+    // gone — so deleting its `processed.json` first would leave a finished meeting permanently
+    // marked failed, skipped by rotation for ever, and repairable only by editing files by hand.
+    // That is the same shape the queue's own `.processed` guard exists to prevent, and this
+    // command routes around that guard on purpose.
+    let fileManager = FileManager.default
+    let hasRawTrack = [MeetingAudioRecorder.systemFileName, MeetingAudioRecorder.microphoneFileName]
+        .contains { fileManager.fileExists(atPath: folder.appendingPathComponent($0).path) }
+    guard hasRawTrack else {
+        fail(
+            "Папку нельзя прогнать заново: сырых дорожек в ней нет. Если они уже сжаты, читать "
+                + "их конвейер пока не умеет — расшифровка идёт только по WAV. Ничего не изменено."
+        )
+    }
+    // A processed folder is re-run, not skipped: the command exists precisely for repeated runs
+    // while tuning the threshold.
     try? MeetingErrorFile.remove(in: folder)
     let record = folder.appendingPathComponent(ProcessedRecord.fileName)
-    try? FileManager.default.removeItem(at: record)
+    try? fileManager.removeItem(at: record)
 
     let queue = MeetingQueue(
         queue: folder.deletingLastPathComponent(),
@@ -2648,11 +2749,11 @@ func runMeetingProcess(_ folder: URL) async throws {
     await queue.enqueue(folder)
 }
 
-/// `nohands meeting levels` — инструмент подбора `micThresholdDBFS`.
+/// `nohands meeting levels` — a tool for tuning `micThresholdDBFS`.
 ///
-/// Печатает реплики дорожки микрофона рядом с их уровнем: видно число и видно текст, по которому
-/// понятно, своя это речь или комната. Печать по явной команде — не логирование; ничего из этого
-/// никуда не пишется.
+/// Prints the microphone track's utterances next to their level: both the number and the text
+/// are visible, so it is clear whether it is the owner's own speech or the room. Printing on an
+/// explicit command is not logging; none of this is written anywhere.
 func runMeetingLevels(_ folder: URL) async throws {
     let config = try MeetingsConfig.loadOrCreate()
     let language = (try? DictationConfig.loadOrCreate())?.language
@@ -2682,6 +2783,9 @@ func runMeetingLevels(_ folder: URL) async throws {
     }
 }
 ```
+
+`CLI/NoHands.swift` не импортирует `Meetings`: типы этого модуля упоминают только два новых
+файла, а точка входа знает лишь про локальные для таргета `MeetingArguments` и две функции.
 
 В `CLI/NoHands.swift` дописать в `usage`:
 
@@ -2770,6 +2874,14 @@ cat ~/Meetings/2026-09-04-1053-telemost.md
 Если замер сдвинул порог — поменять дефолт в `MeetingsConfig.default` и заменить комментарий «провизорное значение» на то, чем оно стало и по какому материалу.
 
 Дописать в `docs/DECISIONS.md` запись с датой прогона: какой порог получился и почему, сколько заняла обработка против длины встречи, каким оказалось расхождение дорожек на длинной записи, и всё, что пошло не так, — тем же тоном, что записи фазы 2а.
+
+**Отдельной записью — открытый вопрос, найденный ревью команд CLI.** Аудио держится неделю ради
+того, чтобы плохую расшифровку можно было переразобрать: так сказано в решении от 2026-09-01, и
+это единственное обоснование недельного окна. Но конвейер читает только WAV, а WAV удаляются сразу
+после сжатия — значит переразобрать из сохранённого нельзя ничем, и обоснование окна не выполняется.
+Записать это как незакрытый вопрос со ссылкой на решение 2026-09-01: либо конвейер учится читать
+AAC, либо окно нужно объяснить иначе. Не чинить в этой фазе — это меняет состояния очереди, а
+умеет ли Parakeet читать AAC, никто не проверял.
 
 - [ ] **Step 5: Коммит и пуш**
 
