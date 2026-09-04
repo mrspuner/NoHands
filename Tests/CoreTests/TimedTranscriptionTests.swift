@@ -17,18 +17,18 @@ func timedTranscriptionOfALongFileHasGlobalTimestamps() async throws {
     let transcriber = try await ParakeetTranscriber.load(language: "ru")
     let words = try await transcriber.transcribeTimed(audio: url)
 
-    #expect(!words.isEmpty, "в записи не нашлось ни одного слова")
+    #expect(!words.isEmpty, "no words in the recording")
 
     // Куски у FluidAudio по тридцать секунд. Слово, начинающееся позже, доказывает, что времена
     // не сбрасываются на границе куска.
     let latest = words.map(\.start).max() ?? 0
-    #expect(latest > 30, "все слова уместились в первые 30 с — таймкоды похожи на локальные")
+    #expect(latest > 30, "every word fell inside the first 30 s — timestamps look chunk-local")
 
     let file = try AVAudioFile(forReading: url)
     let duration = Double(file.length) / file.processingFormat.sampleRate
-    #expect(latest <= duration + 1, "слово начинается позже конца файла")
+    #expect(latest <= duration + 1, "a word starts past the end of the file")
 
     for (previous, next) in zip(words, words.dropFirst()) {
-        #expect(previous.start <= next.start, "слова пришли не по порядку")
+        #expect(previous.start <= next.start, "words arrived out of order")
     }
 }

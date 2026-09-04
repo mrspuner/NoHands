@@ -61,6 +61,27 @@ public actor ParakeetTranscriber: Transcriber, TimedTranscriber {
     }
 
     public func transcribe(audio url: URL) async throws -> String {
+        try await decode(url) { try TranscriberChecks.nonEmpty($0.text) }
+    }
+
+    /// Words with their times, for meetings. Deliberately does **not** apply
+    /// `TranscriberChecks.nonEmpty`: a track that recorded nothing but silence is a legitimate
+    /// outcome of a meeting — the owner may have sat the whole hour muted — and turning that
+    /// into an error here would make every such meeting unprocessable. Both tracks coming back
+    /// empty is a real failure, and it is caught one level up, where both are in hand.
+    public func transcribeTimed(audio url: URL) async throws -> [TimedWord] {
+        try await decode(url) { TokenWordAssembler.words(from: $0.tokenTimings ?? []) }
+    }
+
+    /// The decode both public methods run, differing only in what they take from the result.
+    ///
+    /// Extracted rather than copied: the error mapping below is the part that will grow — a new
+    /// `ASRError` case, a new distinction worth making — and two copies of it would drift apart
+    /// silently, because nothing fails when only one of them learns something.
+    private func decode<T>(
+        _ url: URL,
+        extract: (ASRResult) throws -> T
+    ) async throws -> T {
         try TranscriberChecks.validateReadable(url)
 
         // `AsrManager.transcribe(_:decoderState:language:)` reads and resamples the file itself
@@ -70,35 +91,14 @@ public actor ParakeetTranscriber: Transcriber, TimedTranscriber {
         var decoderState = TdtDecoderState.make(decoderLayers: decoderLayers)
         do {
             let result = try await manager.transcribe(url, decoderState: &decoderState, language: language)
-            return try TranscriberChecks.nonEmpty(result.text)
+            return try extract(result)
         } catch let error as ASRError {
             if case .invalidAudioData = error {
                 throw TranscriptionError.audioTooShort(try Self.duration(of: url))
             }
             // Every other ASRError (not initialized, model load, processing, compilation,
             // unsupported platform, encoder instantiation) is a broken local model, not a bad
-            // request — `modelUnavailable` is the case for that; nothing about the case ties it
-            // to load time specifically.
-            throw TranscriptionError.modelUnavailable(error.localizedDescription)
-        }
-    }
-
-    /// Words with their times, for meetings. Deliberately does **not** apply
-    /// `TranscriberChecks.nonEmpty`: a track that recorded nothing but silence is a legitimate
-    /// outcome of a meeting — the owner may have sat the whole hour muted — and turning that
-    /// into an error here would make every such meeting unprocessable. Both tracks coming back
-    /// empty is a real failure, and it is caught one level up, where both are in hand.
-    public func transcribeTimed(audio url: URL) async throws -> [TimedWord] {
-        try TranscriberChecks.validateReadable(url)
-
-        var decoderState = TdtDecoderState.make(decoderLayers: decoderLayers)
-        do {
-            let result = try await manager.transcribe(url, decoderState: &decoderState, language: language)
-            return TokenWordAssembler.words(from: result.tokenTimings ?? [])
-        } catch let error as ASRError {
-            if case .invalidAudioData = error {
-                throw TranscriptionError.audioTooShort(try Self.duration(of: url))
-            }
+            // request — `modelUnavailable` is the case for that.
             throw TranscriptionError.modelUnavailable(error.localizedDescription)
         }
     }
