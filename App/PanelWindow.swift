@@ -72,6 +72,9 @@ final class PanelWindow {
         position()
         panel.orderFrontRegardless()
         updateAcceptsClicks()
+        // Whether a notice on screen may grow depends on the same click-accepting state just
+        // updated above — see `resize(forNotice:)` — so it is re-evaluated here too.
+        resize(forNotice: model.notice != nil)
         // AppKit caches a borderless transparent window's shadow from the backing store's alpha.
         // The content just changed shape (capsule to wide panel), so the cached shadow would keep
         // the old outline until something else forces a recompute.
@@ -86,6 +89,8 @@ final class PanelWindow {
             self?.model.narrowbandHz = nil
             self?.panel.invalidateShadow()
             self?.updateAcceptsClicks()
+            // See `show(_:)` above: the same click-accepting state decides whether a notice may grow.
+            self?.resize(forNotice: self?.model.notice != nil)
         }
         pendingHide = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
@@ -98,6 +103,8 @@ final class PanelWindow {
         position()
         panel.orderFrontRegardless()
         updateAcceptsClicks()
+        // See `show(_:)` above: the same click-accepting state decides whether a notice may grow.
+        resize(forNotice: model.notice != nil)
     }
 
     func hideMeeting(after delay: TimeInterval) {
@@ -109,6 +116,8 @@ final class PanelWindow {
             self?.model.meetingNarrowbandHz = nil
             self?.panel.invalidateShadow()
             self?.updateAcceptsClicks()
+            // See `show(_:)` above: the same click-accepting state decides whether a notice may grow.
+            self?.resize(forNotice: self?.model.notice != nil)
         }
         pendingMeetingHide = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
@@ -145,8 +154,14 @@ final class PanelWindow {
     /// Never while dictation is on top of it: the prompt is then not what is on screen, and a
     /// window swallowing clicks over something the owner cannot even see is the worst of both.
     private func updateAcceptsClicks() {
-        let accepts = model.state == nil && (model.meeting?.acceptsClicks ?? false)
-        panel.ignoresMouseEvents = !accepts
+        panel.ignoresMouseEvents = !acceptsClicksNow
+    }
+
+    /// Whether a click on the panel right now reaches its buttons — the same question
+    /// `updateAcceptsClicks` answers for `ignoresMouseEvents`, and `resize(forNotice:)` needs the
+    /// same answer to decide whether the window may grow.
+    private var acceptsClicksNow: Bool {
+        model.state == nil && (model.meeting?.acceptsClicks ?? false)
     }
 
     func setLevel(_ level: Float) {
@@ -176,8 +191,16 @@ final class PanelWindow {
     private static let restingHeight: CGFloat = 56
     private static let noticeHeight: CGFloat = 96
 
+    /// Growth is further conditional on the panel not currently accepting clicks. A notice
+    /// arriving while a meeting prompt is up is reachable on an ordinary launch — an orphan draft
+    /// prompt stands for two minutes while the launch scan finishes a leftover folder and fires a
+    /// notice — and growing the window there would produce exactly the 96 pt clickable rectangle
+    /// `restingHeight` above exists to avoid. A clipped notice is a cosmetic loss; a swallowed
+    /// click on a call's leave button, sitting under the grown strip, is not. So the notice stays
+    /// visible either way — `model.notice` is set regardless — and only the window's height
+    /// depends on whether something else is using the mouse.
     private func resize(forNotice showing: Bool) {
-        let height = showing ? Self.noticeHeight : Self.restingHeight
+        let height = (showing && !acceptsClicksNow) ? Self.noticeHeight : Self.restingHeight
         guard panel.frame.height != height else { return }
         panel.setContentSize(NSSize(width: panel.frame.width, height: height))
         position()

@@ -37,8 +37,12 @@ public struct ProcessedRecord: Equatable, Sendable, Codable {
         return decoder
     }
 
+    // Atomic for the same reason as `MeetingErrorFile.write`: a truncated file here reads as
+    // `.waiting` — the tracks are already compressed, so the next launch finds both `.m4a` files,
+    // throws `alreadyCompressed`, writes an error file, and the meeting is marked failed and
+    // spared by rotation for ever, even though it in fact finished cleanly.
     public func write(to url: URL) throws {
-        try Self.encoder.encode(self).write(to: url)
+        try Self.encoder.encode(self).write(to: url, options: .atomic)
     }
 
     public static func read(from url: URL) throws -> ProcessedRecord {

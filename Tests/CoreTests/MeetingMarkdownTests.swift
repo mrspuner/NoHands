@@ -76,6 +76,16 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
     #expect(!rendered.contains("app:"))
 }
 
+// A meeting that was in fact recorded must never round down to zero in the archive's own front
+// matter — that would misreport a real recording as nothing, permanently.
+@Test func aSubMinuteMeetingIsNotZeroMinutes() {
+    let rendered = MeetingMarkdown.render(
+        transcript: [Utterance(speaker: .me, start: 0, end: 1, text: "раз")],
+        startedAt: started, durationSeconds: 20, appName: nil
+    )
+    #expect(rendered.contains("duration: 1m\n"))
+}
+
 @Test func durationOverAnHourIsStillMinutes() {
     let rendered = MeetingMarkdown.render(
         transcript: [Utterance(speaker: .me, start: 0, end: 1, text: "раз")],

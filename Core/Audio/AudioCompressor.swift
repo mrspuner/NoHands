@@ -47,7 +47,11 @@ public enum AudioCompressor {
         reader.add(output)
 
         try? FileManager.default.removeItem(at: destination)
-        let writer = try AVAssetWriter(outputURL: destination, fileType: .m4a)
+        // `nonisolated(unsafe)` for the same reason as `input` and `output` above: the pump
+        // closure below now also reads `writer.status`, across the same `DispatchQueue`
+        // boundary, under the same guarantee that nothing outside the pump queue touches it
+        // until the continuation resumes.
+        nonisolated(unsafe) let writer = try AVAssetWriter(outputURL: destination, fileType: .m4a)
         nonisolated(unsafe) let input = AVAssetWriterInput(
             mediaType: .audio,
             outputSettings: [
@@ -73,9 +77,24 @@ public enum AudioCompressor {
         // stops asking for more data — after `markAsFinished()` AVFoundation does not call the
         // block again.
         let pump = DispatchQueue(label: "nohands.compress")
+        // What is deliberately not guarded here: a writer that fails *and* stops calling this
+        // block would leave the continuation waiting for ever, and the queue with it. Apple's
+        // documented behaviour is the opposite — a failed writer keeps `isReadyForMoreMediaData`
+        // true so `append` returns false, which the loop below handles — and the only alternative
+        // is a timeout whose duration would be a guess. Cutting a long meeting's encode short
+        // because it took longer than a number somebody made up is a worse failure than a rare
+        // wedge that relaunching clears.
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             input.requestMediaDataWhenReady(on: pump) {
                 while input.isReadyForMoreMediaData {
+                    // A writer that has already failed — a full disk is the case this whole
+                    // retention design exists for — must not be fed further. Without this the
+                    // loop keeps pulling samples into a writer that will never accept them.
+                    guard writer.status == .writing else {
+                        input.markAsFinished()
+                        continuation.resume()
+                        return
+                    }
                     guard let sample = output.copyNextSampleBuffer() else {
                         input.markAsFinished()
                         continuation.resume()

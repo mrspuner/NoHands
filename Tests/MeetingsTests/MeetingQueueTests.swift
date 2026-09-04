@@ -127,6 +127,25 @@ private func makeQueue(
     #expect(!text.contains("комната"))
 }
 
+// `merged.isEmpty` has two different causes, and the message must tell them apart: here the
+// microphone track did produce words, every one of them measured below the threshold, and the
+// system track produced none at all. Reporting this the same way as genuine silence would send
+// the owner listening to a recording that in fact has speech on it, instead of at the setting
+// that discarded it.
+@Test func aThresholdThatAteEverythingNamesItself() async throws {
+    let fixture = try makeMeetingFolder()
+    defer { try? FileManager.default.removeItem(at: fixture.archive) }
+    let transcriber = StubTranscriber(words: ["mic.wav": [word("комната", 1)]])
+    let box = OutcomeBox()
+    let queue = makeQueue(fixture, transcriber: transcriber, level: { _, _, _ in -45 }) { box.append($0) }
+
+    await queue.enqueue(fixture.folder)
+
+    let reason = try #require(MeetingErrorFile.read(in: fixture.folder))
+    #expect(reason.contains("micThresholdDBFS"))
+    #expect(!reason.contains("No words were recognised in either track"))
+}
+
 // Both tracks without a single word is a failure, not an empty file: something is wrong with the
 // audio, and it needs to be kept so it can be listened to.
 @Test func twoSilentTracksAreAFailureAndKeepTheAudio() async throws {
@@ -200,7 +219,7 @@ private func makeQueue(
     await queue.enqueue(fixture.folder)
 
     let reason = try #require(MeetingErrorFile.read(in: fixture.folder))
-    #expect(reason.contains("уже сжаты"))
+    #expect(reason.contains("already compressed"))
 }
 
 @Test func aRetryClearsThePreviousError() async throws {

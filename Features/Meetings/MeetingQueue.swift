@@ -23,17 +23,24 @@ public actor MeetingQueue {
         case alreadyCompressed(String)
         case partiallyCompressed(String)
         case nothingRecognised(String)
+        /// Distinct from `nothingRecognised`: the microphone track did produce words, and every
+        /// one of them was filtered out by `micThresholdDBFS`. Reporting this as generic silence
+        /// would send the owner looking at the recording, when the actual cause — and the actual
+        /// fix — is the threshold in the config.
+        case micThresholdAteEverything(String)
 
         var errorDescription: String? {
             switch self {
             case .noTracks(let name):
-                return "В папке \(name) нет ни одной дорожки"
+                return "No audio track at all in \(name)"
             case .alreadyCompressed(let name):
-                return "Дорожки \(name) уже сжаты, расшифровывать нечего"
+                return "Tracks in \(name) are already compressed, nothing left to transcribe"
             case .partiallyCompressed(let name):
-                return "В \(name) одна дорожка сжата, другая нет — прошлая попытка оборвалась. Разберите папку руками"
+                return "One track in \(name) is compressed and the other is not — a previous attempt was interrupted. Sort the folder out by hand"
             case .nothingRecognised(let name):
-                return "В обеих дорожках \(name) не распознано ни одного слова"
+                return "No words were recognised in either track of \(name)"
+            case .micThresholdAteEverything(let name):
+                return "The microphone track in \(name) had speech, but every utterance was below micThresholdDBFS — check the threshold"
             }
         }
     }
@@ -230,6 +237,10 @@ public actor MeetingQueue {
         }
 
         var mine: [Utterance] = []
+        // Kept before the gate below so a folder where the microphone spoke but every utterance
+        // was too quiet can be told apart from one where the microphone genuinely heard nothing —
+        // see `Failure.micThresholdAteEverything`.
+        var microphoneUtterancesBeforeGate = 0
         if fileManager.fileExists(atPath: microphone.path) {
             let all = Utterance.split(
                 words: try await transcriber.transcribeTimed(audio: microphone),
@@ -237,6 +248,7 @@ public actor MeetingQueue {
                 gap: config.phraseGapSeconds,
                 maxLength: config.maxPhraseSeconds
             )
+            microphoneUtterancesBeforeGate = all.count
             // The room the desk microphone hears is removed here rather than at capture — see
             // the decision of 2026-09-04. Whole utterances, never single words.
             mine = try PhraseLevel.passing(all, thresholdDBFS: Float(config.micThresholdDBFS)) {
@@ -250,7 +262,15 @@ public actor MeetingQueue {
             microphoneStartedAt: metadata.microphoneStartedAt,
             systemStartedAt: metadata.systemStartedAt
         )
-        guard !merged.isEmpty else { throw Failure.nothingRecognised(folder.lastPathComponent) }
+        guard !merged.isEmpty else {
+            // `theirs` is necessarily empty too here — otherwise `merged` would not be — so a
+            // non-zero pre-gate microphone count means the threshold, not silence, ate the
+            // meeting.
+            if microphoneUtterancesBeforeGate > 0 {
+                throw Failure.micThresholdAteEverything(folder.lastPathComponent)
+            }
+            throw Failure.nothingRecognised(folder.lastPathComponent)
+        }
 
         let duration = try tracks.map { try AudioDuration.seconds(of: $0) }.max() ?? 0
 

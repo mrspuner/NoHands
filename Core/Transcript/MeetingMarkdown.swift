@@ -23,7 +23,7 @@ public enum MeetingMarkdown {
         var lines: [String] = ["---"]
         lines.append("date: \(format(startedAt, as: "yyyy-MM-dd"))")
         lines.append("started: \(format(startedAt, as: "HH:mm"))")
-        lines.append("duration: \(Int((durationSeconds / 60).rounded()))m")
+        lines.append("duration: \(minutes(durationSeconds))m")
         if let appName { lines.append("app: \(quoted(appName))") }
         lines.append("---")
         lines.append("")
@@ -55,6 +55,18 @@ public enum MeetingMarkdown {
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
         return "\"\(escaped)\""
+    }
+
+    /// Same rule as `MeetingContent.length` in `PanelView` and `MeetingNotice.length`: a meeting
+    /// that was in fact recorded must never round down to `0m` in the archive's own front matter
+    /// — that would answer "how long was this" wrongly, permanently, in the file the owner keeps.
+    /// Unlike the two panel-facing versions this stays numeric rather than switching to words,
+    /// because the field is `duration: <N>m`, not a sentence: clamping to one minute keeps the
+    /// same shape a longer meeting has instead of inventing a second spelling for the front
+    /// matter to parse.
+    private static func minutes(_ durationSeconds: TimeInterval) -> Int {
+        guard durationSeconds > 0 else { return 0 }
+        return max(1, Int((durationSeconds / 60).rounded()))
     }
 
     private static func label(_ speaker: Utterance.Speaker) -> String {

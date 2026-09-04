@@ -39,9 +39,11 @@ public enum MeetingErrorFile {
 
     /// What a folder says when its error file is there but says nothing usable.
     ///
-    /// In Russian because the owner reads it: this line ends up on the panel and in the file,
-    /// it is not a diagnostic for a log.
-    public static let unreadableReason = "Файл ошибки не читается — причина прошлого отказа потеряна"
+    /// English, like every other `errorDescription` in this feature — `MeetingQueue.Failure`
+    /// included, which is what normally ends up in this file. This is diagnostic text about a
+    /// failed processing attempt, not the panel's own wording; the panel's wording lives in
+    /// `MeetingNotice` and stays Russian.
+    public static let unreadableReason = "The error file cannot be read — the reason for the previous failure is lost"
 
     /// Written atomically. A crash halfway through an ordinary write leaves a truncated file,
     /// and a truncated file here is worse than no file: it is the record of why a recording

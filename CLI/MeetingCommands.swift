@@ -29,6 +29,11 @@ func runMeetingProcess(_ folder: URL) async throws {
     let record = folder.appendingPathComponent(ProcessedRecord.fileName)
     try? fileManager.removeItem(at: record)
 
+    // Two queues over one directory corrupt a good meeting — see `MeetingQueue.config`. This is a
+    // second process, so nothing here can prevent that; saying so is the proportionate answer for
+    // a tool with one user, where a lock file would be state to clean up after a crash.
+    note("Не запускайте эту команду, пока работает приложение: оно разбирает ту же очередь.")
+
     let queue = MeetingQueue(
         queue: folder.deletingLastPathComponent(),
         archive: folder.deletingLastPathComponent().deletingLastPathComponent(),

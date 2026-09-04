@@ -28,6 +28,14 @@ public struct MeetingNotice: Equatable, Sendable {
         // `minutes` is set on every path that has no failure — the two are written together in
         // `MeetingQueue.run`. The fallback exists because the type cannot say so, not because a
         // meeting of zero minutes is a thing this can report.
-        return MeetingNotice(text: "Расшифровано, \(outcome.minutes ?? 0) мин", isFailure: false)
+        return MeetingNotice(text: "Расшифровано, \(Self.length(outcome.minutes ?? 0))", isFailure: false)
+    }
+
+    /// Same rule as `MeetingContent.length` in `PanelView`, restated here because `App` depends
+    /// on `Meetings` and not the other way round: a meeting that was in fact processed must never
+    /// read as zero minutes. `outcome.minutes` is already rounded to the nearest whole minute, so
+    /// `0` here means under thirty seconds, not nothing.
+    private static func length(_ minutes: Int) -> String {
+        minutes < 1 ? "меньше минуты" : "\(minutes) мин"
     }
 }
