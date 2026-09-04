@@ -92,11 +92,22 @@ public enum AudioCompressor {
 
         await writer.finishWriting()
 
+        // Anything thrown from here on leaves a truncated file at exactly the path the caller
+        // expects the compressed track to be: some real audio, silently cut short. The week the
+        // audio survives exists so a bad result can be re-run, and debris that looks like a
+        // result defeats that — a caller checking whether the file is there would be misled.
+        // So the failure takes the file with it.
+        func abandon(_ reason: String) -> Failure {
+            reader.cancelReading()
+            try? FileManager.default.removeItem(at: destination)
+            return Failure.encodingFailed(reason)
+        }
+
         if reader.status == .failed {
-            throw Failure.encodingFailed(reader.error?.localizedDescription ?? "reading failed")
+            throw abandon(reader.error?.localizedDescription ?? "reading failed")
         }
         guard writer.status == .completed else {
-            throw Failure.encodingFailed(writer.error?.localizedDescription ?? "writing did not complete")
+            throw abandon(writer.error?.localizedDescription ?? "writing did not complete")
         }
     }
 }

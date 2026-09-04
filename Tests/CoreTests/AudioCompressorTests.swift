@@ -50,6 +50,27 @@ private func makeToneFile(seconds: Double) throws -> URL {
     #expect(abs(duration - 3) < 0.2)
 }
 
+// The destination must not be left holding a truncated file. Exercised through the one failure
+// this test can produce deterministically — a source with no audio track — which asserts the
+// weaker half of the promise: nothing appears at the destination when compression does not
+// succeed. The mid-stream reader failure that produces actual debris cannot be provoked without
+// corrupting a file mid-read, so the guarantee rests on `abandon` being the only exit.
+@Test func afailedCompressionLeavesNothingAtTheDestination() async throws {
+    let empty = FileManager.default.temporaryDirectory
+        .appendingPathComponent("not-audio-\(UUID().uuidString).wav")
+    try Data("это не аудио".utf8).write(to: empty)
+    let destination = empty.deletingPathExtension().appendingPathExtension("m4a")
+    defer {
+        try? FileManager.default.removeItem(at: empty)
+        try? FileManager.default.removeItem(at: destination)
+    }
+
+    await #expect(throws: (any Error).self) {
+        try await AudioCompressor.compress(empty, to: destination, bitrate: 32000)
+    }
+    #expect(!FileManager.default.fileExists(atPath: destination.path))
+}
+
 @Test func aFileWithoutAudioIsAnamedFailure() async throws {
     let empty = FileManager.default.temporaryDirectory
         .appendingPathComponent("not-audio-\(UUID().uuidString).wav")
