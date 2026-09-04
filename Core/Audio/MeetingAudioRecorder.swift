@@ -89,14 +89,17 @@ public actor MeetingAudioRecorder {
     ///   This list is for the things that must not end up in a meeting — a music player, a
     ///   noisy game — never for the application the meeting is happening in.
     ///
-    /// - Parameter onFailureWhileRecording: called at most once, with the reason, when the
-    ///   stream dies while the meeting is still being recorded.
+    /// - Parameter onFailureWhileRecording: called at most once, with the reason, when this
+    ///   recording stops being a recording while the meeting is still going. Two things do that:
+    ///   the stream dying, and the system track becoming unwritable — a full disk, a folder that
+    ///   went away. A microphone track that fails is deliberately not one of them; `receive`
+    ///   says why the two tracks are not equal.
     ///
     ///   Nothing here restarts the capture, so this is not a retry hook: it exists because a
     ///   stream that died on the fifth minute is otherwise noticed only by `stop`, and the
     ///   fifty-five minutes in between are spent recording nothing while the application says
-    ///   it is recording. The caller decides what a dead stream means for the meeting — this
-    ///   type only names it.
+    ///   it is recording. The caller decides what that means for the meeting — this type only
+    ///   names it.
     ///
     ///   Called on the capture's own queue, not the caller's. Nothing after the recording has
     ///   been handed over ever reaches it, so the caller does not have to guard against a
@@ -460,9 +463,20 @@ final class TrackWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked 
         // A track that failed has stopped writing for good — `append` refuses every buffer after
         // the first failure — so this is a recording that is no longer being made. Spec §10 asks
         // for it to stop with the reason named rather than run out its hour on a truncated file,
-        // and the reason has to travel the same road a dead stream travels: out at once, exactly
-        // once, and never after the hand-off. `report` is what all three of those rules live in.
-        if let failure = system.failure ?? microphone.failure { report(failure) }
+        // and the reason travels the same road a dead stream travels: out at once, exactly once,
+        // and never after the hand-off. `report` is where all three of those rules live.
+        //
+        // The system track only, and the two are deliberately not equal. Without the participants
+        // there is no meeting left to record, so that one stops everything. Without the
+        // microphone there is still half a meeting, and spec §10 is explicit about the input
+        // device disappearing mid-meeting: the other track carries on, the break is noted,
+        // "половина записи лучше нуля". A microphone failure is therefore named when the
+        // recording is handed over and not before — which is also where the deferred work on
+        // marking breaks in the metadata will pick it up.
+        //
+        // Running out of disk is still caught here: it takes both files down, and the system
+        // track is the one being written continuously.
+        if let failure = system.failure { report(failure) }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {

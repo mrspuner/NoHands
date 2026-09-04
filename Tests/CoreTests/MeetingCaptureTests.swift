@@ -322,6 +322,27 @@ private func makeUnwritable(_ folder: URL) throws {
     #expect(log.messages.count == 1)
 }
 
+// The two tracks are not worth the same, and only one of them may stop the meeting. Spec §10 for
+// "устройство ввода исчезло посреди встречи": the system track carries on, the break is noted,
+// "половина записи лучше нуля". Reporting a microphone failure through this door would close both
+// files over the one that matters least — the participants would be lost because the owner's own
+// microphone went.
+@Test func aMicrophoneTrackThatCannotBeWrittenDoesNotStopTheMeeting() throws {
+    let folder = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let log = FailureLog()
+    let writer = try makeWriter(in: folder) { log.append($0) }
+    // The system track opens its file while the folder is still there, and keeps it open.
+    writer.receive(try sampleBuffer(at: 1), of: .audio)
+    try makeUnwritable(folder)
+
+    writer.receive(try sampleBuffer(at: 1), of: .microphone)
+
+    #expect(log.messages.isEmpty)
+    // Still named when the recording is handed over — silenced mid-meeting, not swallowed.
+    #expect(try #require(writer.finish().failure).contains("mic.wav"))
+}
+
 @Test func aWriteThatCannotHappenAfterTheHandoffIsNotReportedEither() throws {
     let folder = try temporaryFolder()
     defer { try? FileManager.default.removeItem(at: folder) }
