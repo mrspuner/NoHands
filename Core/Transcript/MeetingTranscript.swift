@@ -26,9 +26,9 @@ public enum MeetingTranscript {
             if left.start != right.start { return left.start < right.start }
             // A deterministic tie-break across the two sides: the other side goes first, because
             // they are the reason there is a meeting to transcribe. Two utterances from the SAME
-            // side starting at the same instant this cannot separate — their order then comes
-            // from `sorted(by:)` being stable and from `mine` being concatenated before `theirs`,
-            // which together still make the same recording render the same file every time.
+            // side starting at the same instant would need a further rule, but that case cannot
+            // arise: `Utterance.split` produces disjoint spans within one track, one after the
+            // other, so no two utterances on the same side ever share a start time.
             return left.speaker == .others && right.speaker == .me
         }
     }

@@ -114,7 +114,7 @@ private func makeQueue(
         "mic.wav": [word("комната", 5)],
     ])
     let box = OutcomeBox()
-    // The default threshold is -30; return -45 for every microphone query.
+    // The default threshold is -40; return -45 for every microphone query.
     let queue = makeQueue(fixture, transcriber: transcriber, level: { _, _, _ in -45 }) { box.append($0) }
 
     await queue.enqueue(fixture.folder)

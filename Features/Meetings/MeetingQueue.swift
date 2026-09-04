@@ -208,6 +208,11 @@ public actor MeetingQueue {
         // "this meeting only had one track" is how a retry rewrites the archive with half the
         // voices missing and calls it a success. That is the worst thing this queue can do, so
         // it is a named failure instead.
+        // A `for` loop rather than `.map`: a `map` closure here would capture `fileManager`,
+        // which this SDK declares non-Sendable, while the same `fileManager` is also used
+        // synchronously further down in this function. SE-0414's region-based isolation checking
+        // treats that as a possible data race and refuses to compile the `map` version. A `for`
+        // loop does not open a new isolation region for its body, so the same use compiles.
         var states: [(track: URL, state: TrackState)] = []
         for track in [system, microphone] {
             states.append((track: track, state: trackState(of: track, fileManager: fileManager)))
@@ -227,7 +232,10 @@ public actor MeetingQueue {
         let transcriber = try await resolveTranscriber()
 
         var theirs: [Utterance] = []
-        if fileManager.fileExists(atPath: system.path) {
+        // Reuses `tracks`, computed above, instead of asking the file system the same question
+        // again — see the comment on `states` above about why the raw/compressed distinction is
+        // decided once, from the whole folder's shape.
+        if tracks.contains(system) {
             theirs = Utterance.split(
                 words: try await transcriber.transcribeTimed(audio: system),
                 speaker: .others,
@@ -241,7 +249,7 @@ public actor MeetingQueue {
         // was too quiet can be told apart from one where the microphone genuinely heard nothing —
         // see `Failure.micThresholdAteEverything`.
         var microphoneUtterancesBeforeGate = 0
-        if fileManager.fileExists(atPath: microphone.path) {
+        if tracks.contains(microphone) {
             let all = Utterance.split(
                 words: try await transcriber.transcribeTimed(audio: microphone),
                 speaker: .me,
