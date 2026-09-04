@@ -37,21 +37,37 @@ public enum MeetingFolderState: Equatable, Sendable {
 public enum MeetingErrorFile {
     public static let fileName = "error.txt"
 
+    /// What a folder says when its error file is there but says nothing usable.
+    ///
+    /// In Russian because the owner reads it: this line ends up on the panel and in the file,
+    /// it is not a diagnostic for a log.
+    public static let unreadableReason = "Файл ошибки не читается — причина прошлого отказа потеряна"
+
+    /// Written atomically. A crash halfway through an ordinary write leaves a truncated file,
+    /// and a truncated file here is worse than no file: it is the record of why a recording
+    /// failed.
     public static func write(_ reason: String, at date: Date, to folder: URL) throws {
         let formatter = ISO8601DateFormatter()
         let line = "\(formatter.string(from: date))\n\(reason)\n"
-        try Data(line.utf8).write(to: folder.appendingPathComponent(fileName))
+        try Data(line.utf8).write(to: folder.appendingPathComponent(fileName), options: .atomic)
     }
 
-    /// The reason without the timestamp line, or `nil` when the folder carries no error.
+    /// The reason without its timestamp line, or `nil` when the folder carries no error file.
+    ///
+    /// A file that is present but unreadable — invalid bytes, an empty reason — comes back as a
+    /// reason too, a generic one. Returning `nil` there would make a broken error file
+    /// indistinguishable from no error at all, and the folder would go back to looking as if it
+    /// were merely waiting: retried on every launch, failing every time, with the owner never
+    /// told why. That is exactly the silent fallback this project refuses to write.
     public static func read(in folder: URL, fileManager: FileManager = .default) -> String? {
         let url = folder.appendingPathComponent(fileName)
-        guard fileManager.fileExists(atPath: url.path),
-            let text = try? String(contentsOf: url, encoding: .utf8)
-        else { return nil }
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return unreadableReason }
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-        guard lines.count > 1 else { return text.trimmingCharacters(in: .whitespacesAndNewlines) }
-        return lines.dropFirst().joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        let reason = lines.count > 1
+            ? lines.dropFirst().joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            : text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return reason.isEmpty ? unreadableReason : reason
     }
 
     public static func remove(in folder: URL, fileManager: FileManager = .default) throws {
