@@ -1,0 +1,102 @@
+import AVFoundation
+import Foundation
+
+/// WAV to AAC, for the week the audio survives after a meeting.
+///
+/// `AVAssetExportSession` would be shorter but has no way to set a bitrate — its presets pick
+/// one — and the whole point here is 32 kbit/s: the disk is 256 GB, and fifteen hours of
+/// meetings a week is 3.4 GB of raw WAV against roughly 400 MB compressed.
+public enum AudioCompressor {
+    public enum Failure: LocalizedError {
+        case noAudioTrack(String)
+        case encodingFailed(String)
+
+        public var errorDescription: String? {
+            switch self {
+            case .noAudioTrack(let name):
+                return "No audio track in \(name)"
+            case .encodingFailed(let reason):
+                return "AAC encoding failed: \(reason)"
+            }
+        }
+    }
+
+    public static func compress(_ source: URL, to destination: URL, bitrate: Int) async throws {
+        let asset = AVURLAsset(url: source)
+        guard let track = try await asset.loadTracks(withMediaType: .audio).first else {
+            throw Failure.noAudioTrack(source.lastPathComponent)
+        }
+
+        let reader = try AVAssetReader(asset: asset)
+        // `AVAssetReaderTrackOutput` and `AVAssetWriterInput` are not `Sendable`, and the pump
+        // closure below captures both across the `DispatchQueue` boundary that
+        // `requestMediaDataWhenReady(on:)` requires. Safe in practice: `startReading` /
+        // `startWriting` below are the last touch from this task before the pump takes over, and
+        // nothing outside the pump queue touches either object until it resumes the continuation.
+        // Same shape as the buffer handling in `MeetingAudioRecorder`.
+        nonisolated(unsafe) let output = AVAssetReaderTrackOutput(
+            track: track,
+            outputSettings: [
+                AVFormatIDKey: kAudioFormatLinearPCM,
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsBigEndianKey: false,
+                AVLinearPCMIsNonInterleaved: false,
+            ]
+        )
+        reader.add(output)
+
+        try? FileManager.default.removeItem(at: destination)
+        let writer = try AVAssetWriter(outputURL: destination, fileType: .m4a)
+        nonisolated(unsafe) let input = AVAssetWriterInput(
+            mediaType: .audio,
+            outputSettings: [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: MeetingAudioRecorder.sampleRate,
+                AVNumberOfChannelsKey: 1,
+                AVEncoderBitRateKey: bitrate,
+            ]
+        )
+        input.expectsMediaDataInRealTime = false
+        writer.add(input)
+
+        guard reader.startReading() else {
+            throw Failure.encodingFailed(reader.error?.localizedDescription ?? "reader refused to start")
+        }
+        guard writer.startWriting() else {
+            throw Failure.encodingFailed(writer.error?.localizedDescription ?? "writer refused to start")
+        }
+        writer.startSession(atSourceTime: .zero)
+
+        // `requestMediaDataWhenReady` is a callback API: it calls back on its own queue whenever
+        // the encoder has room. The continuation is resumed exactly once, on the one path that
+        // stops asking for more data — after `markAsFinished()` AVFoundation does not call the
+        // block again.
+        let pump = DispatchQueue(label: "nohands.compress")
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            input.requestMediaDataWhenReady(on: pump) {
+                while input.isReadyForMoreMediaData {
+                    guard let sample = output.copyNextSampleBuffer() else {
+                        input.markAsFinished()
+                        continuation.resume()
+                        return
+                    }
+                    if !input.append(sample) {
+                        input.markAsFinished()
+                        continuation.resume()
+                        return
+                    }
+                }
+            }
+        }
+
+        await writer.finishWriting()
+
+        if reader.status == .failed {
+            throw Failure.encodingFailed(reader.error?.localizedDescription ?? "reading failed")
+        }
+        guard writer.status == .completed else {
+            throw Failure.encodingFailed(writer.error?.localizedDescription ?? "writing did not complete")
+        }
+    }
+}
