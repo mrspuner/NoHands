@@ -32,10 +32,13 @@ final class PanelWindow {
     /// timer would let a dictation ending cancel a meeting prompt's dwell, or the other way
     /// round.
     private var pendingMeetingHide: DispatchWorkItem?
+    /// Its own dwell timer, a third one: a transcription notice lives by its own clock, and a
+    /// shared timer would let the end of a dictation cut it off halfway.
+    private var pendingNoticeHide: DispatchWorkItem?
 
     init() {
         panel = Panel(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 56),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 96),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -113,6 +116,24 @@ final class PanelWindow {
 
     func setMeetingAnswer(_ handler: @escaping (MeetingCoordinator.Answer) -> Void) {
         model.onMeetingAnswer = handler
+    }
+
+    func show(notice: MeetingNotice) {
+        pendingNoticeHide?.cancel()
+        pendingNoticeHide = nil
+        model.notice = notice
+        position()
+        panel.orderFrontRegardless()
+    }
+
+    func hideNotice(after delay: TimeInterval) {
+        pendingNoticeHide?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.model.notice = nil
+            self?.panel.invalidateShadow()
+        }
+        pendingNoticeHide = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     /// The panel is deaf to the mouse by default, and that is not a detail: a click it accepts
