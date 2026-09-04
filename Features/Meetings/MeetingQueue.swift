@@ -21,6 +21,7 @@ public actor MeetingQueue {
     enum Failure: LocalizedError {
         case noTracks(String)
         case alreadyCompressed(String)
+        case partiallyCompressed(String)
         case nothingRecognised(String)
 
         var errorDescription: String? {
@@ -29,6 +30,8 @@ public actor MeetingQueue {
                 return "В папке \(name) нет ни одной дорожки"
             case .alreadyCompressed(let name):
                 return "Дорожки \(name) уже сжаты, расшифровывать нечего"
+            case .partiallyCompressed(let name):
+                return "В \(name) одна дорожка сжата, другая нет — прошлая попытка оборвалась. Разберите папку руками"
             case .nothingRecognised(let name):
                 return "В обеих дорожках \(name) не распознано ни одного слова"
             }
@@ -111,16 +114,24 @@ public actor MeetingQueue {
         )
         let system = folder.appendingPathComponent(MeetingAudioRecorder.systemFileName)
         let microphone = folder.appendingPathComponent(MeetingAudioRecorder.microphoneFileName)
-        let tracks = [system, microphone].filter { fileManager.fileExists(atPath: $0.path) }
+        // Which tracks to work on is decided from the shape of the whole folder, never from
+        // "whichever WAVs happen to still be there". A track whose raw copy is gone while its
+        // compressed one exists was already consumed by an earlier attempt, and reading that as
+        // "this meeting only had one track" is how a retry rewrites the archive with half the
+        // voices missing and calls it a success. That is the worst thing this queue can do, so
+        // it is a named failure instead.
+        var states: [(track: URL, state: TrackState)] = []
+        for track in [system, microphone] {
+            states.append((track: track, state: trackState(of: track, fileManager: fileManager)))
+        }
+        let tracks = states.filter { $0.state == .raw }.map(\.track)
+        let consumed = states.contains { $0.state == .compressed }
+
+        if consumed && !tracks.isEmpty {
+            throw Failure.partiallyCompressed(folder.lastPathComponent)
+        }
         guard !tracks.isEmpty else {
-            // Compressed tracks with no raw ones and no `processed.json` means the pipeline died
-            // between deleting the WAVs and recording that it had finished. Saying so beats the
-            // generic "no tracks": the audio is not lost, it is just no longer in a form this
-            // step can read, and the owner needs to know which of those two happened.
-            let compressed = [system, microphone]
-                .map { $0.deletingPathExtension().appendingPathExtension("m4a") }
-                .contains { fileManager.fileExists(atPath: $0.path) }
-            throw compressed
+            throw consumed
                 ? Failure.alreadyCompressed(folder.lastPathComponent)
                 : Failure.noTracks(folder.lastPathComponent)
         }
@@ -193,6 +204,23 @@ public actor MeetingQueue {
         )
         try record.write(to: folder.appendingPathComponent(ProcessedRecord.fileName))
         return duration
+    }
+
+    /// What one track looks like on disk right now.
+    ///
+    /// `absent` is a legitimate outcome — a meeting where the microphone never delivered a
+    /// buffer has no `mic.wav` and never had one — which is exactly why it has to be told apart
+    /// from `compressed`, where the raw track existed and is gone.
+    private enum TrackState {
+        case raw
+        case compressed
+        case absent
+    }
+
+    private func trackState(of track: URL, fileManager: FileManager) -> TrackState {
+        if fileManager.fileExists(atPath: track.path) { return .raw }
+        let compressed = track.deletingPathExtension().appendingPathExtension("m4a")
+        return fileManager.fileExists(atPath: compressed.path) ? .compressed : .absent
     }
 
     private func resolveTranscriber() async throws -> any TimedTranscriber {

@@ -158,6 +158,51 @@ private func makeQueue(
     #expect(reason.contains("нет модели"))
 }
 
+// The exact shape a previous attempt leaves behind when it dies between deleting one track and
+// the other. Recomputing the track list from the WAVs that remain would read this as a one-track
+// meeting, rewrite the archive without a single "Собеседник" line, and report success.
+@Test func aHalfDeletedFolderIsAFailureRatherThanAOneTrackMeeting() async throws {
+    let fixture = try makeMeetingFolder()
+    defer { try? FileManager.default.removeItem(at: fixture.archive) }
+    let fileManager = FileManager.default
+    try fileManager.removeItem(at: fixture.folder.appendingPathComponent("system.wav"))
+    try Data("aac".utf8).write(to: fixture.folder.appendingPathComponent("system.m4a"))
+
+    let box = OutcomeBox()
+    let transcriber = StubTranscriber(words: ["mic.wav": [word("моя реплика", 1)]])
+    let queue = makeQueue(fixture, transcriber: transcriber) { box.append($0) }
+
+    await queue.enqueue(fixture.folder)
+
+    #expect(box.all.first?.failure != nil)
+    #expect(!fileManager.fileExists(
+        atPath: fixture.archive.appendingPathComponent("2026-09-04-1053-telemost.md").path
+    ))
+    // The track that survived is still there to retry with once the folder is sorted out.
+    #expect(fileManager.fileExists(atPath: fixture.folder.appendingPathComponent("mic.wav").path))
+}
+
+// A folder whose tracks are all compressed is a different situation from a folder with no tracks
+// at all, and the owner needs to be told which one they have: in the first the audio still
+// exists, just not in a form this step reads.
+@Test func aFullyCompressedFolderSaysSoRatherThanClaimingNoTracks() async throws {
+    let fixture = try makeMeetingFolder()
+    defer { try? FileManager.default.removeItem(at: fixture.archive) }
+    let fileManager = FileManager.default
+    for name in ["system", "mic"] {
+        try fileManager.removeItem(at: fixture.folder.appendingPathComponent("\(name).wav"))
+        try Data("aac".utf8).write(to: fixture.folder.appendingPathComponent("\(name).m4a"))
+    }
+
+    let box = OutcomeBox()
+    let queue = makeQueue(fixture, transcriber: StubTranscriber(words: [:])) { box.append($0) }
+
+    await queue.enqueue(fixture.folder)
+
+    let reason = try #require(MeetingErrorFile.read(in: fixture.folder))
+    #expect(reason.contains("уже сжаты"))
+}
+
 @Test func aRetryClearsThePreviousError() async throws {
     let fixture = try makeMeetingFolder()
     defer { try? FileManager.default.removeItem(at: fixture.archive) }
