@@ -619,6 +619,35 @@ private func isFailure(_ state: MeetingPanelState?) -> Bool {
     #expect(harness.entries.isEmpty)
 }
 
+// The length limit exists so a forgotten recording cannot eat the disk. Coming to rest when it
+// fires defeats it entirely: the meeting is still going, the application is still holding both
+// devices, and the very next poll starts the next four hours. At 230 MB an hour that is nearly a
+// gigabyte per piece, and the limit would only be chopping the recording up.
+@Test @MainActor func theLengthLimitDoesNotStartTheNextFourHoursASecondLater() async throws {
+    let harness = try Harness(config: MeetingsConfig(
+        triggerApps: config.triggerApps,
+        excludedApps: config.excludedApps,
+        silenceSeconds: config.silenceSeconds,
+        autoStopSeconds: config.autoStopSeconds,
+        startPromptSeconds: config.startPromptSeconds,
+        maxMeetingSeconds: 600
+    ))
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    harness.coordinator.answer(.confirm, at: noon.addingTimeInterval(5))
+
+    harness.coordinator.poll(now: noon.addingTimeInterval(600))
+    await harness.coordinator.settle()
+    #expect(harness.shown.last == .limitReached)
+
+    harness.coordinator.poll(now: noon.addingTimeInterval(601))
+    await harness.coordinator.settle()
+
+    #expect(harness.captures.count == 1)
+    #expect(harness.drafts.isEmpty)
+    #expect(harness.handedOver.count == 1)
+}
+
 // Remembered until the devices are free, and not one second longer: the next meeting in the same
 // application is a different meeting and has to be noticed.
 @Test @MainActor func theNextMeetingAfterAManualStopIsStillNoticed() async throws {

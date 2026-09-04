@@ -100,7 +100,7 @@ private func recordingConfirmed() -> MeetingMachine {
         .hide(after: 0),
     ])
     // Not `.idle`: the application is still holding the devices, and coming to rest here would
-    // let the next poll start the same meeting over. See "The three doors into a refusal".
+    // let the next poll start the same meeting over. See "The four doors into a refusal".
     #expect(subject.state == .declined(pid: 501))
 }
 
@@ -323,7 +323,10 @@ private func recordingConfirmed() -> MeetingMachine {
         .show(.limitReached),
         .hide(after: 5),
     ])
-    #expect(subject.state == .idle)
+    // Not `.idle`: the meeting is still going and still holding the devices, so resting here
+    // would start the next four hours a second later. See "The four doors into a refusal",
+    // which the limit made four.
+    #expect(subject.state == .declined(pid: 501))
 }
 
 // The collapsed start prompt changes only how the panel looks: the meeting stays a draft and
@@ -462,7 +465,7 @@ private func recordingConfirmed() -> MeetingMachine {
     #expect(subject.state == .idle)
 }
 
-// MARK: - The three doors into a refusal
+// MARK: - The four doors into a refusal
 
 // The watcher repeats itself once a second, and every repeat reads as "an application has just
 // taken the input". Without a memory of the process, a meeting stopped by hand starts over on
@@ -523,6 +526,42 @@ private func recordingConfirmed() -> MeetingMachine {
     _ = subject.handle(.tick(quiet.addingTimeInterval(61)))
     _ = subject.handle(.stopPressed(at: quiet.addingTimeInterval(70)))
     #expect(subject.state == .declined(pid: 501))
+}
+
+// The fourth door, and the one that has nothing to do with the owner: the limit exists so a
+// forgotten recording cannot eat the disk, and coming to rest here defeats exactly that. The
+// application is still in the meeting and still holding both devices, so the next tick would
+// start another four hours — the limit would stop cutting anything off and start cutting the
+// recording into gigabyte pieces.
+@Test func theLengthLimitRemembersTheProcessSoItDoesNotStartAnotherFourHours() {
+    var subject = recordingConfirmed()
+    let limit = start.addingTimeInterval(14400)
+    _ = subject.handle(.tick(limit))
+    #expect(subject.state == .declined(pid: 501))
+    #expect(subject.handle(
+        .streamsChanged(app: telemost, input: true, output: true, at: limit.addingTimeInterval(1))
+    ) == [])
+}
+
+// The same limit reached while the stop prompt is up — the meeting went quiet and then ran out
+// its four hours without anybody answering.
+@Test func theLengthLimitRemembersTheProcessFromTheStopPromptToo() {
+    var subject = recordingConfirmed()
+    let quiet = start.addingTimeInterval(60)
+    _ = subject.handle(.streamsChanged(app: telemost, input: false, output: false, at: quiet))
+    _ = subject.handle(.tick(quiet.addingTimeInterval(61)))
+    _ = subject.handle(.tick(start.addingTimeInterval(14400)))
+    #expect(subject.state == .declined(pid: 501))
+}
+
+// And forgotten the same way as the other three, so the meeting after this one is still noticed.
+@Test func theLengthLimitIsForgottenWhenTheDevicesGoFree() {
+    var subject = recordingConfirmed()
+    _ = subject.handle(.tick(start.addingTimeInterval(14400)))
+    _ = subject.handle(
+        .streamsChanged(app: telemost, input: false, output: false, at: start.addingTimeInterval(14500))
+    )
+    #expect(subject.state == .idle)
 }
 
 // Remembered exactly as long as a refusal is, and no longer: the meeting that was stopped by

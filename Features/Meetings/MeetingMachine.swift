@@ -83,8 +83,8 @@ public struct MeetingMachine: Sendable {
         /// the question is answered the process has to be remembered afterwards — see
         /// `settled`. It goes to nil if that application quits while the question is up.
         case savePending(app: MeetingApp?, since: Date, stoppedAt: Date)
-        /// This process has been dealt with — refused, stopped by hand, or deleted. Nothing it
-        /// does raises a prompt until it lets both devices go.
+        /// This process has been dealt with — refused, stopped by hand, deleted, or cut off by
+        /// the length limit. Nothing it does raises a prompt until it lets both devices go.
         case declined(pid: Int32)
 
         /// The same state in the three terms the menu bar is written in.
@@ -308,7 +308,7 @@ public struct MeetingMachine: Sendable {
 
         case (.recording(let app, let since, let confirmed, _, let quiet), .tick(let now)):
             if now.timeIntervalSince(since) >= limits.maxMeeting {
-                return stopAtLimit(at: now)
+                return stopAtLimit(app: app, at: now)
             }
             if let quiet, now.timeIntervalSince(quiet) >= limits.silence {
                 return offerStop(app: app, since: since, confirmed: confirmed, at: now, cause: .automatic)
@@ -322,9 +322,9 @@ public struct MeetingMachine: Sendable {
         case (.recording(let app, let since, let confirmed, _, _), .appExited(let pid, let at)) where pid == app?.pid:
             return offerStop(app: nil, since: since, confirmed: confirmed, at: at, cause: .appExited)
 
-        case (.stopOffered(_, let since, _, let offeredAt, let cause), .tick(let now)):
+        case (.stopOffered(let app, let since, _, let offeredAt, let cause), .tick(let now)):
             if now.timeIntervalSince(since) >= limits.maxMeeting {
-                return stopAtLimit(at: now)
+                return stopAtLimit(app: app, at: now)
             }
             guard now.timeIntervalSince(offeredAt) >= limits.autoStop else { return [] }
             return keepAndFinish(at: now, reason: cause)
@@ -360,17 +360,24 @@ public struct MeetingMachine: Sendable {
         }
     }
 
-    /// Where the machine goes once this meeting has been dealt with by hand.
+    /// Where the machine goes once this meeting has been dealt with.
     ///
-    /// Three doors lead here — "no", a stop pressed by hand, and "delete" — and they all say the
-    /// same thing about the same process: it has been answered for. The watcher repeats itself
-    /// once a second and every repeat reads as "an application has just taken the input", so a
-    /// state that forgot would start the meeting over on the next tick: a fresh draft, a prompt
-    /// that collapses in thirty seconds, and a recording that runs to the end of the meeting.
-    /// Deleting is worse still — the new draft is unconfirmed, and silence saves it.
+    /// Four doors lead here — "no", a stop pressed by hand, "delete", and the length limit — and
+    /// they all say the same thing about the same process: this meeting has been settled, and
+    /// recording it again is not what anybody wants. The watcher repeats itself once a second and
+    /// every repeat reads as "an application has just taken the input", so a state that forgot
+    /// would start the meeting over on the next tick: a fresh draft, a prompt that collapses in
+    /// thirty seconds, and a recording that runs to the end of the meeting. Deleting is worse
+    /// still — the new draft is unconfirmed, and silence saves it — and the limit is worse again,
+    /// because nobody is watching by then at all.
+    ///
+    /// Deliberately not every ending. "Save" on a stop prompt is not a door: that prompt is
+    /// raised by the room going quiet, so the devices are already free, and answering it settles
+    /// the folder rather than the meeting.
     ///
     /// A recording nothing recognisable was holding — a manual start with no meeting
-    /// application — has no process to remember and simply comes to rest.
+    /// application, or a prompt whose application has already quit — has no process to remember
+    /// and simply comes to rest.
     private static func settled(_ app: MeetingApp?) -> State {
         app.map { State.declined(pid: $0.pid) } ?? .idle
     }
@@ -402,8 +409,14 @@ public struct MeetingMachine: Sendable {
         ]
     }
 
-    private mutating func stopAtLimit(at now: Date) -> [Effect] {
-        state = .idle
+    /// The limit is the one door into `.declined` the owner did not walk through, and the one
+    /// that needs it most. It exists so a forgotten recording cannot eat the disk — and the
+    /// meeting is still going when it fires, with the application still holding both devices, so
+    /// a machine that came to rest here would start the next four hours on the very next tick.
+    /// The limit would then stop limiting anything and merely chop the recording into
+    /// gigabyte-sized pieces, which is the opposite of what it is for.
+    private mutating func stopAtLimit(app: MeetingApp?, at now: Date) -> [Effect] {
+        state = Self.settled(app)
         return [
             .stopCapture(at: now, reason: .lengthLimit),
             .keepDraft,
