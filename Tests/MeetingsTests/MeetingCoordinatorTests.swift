@@ -467,6 +467,68 @@ private func isFailure(_ state: MeetingPanelState?) -> Bool {
     #expect(running.stoppedAt == nil)
 }
 
+// MARK: - Stopping by hand, and then the very next poll
+
+// The poll repeats itself every second for as long as the application holds the devices, and a
+// meeting is stopped in the middle of one: the conferencing window is still open, still playing.
+// Nothing but the machine's memory of that process stands between "stop" and a second draft one
+// second later — which would collapse its prompt after thirty seconds and record to the end of
+// the meeting. The stop button would not stop anything.
+@Test @MainActor func stoppingByHandSurvivesTheNextPollASecondLater() async throws {
+    let harness = try Harness()
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    harness.coordinator.answer(.confirm, at: noon.addingTimeInterval(5))
+    harness.coordinator.stopPressed(at: noon.addingTimeInterval(600))
+    await harness.coordinator.settle()
+
+    harness.coordinator.poll(now: noon.addingTimeInterval(601))
+    await harness.coordinator.settle()
+
+    #expect(harness.captures.count == 1)
+    #expect(harness.drafts.isEmpty)
+    #expect(harness.handedOver.count == 1)
+}
+
+// "Delete" is the other explicit no, and the recording it deletes is unconfirmed: a draft that
+// starts again a second later is saved by silence, so the deleted meeting would be in the
+// archive within two minutes of being deleted.
+@Test @MainActor func aDeletedRecordingDoesNotComeBackOnTheNextPoll() async throws {
+    let harness = try Harness()
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    harness.coordinator.stopPressed(at: noon.addingTimeInterval(600))
+    harness.coordinator.answer(.delete, at: noon.addingTimeInterval(605))
+    await harness.coordinator.settle()
+
+    harness.coordinator.poll(now: noon.addingTimeInterval(606))
+    harness.coordinator.poll(now: noon.addingTimeInterval(607))
+    await harness.coordinator.settle()
+
+    #expect(harness.captures.count == 1)
+    #expect(harness.entries.isEmpty)
+}
+
+// Remembered until the devices are free, and not one second longer: the next meeting in the same
+// application is a different meeting and has to be noticed.
+@Test @MainActor func theNextMeetingAfterAManualStopIsStillNoticed() async throws {
+    let harness = try Harness()
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    harness.coordinator.answer(.confirm, at: noon.addingTimeInterval(5))
+    harness.coordinator.stopPressed(at: noon.addingTimeInterval(600))
+    await harness.coordinator.settle()
+
+    harness.processes = [telemostIdle]
+    harness.coordinator.poll(now: noon.addingTimeInterval(601))
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon.addingTimeInterval(602))
+    await harness.coordinator.settle()
+
+    #expect(harness.captures.count == 2)
+    #expect(harness.drafts.count == 1)
+}
+
 // MARK: - The two capture failures are not the same failure
 
 // Nothing was recorded, so there is nothing to protect: the draft goes.

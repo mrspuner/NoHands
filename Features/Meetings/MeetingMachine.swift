@@ -78,9 +78,13 @@ public struct MeetingMachine: Sendable {
             cause: MeetingMetadata.StopReason
         )
         /// Capture is stopped, the folder is still a draft, and the answer decides its fate.
-        case savePending(since: Date, stoppedAt: Date)
-        /// This process was refused. Nothing it does raises a prompt until it lets both
-        /// devices go.
+        ///
+        /// `app` is carried for one reason: the recording was stopped by hand, and whichever way
+        /// the question is answered the process has to be remembered afterwards — see
+        /// `settled`. It goes to nil if that application quits while the question is up.
+        case savePending(app: MeetingApp?, since: Date, stoppedAt: Date)
+        /// This process has been dealt with — refused, stopped by hand, or deleted. Nothing it
+        /// does raises a prompt until it lets both devices go.
         case declined(pid: Int32)
 
         /// The same state in the three terms the menu bar is written in.
@@ -197,7 +201,7 @@ public struct MeetingMachine: Sendable {
             return [.show(.recording(since: since, confirmed: true))]
 
         case (.recording(let app, _, _, _, _), .declinePressed(let at)):
-            state = app.map { State.declined(pid: $0.pid) } ?? .idle
+            state = Self.settled(app)
             return [
                 .stopCapture(at: at, reason: .manual),
                 .discardDraft,
@@ -205,9 +209,9 @@ public struct MeetingMachine: Sendable {
                 .hide(after: 0),
             ]
 
-        case (.recording(_, let since, let confirmed, _, _), .stopPressed(let at)):
+        case (.recording(let app, let since, let confirmed, _, _), .stopPressed(let at)):
             if confirmed {
-                state = .idle
+                state = Self.settled(app)
                 return [
                     .stopCapture(at: at, reason: .manual),
                     .keepDraft,
@@ -215,20 +219,33 @@ public struct MeetingMachine: Sendable {
                     .hide(after: 0),
                 ]
             }
-            state = .savePending(since: since, stoppedAt: at)
+            state = .savePending(app: app, since: since, stoppedAt: at)
             return [
                 .stopCapture(at: at, reason: .manual),
                 .blockDictation(false),
                 .show(.savePrompt(duration: at.timeIntervalSince(since))),
             ]
 
-        case (.savePending, .keepPressed):
-            state = .idle
+        // Every way out of this state settles the process, because the door into it was a stop
+        // by hand: what the owner then said about the folder does not change the fact that they
+        // ended this meeting's recording themselves.
+        case (.savePending(let app, _, _), .keepPressed):
+            state = Self.settled(app)
             return [.keepDraft, .hide(after: 0)]
 
-        case (.savePending, .deletePressed):
-            state = .idle
+        case (.savePending(let app, _, _), .deletePressed):
+            state = Self.settled(app)
             return [.discardDraft, .hide(after: 0)]
+
+        // A refusal ends two ways and both need the process to be there to end it: empty streams,
+        // or an exit — and the coordinator reports an exit once, when the process leaves the
+        // list. Spending that one report here and then remembering the process anyway would
+        // settle the machine into a refusal nothing can lift, and no meeting would ever be
+        // noticed again. Forgetting the application is what keeps the answer below harmless.
+        case (.savePending(let app, let since, let stoppedAt), .appExited(let gone, _))
+            where gone == app?.pid:
+            state = .savePending(app: nil, since: since, stoppedAt: stoppedAt)
+            return []
 
         // The same silence rule as everywhere else, and the same threshold as the stop prompt:
         // an unanswered question is not a refusal, so it saves. Without this the question would
@@ -236,9 +253,9 @@ public struct MeetingMachine: Sendable {
         // holding it would go on taking the mouse over the Dock for the rest of the day.
         // Deliberately the effects of `keepPressed` above, minus the ones that already ran when
         // this state was entered: the capture is closed and dictation is unblocked by now.
-        case (.savePending(_, let stoppedAt), .tick(let now)):
+        case (.savePending(let app, _, let stoppedAt), .tick(let now)):
             guard now.timeIntervalSince(stoppedAt) >= limits.autoStop else { return [] }
-            state = .idle
+            state = Self.settled(app)
             return [.keepDraft, .hide(after: 0)]
 
         case (.declined(let pid), .streamsChanged(let app, let input, let output, _))
@@ -298,8 +315,12 @@ public struct MeetingMachine: Sendable {
             }
             return collapseStartPromptIfDue(now)
 
+        // The application is gone, so the prompt it raised carries no application: there is
+        // nothing left to watch for freed devices, nothing left to report an exit a second time,
+        // and therefore nothing an answer below could safely remember. `cause` is what still
+        // says why this prompt is up.
         case (.recording(let app, let since, let confirmed, _, _), .appExited(let pid, let at)) where pid == app?.pid:
-            return offerStop(app: app, since: since, confirmed: confirmed, at: at, cause: .appExited)
+            return offerStop(app: nil, since: since, confirmed: confirmed, at: at, cause: .appExited)
 
         case (.stopOffered(_, let since, _, let offeredAt, let cause), .tick(let now)):
             if now.timeIntervalSince(since) >= limits.maxMeeting {
@@ -314,8 +335,8 @@ public struct MeetingMachine: Sendable {
         case (.stopOffered(_, _, _, _, let cause), .keepPressed(let at)):
             return keepAndFinish(at: at, reason: cause)
 
-        case (.stopOffered(_, _, _, _, let cause), .deletePressed(let at)):
-            state = .idle
+        case (.stopOffered(let app, _, _, _, let cause), .deletePressed(let at)):
+            state = Self.settled(app)
             return [
                 .stopCapture(at: at, reason: cause),
                 .discardDraft,
@@ -325,8 +346,8 @@ public struct MeetingMachine: Sendable {
 
         // Unlike the answer above, this is the owner reaching for the menu while the prompt is
         // up: their own decision, not the cause that raised it.
-        case (.stopOffered, .stopPressed(let at)):
-            state = .idle
+        case (.stopOffered(let app, _, _, _, _), .stopPressed(let at)):
+            state = Self.settled(app)
             return [
                 .stopCapture(at: at, reason: .manual),
                 .keepDraft,
@@ -337,6 +358,21 @@ public struct MeetingMachine: Sendable {
         default:
             return []
         }
+    }
+
+    /// Where the machine goes once this meeting has been dealt with by hand.
+    ///
+    /// Three doors lead here — "no", a stop pressed by hand, and "delete" — and they all say the
+    /// same thing about the same process: it has been answered for. The watcher repeats itself
+    /// once a second and every repeat reads as "an application has just taken the input", so a
+    /// state that forgot would start the meeting over on the next tick: a fresh draft, a prompt
+    /// that collapses in thirty seconds, and a recording that runs to the end of the meeting.
+    /// Deleting is worse still — the new draft is unconfirmed, and silence saves it.
+    ///
+    /// A recording nothing recognisable was holding — a manual start with no meeting
+    /// application — has no process to remember and simply comes to rest.
+    private static func settled(_ app: MeetingApp?) -> State {
+        app.map { State.declined(pid: $0.pid) } ?? .idle
     }
 
     private mutating func offerStop(

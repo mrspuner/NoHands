@@ -99,7 +99,9 @@ private func recordingConfirmed() -> MeetingMachine {
         .blockDictation(false),
         .hide(after: 0),
     ])
-    #expect(subject.state == .idle)
+    // Not `.idle`: the application is still holding the devices, and coming to rest here would
+    // let the next poll start the same meeting over. See "The three doors into a refusal".
+    #expect(subject.state == .declined(pid: 501))
 }
 
 // A manual stop on an unconfirmed draft closes the files and asks: the recording is already
@@ -112,21 +114,23 @@ private func recordingConfirmed() -> MeetingMachine {
         .blockDictation(false),
         .show(.savePrompt(duration: 600)),
     ])
-    #expect(subject.state == .savePending(since: start, stoppedAt: start.addingTimeInterval(600)))
+    #expect(subject.state == .savePending(
+        app: telemost, since: start, stoppedAt: start.addingTimeInterval(600)
+    ))
 }
 
 @Test func savingFromTheSavePromptPromotesTheFolder() {
     var subject = drafting()
     _ = subject.handle(.stopPressed(at: start.addingTimeInterval(600)))
     #expect(subject.handle(.keepPressed(at: start.addingTimeInterval(605))) == [.keepDraft, .hide(after: 0)])
-    #expect(subject.state == .idle)
+    #expect(subject.state == .declined(pid: 501))
 }
 
 @Test func deletingFromTheSavePromptRemovesTheFolder() {
     var subject = drafting()
     _ = subject.handle(.stopPressed(at: start.addingTimeInterval(600)))
     #expect(subject.handle(.deletePressed(at: start.addingTimeInterval(605))) == [.discardDraft, .hide(after: 0)])
-    #expect(subject.state == .idle)
+    #expect(subject.state == .declined(pid: 501))
 }
 
 // Silence saves here as well, and — just as important — the question ends. An unanswered save
@@ -139,7 +143,7 @@ private func recordingConfirmed() -> MeetingMachine {
 
     #expect(subject.handle(.tick(stopped.addingTimeInterval(119))) == [])
     #expect(subject.handle(.tick(stopped.addingTimeInterval(120))) == [.keepDraft, .hide(after: 0)])
-    #expect(subject.state == .idle)
+    #expect(subject.state == .declined(pid: 501))
 }
 
 // Manual start outside a meeting: no app, no auto-stop, the folder slug is manual.
@@ -383,7 +387,7 @@ private func recordingConfirmed() -> MeetingMachine {
         .blockDictation(false),
         .hide(after: 0),
     ])
-    #expect(subject.state == .idle)
+    #expect(subject.state == .declined(pid: 501))
 }
 
 // MARK: - Why the recording stopped
@@ -455,6 +459,111 @@ private func recordingConfirmed() -> MeetingMachine {
     var subject = drafting()
     _ = subject.handle(.declinePressed(at: start.addingTimeInterval(5)))
     #expect(subject.handle(.appExited(pid: 501, at: start.addingTimeInterval(10))) == [])
+    #expect(subject.state == .idle)
+}
+
+// MARK: - The three doors into a refusal
+
+// The watcher repeats itself once a second, and every repeat reads as "an application has just
+// taken the input". Without a memory of the process, a meeting stopped by hand starts over on
+// the next tick: a fresh draft, a fresh prompt, and — thirty seconds later, once the prompt
+// collapses — a recording that runs to the end of the meeting. The stop button would not stop.
+@Test func stoppingByHandRemembersTheProcessTheWayARefusalDoes() {
+    var subject = recordingConfirmed()
+    _ = subject.handle(.stopPressed(at: start.addingTimeInterval(600)))
+    #expect(subject.state == .declined(pid: 501))
+    #expect(subject.handle(
+        .streamsChanged(app: telemost, input: true, output: true, at: start.addingTimeInterval(601))
+    ) == [])
+}
+
+// "Delete" is the other explicit no in this feature, and it has to be remembered for the same
+// reason: an unconfirmed draft that comes back a second later is saved by silence, so a
+// recording the owner deleted on purpose would end up in the archive anyway.
+@Test func deletingFromTheSavePromptRemembersTheProcessToo() {
+    var subject = drafting()
+    _ = subject.handle(.stopPressed(at: start.addingTimeInterval(600)))
+    _ = subject.handle(.deletePressed(at: start.addingTimeInterval(605)))
+    #expect(subject.state == .declined(pid: 501))
+    #expect(subject.handle(
+        .streamsChanged(app: telemost, input: true, output: true, at: start.addingTimeInterval(606))
+    ) == [])
+}
+
+// The door was the stop, not the answer: what the owner said about the folder does not change
+// the fact that they ended this meeting's recording by hand.
+@Test func savingFromTheSavePromptRemembersTheProcessAsWell() {
+    var subject = drafting()
+    _ = subject.handle(.stopPressed(at: start.addingTimeInterval(600)))
+    _ = subject.handle(.keepPressed(at: start.addingTimeInterval(605)))
+    #expect(subject.state == .declined(pid: 501))
+}
+
+@Test func aSavePromptThatSavedItselfRemembersTheProcessAsWell() {
+    var subject = drafting()
+    let stopped = start.addingTimeInterval(600)
+    _ = subject.handle(.stopPressed(at: stopped))
+    _ = subject.handle(.tick(stopped.addingTimeInterval(120)))
+    #expect(subject.state == .declined(pid: 501))
+}
+
+@Test func deletingFromTheStopPromptRemembersTheProcessToo() {
+    var subject = recordingConfirmed()
+    let quiet = start.addingTimeInterval(60)
+    _ = subject.handle(.streamsChanged(app: telemost, input: false, output: false, at: quiet))
+    _ = subject.handle(.tick(quiet.addingTimeInterval(61)))
+    _ = subject.handle(.deletePressed(at: quiet.addingTimeInterval(70)))
+    #expect(subject.state == .declined(pid: 501))
+}
+
+@Test func stoppingByHandFromTheStopPromptRemembersTheProcessToo() {
+    var subject = recordingConfirmed()
+    let quiet = start.addingTimeInterval(60)
+    _ = subject.handle(.streamsChanged(app: telemost, input: false, output: false, at: quiet))
+    _ = subject.handle(.tick(quiet.addingTimeInterval(61)))
+    _ = subject.handle(.stopPressed(at: quiet.addingTimeInterval(70)))
+    #expect(subject.state == .declined(pid: 501))
+}
+
+// Remembered exactly as long as a refusal is, and no longer: the meeting that was stopped by
+// hand ends when the application lets the devices go, and the next one is a new meeting.
+@Test func aStopByHandIsForgottenWhenTheDevicesGoFree() {
+    var subject = recordingConfirmed()
+    _ = subject.handle(.stopPressed(at: start.addingTimeInterval(600)))
+    _ = subject.handle(
+        .streamsChanged(app: telemost, input: false, output: false, at: start.addingTimeInterval(700))
+    )
+    #expect(subject.state == .idle)
+    let again = start.addingTimeInterval(800)
+    #expect(subject.handle(.streamsChanged(app: telemost, input: true, output: false, at: again)).first
+        == .startCapture(app: telemost, at: again))
+}
+
+@Test func aStopByHandIsForgottenWhenTheApplicationQuits() {
+    var subject = recordingConfirmed()
+    _ = subject.handle(.stopPressed(at: start.addingTimeInterval(600)))
+    _ = subject.handle(.appExited(pid: 501, at: start.addingTimeInterval(700)))
+    #expect(subject.state == .idle)
+}
+
+// A refusal only ends two ways, and both need the process to still be there to end it: empty
+// streams, or an exit reported once. An application that quits while the save prompt is up has
+// already spent its one exit — remembering it afterwards would settle the machine into a
+// refusal nothing can ever lift, and no meeting would be noticed again until a restart.
+@Test func anApplicationThatQuitWhileTheSavePromptWasUpIsNotRememberedAfterwards() {
+    var subject = drafting()
+    _ = subject.handle(.stopPressed(at: start.addingTimeInterval(600)))
+    _ = subject.handle(.appExited(pid: 501, at: start.addingTimeInterval(610)))
+    _ = subject.handle(.keepPressed(at: start.addingTimeInterval(620)))
+    #expect(subject.state == .idle)
+}
+
+// Same hazard from the other prompt: the stop was offered *because* the application quit, so
+// there is no process left to wait on.
+@Test func aStopPromptRaisedByAnExitRemembersNothingWhenItIsAnswered() {
+    var subject = recordingConfirmed()
+    _ = subject.handle(.appExited(pid: 501, at: start.addingTimeInterval(600)))
+    _ = subject.handle(.deletePressed(at: start.addingTimeInterval(605)))
     #expect(subject.state == .idle)
 }
 
