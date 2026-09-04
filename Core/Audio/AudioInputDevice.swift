@@ -21,6 +21,15 @@ public struct AudioInputDevice: Sendable {
         sampleRate < Self.narrowbandThreshold
     }
 
+    /// Public so a test outside this module can stand in a device of its own. Nothing in the
+    /// application builds one: `current()` is the only honest source, and a device described by
+    /// hand would be a description of a microphone nobody is recording through.
+    public init(name: String, sampleRate: Double, channelCount: UInt32) {
+        self.name = name
+        self.sampleRate = sampleRate
+        self.channelCount = channelCount
+    }
+
     public static func current() -> AudioInputDevice? {
         guard let deviceID = defaultInputDeviceID(),
               let name = deviceName(deviceID),

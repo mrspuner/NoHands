@@ -135,7 +135,12 @@ private struct MeetingContent: View {
             prompt(
                 "Записать созвон в \(appName)?",
                 yes: ("Записать", .confirm),
-                no: ("Нет", .decline)
+                no: ("Нет", .decline),
+                // "Предупреждение перед стартом", and this is the only moment that answers to
+                // that description: the draft is seconds old, and swapping the microphone here
+                // costs nothing. The prompts that ask about a finished recording get nothing —
+                // the band it was recorded in is no longer a decision anybody can make.
+                warnAboutTheBand: true
             )
         case .stopPrompt(let duration):
             prompt(
@@ -183,16 +188,32 @@ private struct MeetingContent: View {
                 .fill(Color.red)
                 .frame(width: 7, height: 7)
             Elapsed(since: since)
+            narrowband
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(Surface(recording: false))
     }
 
+    /// Spec §10, the same warning dictation shows: a Bluetooth microphone puts the whole device
+    /// into narrowband, and the meeting is recorded through it anyway. It stays up for the
+    /// length of the recording rather than flashing once — unlike a dictation, a meeting lasts
+    /// an hour, and the owner may well look at the strip for the first time twenty minutes in,
+    /// while swapping the microphone would still save most of the recording.
+    @ViewBuilder private var narrowband: some View {
+        if let hz = model.meetingNarrowbandHz {
+            Text("узкая полоса, \(Int(hz / 1000)) кГц")
+                .font(.system(size: 11))
+                .foregroundStyle(.orange)
+                .lineLimit(1)
+        }
+    }
+
     private func prompt(
         _ text: String,
         yes: (String, MeetingCoordinator.Answer),
-        no: (String, MeetingCoordinator.Answer)
+        no: (String, MeetingCoordinator.Answer),
+        warnAboutTheBand: Bool = false
     ) -> some View {
         // No spacer between the question and the answers: a row that hugs its text keeps the
         // panel as narrow as what it has to say, the way every other state of it does.
@@ -201,6 +222,9 @@ private struct MeetingContent: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
+            if warnAboutTheBand {
+                narrowband
+            }
             PromptButton(title: yes.0, prominent: true) { model.onMeetingAnswer?(yes.1) }
             PromptButton(title: no.0, prominent: false) { model.onMeetingAnswer?(no.1) }
         }

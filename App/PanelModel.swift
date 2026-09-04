@@ -26,6 +26,10 @@ final class PanelModel: ObservableObject {
     @Published var frontmostIcon: NSImage?
     /// Sample rate of the input when it is narrowband, nil otherwise.
     @Published var narrowbandHz: Double?
+    /// The same fact about the meeting being recorded, kept apart from the dictation one for the
+    /// same reason `meeting` is kept apart from `state`: the two live on different clocks, and a
+    /// dictation collapsing would otherwise wipe the warning off an hour-long recording.
+    @Published var meetingNarrowbandHz: Double?
 
     func push(level: Float) {
         levels.removeFirst()

@@ -101,6 +101,9 @@ final class PanelWindow {
         pendingMeetingHide?.cancel()
         let work = DispatchWorkItem { [weak self] in
             self?.model.meeting = nil
+            // Goes with the recording it described, exactly as the dictation warning goes with
+            // its dictation: the next meeting reads the input device again and says its own.
+            self?.model.meetingNarrowbandHz = nil
             self?.panel.invalidateShadow()
             self?.updateAcceptsClicks()
         }
@@ -135,6 +138,10 @@ final class PanelWindow {
 
     func setInputWarning(hz: Double?) {
         model.narrowbandHz = hz
+    }
+
+    func setMeetingInputWarning(hz: Double?) {
+        model.meetingNarrowbandHz = hz
     }
 
     /// Distance from the top of the Dock to the bottom of the strip. The content is

@@ -39,8 +39,13 @@ public final class MeetingCoordinator {
     private let queue: URL
     private let showPanel: (MeetingPanelState) -> Void
     private let hidePanel: (TimeInterval) -> Void
+    /// The input's sample rate when it is below the narrowband threshold, nil when the band is
+    /// fine. A fact rather than a sentence, exactly as `DictationCoordinator` reports it: the
+    /// wording belongs to the `App` target.
+    private let onNarrowbandInput: (Double?) -> Void
     private let onDictationBlocked: (Bool) -> Void
     private let isDictating: () -> Bool
+    private let readInputDevice: () -> AudioInputDevice?
     private let readProcesses: () -> [AudioProcessMonitor.State]?
     private let makeCapture: (URL, [String], @escaping @Sendable (String) -> Void) -> any MeetingCapture
 
@@ -101,8 +106,10 @@ public final class MeetingCoordinator {
         queue: URL = MeetingFolder.queueURL,
         showPanel: @escaping (MeetingPanelState) -> Void,
         hidePanel: @escaping (TimeInterval) -> Void,
+        onNarrowbandInput: @escaping (Double?) -> Void,
         onDictationBlocked: @escaping (Bool) -> Void,
         isDictating: @escaping () -> Bool,
+        readInputDevice: @escaping () -> AudioInputDevice? = AudioInputDevice.current,
         readProcesses: @escaping () -> [AudioProcessMonitor.State]? = AudioProcessMonitor.current,
         makeCapture: @escaping (URL, [String], @escaping @Sendable (String) -> Void) -> any MeetingCapture = {
             MeetingAudioRecorder(folder: $0, excludedBundleIDs: $1, onFailureWhileRecording: $2)
@@ -112,8 +119,10 @@ public final class MeetingCoordinator {
         self.queue = queue
         self.showPanel = showPanel
         self.hidePanel = hidePanel
+        self.onNarrowbandInput = onNarrowbandInput
         self.onDictationBlocked = onDictationBlocked
         self.isDictating = isDictating
+        self.readInputDevice = readInputDevice
         self.readProcesses = readProcesses
         self.makeCapture = makeCapture
         self.machine = MeetingMachine(limits: MeetingMachine.Limits(config: config))
@@ -302,7 +311,13 @@ public final class MeetingCoordinator {
                 in: queue, startedAt: at, slug: app?.slug ?? Self.manualSlug
             )
             folder = draft
-            let device = AudioInputDevice.current()
+            let device = readInputDevice()
+            // Spec §10: the same warning dictation shows, and said here for the same reason —
+            // a Bluetooth microphone drops the whole device into narrowband, the recording goes
+            // ahead regardless, and the owner is the only one who can swap the microphone while
+            // that still helps. Written into `meeting.json` as well, but a file nobody reads
+            // during the meeting is not a warning. Once, at the start, as in dictation.
+            onNarrowbandInput(device.flatMap { $0.isNarrowband ? $0.sampleRate : nil })
             let metadata = MeetingMetadata(
                 startedAt: at,
                 stoppedAt: nil,

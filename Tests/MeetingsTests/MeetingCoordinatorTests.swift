@@ -105,7 +105,14 @@ private final class Harness {
     private(set) var shown: [MeetingPanelState] = []
     private(set) var hidden: [TimeInterval] = []
     private(set) var blocked: [Bool] = []
+    /// The input's sample rate when it is narrowband, nil when the band is fine — one entry per
+    /// time the coordinator said so.
+    private(set) var narrowband: [Double?] = []
     private(set) var captures: [FakeCapture] = []
+    /// What the coordinator reads instead of the machine's real default input. A seam for the
+    /// same reason as `processes`: the warning and `meeting.json` both come from this, and the
+    /// machine running the tests has whatever microphone it has.
+    var inputDevice: AudioInputDevice?
     /// What the next `poll` reads. `nil` is a failed system call, `[]` is nobody holding a
     /// device — the distinction several tests below exist for.
     var processes: [AudioProcessMonitor.State]? = []
@@ -133,8 +140,10 @@ private final class Harness {
             queue: queue,
             showPanel: { [weak self] in self?.shown.append($0) },
             hidePanel: { [weak self] in self?.hidden.append($0) },
+            onNarrowbandInput: { [weak self] in self?.narrowband.append($0) },
             onDictationBlocked: { [weak self] in self?.blocked.append($0) },
             isDictating: { [weak self] in self?.dictating ?? false },
+            readInputDevice: { [weak self] in self?.inputDevice },
             readProcesses: { [weak self] in
                 guard let self else { return [] }
                 return processes
@@ -469,6 +478,50 @@ private func isFailure(_ state: MeetingPanelState?) -> Bool {
     let running = try harness.metadata(of: harness.drafts[0])
     #expect(running.startedAt == noon.addingTimeInterval(601))
     #expect(running.stoppedAt == nil)
+}
+
+// MARK: - The microphone the meeting is being recorded through
+
+// Spec §10: a Bluetooth microphone drops the whole device into narrowband, and the meeting is
+// recorded anyway — a narrow band is worse than a full one and better than nothing. Naming it is
+// the entire remedy, and it is the same warning dictation has shown since phase 1. The value was
+// already going into `meeting.json`; what was missing was saying it to the owner, who is the
+// only one who can swap the microphone while it still matters.
+@Test @MainActor func aNarrowbandMicrophoneIsNamedWhenTheMeetingStarts() async throws {
+    let harness = try Harness()
+    harness.inputDevice = AudioInputDevice(name: "AirPods", sampleRate: 16000, channelCount: 1)
+    harness.processes = [telemost]
+
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+
+    #expect(harness.narrowband == [16000])
+    #expect(try harness.metadata(of: harness.drafts[0]).inputDevice?.isNarrowband == true)
+}
+
+@Test @MainActor func aFullBandMicrophoneIsNothingToWarnAbout() async throws {
+    let harness = try Harness()
+    harness.inputDevice = AudioInputDevice(name: "USB", sampleRate: 48000, channelCount: 1)
+    harness.processes = [telemost]
+
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+
+    #expect(harness.narrowband == [nil])
+}
+
+// Once, at the start, exactly as dictation reports it — not once a second for an hour.
+@Test @MainActor func theWarningIsSaidAtTheStartAndNotRepeated() async throws {
+    let harness = try Harness()
+    harness.inputDevice = AudioInputDevice(name: "AirPods", sampleRate: 16000, channelCount: 1)
+    harness.processes = [telemost]
+
+    harness.coordinator.poll(now: noon)
+    harness.coordinator.poll(now: noon.addingTimeInterval(1))
+    harness.coordinator.poll(now: noon.addingTimeInterval(2))
+    await harness.coordinator.settle()
+
+    #expect(harness.narrowband == [16000])
 }
 
 // MARK: - A dictation already under way
