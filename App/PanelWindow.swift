@@ -38,7 +38,7 @@ final class PanelWindow {
 
     init() {
         panel = Panel(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 96),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: Self.restingHeight),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -122,7 +122,7 @@ final class PanelWindow {
         pendingNoticeHide?.cancel()
         pendingNoticeHide = nil
         model.notice = notice
-        position()
+        resize(forNotice: true)
         panel.orderFrontRegardless()
     }
 
@@ -130,6 +130,7 @@ final class PanelWindow {
         pendingNoticeHide?.cancel()
         let work = DispatchWorkItem { [weak self] in
             self?.model.notice = nil
+            self?.resize(forNotice: false)
             self?.panel.invalidateShadow()
         }
         pendingNoticeHide = work
@@ -163,6 +164,23 @@ final class PanelWindow {
 
     func setMeetingInputWarning(hz: Double?) {
         model.meetingNarrowbandHz = hz
+    }
+
+    /// The window is only as tall as it needs to be, and that matters more than it looks.
+    /// `updateAcceptsClicks` toggles `ignoresMouseEvents` for the whole window rectangle, not for
+    /// the part SwiftUI draws into, so while a meeting prompt is up every click inside the frame
+    /// goes to the panel. An unconditionally taller window would therefore swallow clicks in the
+    /// empty space above the prompt — and this panel floats over full-screen call applications,
+    /// whose mute and leave buttons sit exactly there. Growing only while the notice is actually
+    /// on screen keeps that footprint what it was.
+    private static let restingHeight: CGFloat = 56
+    private static let noticeHeight: CGFloat = 96
+
+    private func resize(forNotice showing: Bool) {
+        let height = showing ? Self.noticeHeight : Self.restingHeight
+        guard panel.frame.height != height else { return }
+        panel.setContentSize(NSSize(width: panel.frame.width, height: height))
+        position()
     }
 
     /// Distance from the top of the Dock to the bottom of the strip. The content is

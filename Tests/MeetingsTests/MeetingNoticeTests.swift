@@ -18,11 +18,11 @@ import Testing
     #expect(notice.isFailure)
 }
 
-// A failure outranks the duration: if both arrive, we speak about the failure.
 @Test func theDwellIsTheSameFiveSecondsAsEveryOtherNotice() {
     #expect(MeetingNotice.dwell == MeetingMachine.noticeDwell)
 }
 
+// A failure outranks the duration: when both arrive, the failure is what gets said.
 @Test func aFailureWinsOverMinutes() {
     let notice = MeetingNotice.forOutcome(
         MeetingQueue.Outcome(folder: "x", minutes: 3, failure: "не удалось сжать")

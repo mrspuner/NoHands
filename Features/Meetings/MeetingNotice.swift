@@ -25,6 +25,9 @@ public struct MeetingNotice: Equatable, Sendable {
         if let failure = outcome.failure {
             return MeetingNotice(text: "Не расшифровано: \(failure)", isFailure: true)
         }
+        // `minutes` is set on every path that has no failure — the two are written together in
+        // `MeetingQueue.run`. The fallback exists because the type cannot say so, not because a
+        // meeting of zero minutes is a thing this can report.
         return MeetingNotice(text: "Расшифровано, \(outcome.minutes ?? 0) мин", isFailure: false)
     }
 }
