@@ -192,7 +192,7 @@
 {
   "meetings": {
     "triggerApps": [
-      { "bundleId": "ru.yandex.telemost", "slug": "telemost" },
+      { "bundleId": "ru.yandex.desktop.telemost", "slug": "telemost" },
       { "bundleId": "us.zoom.xos", "slug": "zoom" }
     ],
     "excludedApps": [],
