@@ -408,7 +408,10 @@ final class TrackWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked 
     /// Everything below is touched on `queue` only.
     private let system: CaptureTrack
     private let microphone: CaptureTrack
-    private var streamFailure: String?
+    /// What has already been named to the caller while the meeting was still being recorded —
+    /// a dead stream or a track that can no longer be written. Both go through `report`, and
+    /// this is what makes it happen once.
+    private var reportedFailure: String?
     private var closed = false
 
     private let onFailureWhileRecording: @Sendable (String) -> Void
@@ -454,6 +457,12 @@ final class TrackWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked 
             // No screen output is attached, so `.screen` never arrives here.
             break
         }
+        // A track that failed has stopped writing for good — `append` refuses every buffer after
+        // the first failure — so this is a recording that is no longer being made. Spec §10 asks
+        // for it to stop with the reason named rather than run out its hour on a truncated file,
+        // and the reason has to travel the same road a dead stream travels: out at once, exactly
+        // once, and never after the hand-off. `report` is what all three of those rules live in.
+        if let failure = system.failure ?? microphone.failure { report(failure) }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
@@ -467,18 +476,24 @@ final class TrackWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked 
     /// Internal rather than private for the same reason as `receive`: the delegate method above
     /// takes an `SCStream`, which a test process cannot build.
     func streamDied(_ error: Error) {
-        // `async`, never `sync`: this can arrive on the sample handler queue itself.
+        // `async`, never `sync`: this can arrive on the sample handler queue itself, and the
+        // rules below are the queue's. `receive` is already on it and calls `report` directly.
         queue.async { [self] in
-            // Both guards are the same serial queue's, so "once" and "not after the hand-off"
-            // need no lock of their own. Nothing restarts a dead stream, so a second report is
-            // the same failure said twice; and after `finish` the recording has already been
-            // handed over, so a straggler would name a meeting that is no longer happening —
-            // the same mistake a late buffer used to make with the file.
-            guard !closed, streamFailure == nil else { return }
-            let message = "the capture stopped: \(error.localizedDescription)"
-            streamFailure = message
-            onFailureWhileRecording(message)
+            report("the capture stopped: \(error.localizedDescription)")
         }
+    }
+
+    /// The one way a failure reaches the caller while the meeting is still being recorded.
+    ///
+    /// Called on `queue`, which is what lets "once" and "not after the hand-off" be two plain
+    /// guards rather than locks. Nothing here restarts anything, so a second report would be the
+    /// same failure said twice; and after `finish` the recording has already been handed over, so
+    /// a straggler would name a meeting that is no longer happening — the same mistake a late
+    /// buffer used to make with the file.
+    private func report(_ message: String) {
+        guard !closed, reportedFailure == nil else { return }
+        reportedFailure = message
+        onFailureWhileRecording(message)
     }
 
     func close() {
@@ -505,7 +520,9 @@ final class TrackWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked 
     }
 
     private func firstFailure() -> String? {
-        if let streamFailure { return streamFailure }
+        // Whatever was already named to the owner comes first: the panel and `meeting.json` say
+        // the same sentence about the same recording.
+        if let reportedFailure { return reportedFailure }
         if let failure = system.failure { return failure }
         if let failure = microphone.failure { return failure }
         // A track that received nothing at all is what a refused capture looks like from here:

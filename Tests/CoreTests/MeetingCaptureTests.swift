@@ -278,6 +278,65 @@ private struct StreamDeath: LocalizedError {
     #expect(log.messages.count == 1)
 }
 
+// MARK: - A track that can no longer be written
+
+/// Takes the folder out from under a writer that has already been built. What a full disk looks
+/// like from inside `append`: the first write fails, and every write after it would too.
+private func makeUnwritable(_ folder: URL) throws {
+    try FileManager.default.removeItem(at: folder)
+}
+
+// Spec §10: running out of disk stops the recording with the reason named, rather than writing a
+// truncated file for the rest of the meeting. A track that cannot be written is finished for
+// good — `append` never tries again — so without this the meeting went on believing in itself
+// and the reason turned up only when the owner pressed stop an hour later. The same door a dead
+// stream goes through, and the same rules: once, and nothing after the hand-off.
+@Test func aTrackThatCannotBeWrittenIsReportedWithoutWaitingForTheStop() throws {
+    let folder = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let log = FailureLog()
+    let writer = try makeWriter(in: folder) { log.append($0) }
+    try makeUnwritable(folder)
+
+    writer.receive(try sampleBuffer(at: 1), of: .audio)
+
+    #expect(try #require(log.messages.first).contains("system.wav"))
+    #expect(log.messages.count == 1)
+    // The same sentence the stop reports, so the panel and `meeting.json` cannot disagree about
+    // what went wrong.
+    #expect(writer.finish().failure == log.messages.first)
+}
+
+// Buffers keep arriving ten times a second, and every one of them would fail the same way.
+@Test func aTrackThatCannotBeWrittenIsReportedOnceHoweverManyBuffersArrive() throws {
+    let folder = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let log = FailureLog()
+    let writer = try makeWriter(in: folder) { log.append($0) }
+    try makeUnwritable(folder)
+
+    writer.receive(try sampleBuffer(at: 1), of: .audio)
+    writer.receive(try sampleBuffer(at: 2), of: .audio)
+    writer.receive(try sampleBuffer(at: 3), of: .microphone)
+
+    #expect(log.messages.count == 1)
+}
+
+@Test func aWriteThatCannotHappenAfterTheHandoffIsNotReportedEither() throws {
+    let folder = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let log = FailureLog()
+    let writer = try makeWriter(in: folder) { log.append($0) }
+    writer.receive(try sampleBuffer(at: 1), of: .audio)
+    writer.receive(try sampleBuffer(at: 1), of: .microphone)
+    _ = writer.finish()
+    try makeUnwritable(folder)
+
+    writer.receive(try sampleBuffer(at: 2), of: .audio)
+
+    #expect(log.messages.isEmpty)
+}
+
 // The meeting is over and the folder has already been handed on. A straggling failure would
 // raise a panel about a recording nobody is making — the same class of mistake as the late
 // buffer that used to truncate a finished file.
