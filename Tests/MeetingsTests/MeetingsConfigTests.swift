@@ -1,6 +1,28 @@
+import AppKit
 import Foundation
 import Testing
 @testable import Meetings
+
+// A trigger identifier is the one thing in this feature nothing else can check. A wrong one
+// compiles, parses, saves back into `config.json` and then simply never matches — the spec says
+// as much: "угаданный идентификатор молча не сработает, и это ровно тот случай, где ошибка не
+// видна ни в коде, ни в тестах". This asks the machine instead of the headers, the way
+// `AudioProcessMonitorTests` asks CoreAudio: every identifier shipped as a default has to name an
+// application this Mac can actually find.
+//
+// It caught the real thing. `ru.yandex.telemost` was a guess, and the installed client is
+// `ru.yandex.desktop.telemost` — detection would never once have fired on the owner's main
+// platform.
+//
+// The trade-off, stated plainly: uninstalling one of these applications fails this test. That is
+// deliberate — a trigger for an application that is not here is dead configuration, and the
+// failure names which one — but it is one line to delete if it ever gets in the way.
+@Test @MainActor func everyDefaultTriggerNamesAnApplicationThisMachineCanFind() {
+    for trigger in MeetingsConfig.default.triggerApps {
+        let found = NSWorkspace.shared.urlForApplication(withBundleIdentifier: trigger.bundleID)
+        #expect(found != nil, "\(trigger.bundleID) is not installed — a guessed identifier?")
+    }
+}
 
 @Test func defaultsFillEveryMissingKey() throws {
     let config = try MeetingsConfig.decode(Data("{}".utf8))

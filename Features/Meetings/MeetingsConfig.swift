@@ -36,9 +36,14 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
     public var startPromptSeconds: Double
     public var maxMeetingSeconds: Double
 
+    /// Both identifiers are read off the applications installed on the owner's machine, not
+    /// guessed from their names — `ru.yandex.telemost` was a guess, and the desktop client calls
+    /// itself `ru.yandex.desktop.telemost`. The difference is invisible everywhere except a
+    /// meeting that never gets recorded, which is why `MeetingsConfigTests` checks these against
+    /// the machine rather than against this line.
     public static let `default` = MeetingsConfig(
         triggerApps: [
-            TriggerApp(bundleID: "ru.yandex.telemost", slug: "telemost"),
+            TriggerApp(bundleID: "ru.yandex.desktop.telemost", slug: "telemost"),
             TriggerApp(bundleID: "us.zoom.xos", slug: "zoom"),
         ],
         excludedApps: [],
