@@ -104,6 +104,9 @@ public actor DeepSeekClient {
         request.timeoutInterval = timeout
         request.httpBody = try CleanupPayload.body(
             model: model,
+            // Deliberately `text.count`, not the wrapped, marker-padded length: the budget
+            // bounds the answer, which should run about as long as the input, and the markers
+            // added inside `body` must not inflate it.
             maxTokens: CleanupPayload.tokenBudget(forCharacters: text.count),
             prompt: prompt,
             text: text
