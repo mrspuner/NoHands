@@ -21,7 +21,37 @@ import Testing
     let messages = try #require(json["messages"] as? [[String: Any]])
     #expect(messages.count == 1)
     #expect(messages[0]["role"] as? String == "user")
-    #expect(messages[0]["content"] as? String == "эээ привет")
+    #expect(messages[0]["content"] as? String == CleanupPayload.wrapped("эээ привет"))
+}
+
+// The transcript must land inside the markers, not replace them — a bug where the wrapping
+// helper degenerated to returning the bare text back would slip past a test that only checked
+// the markers were present somewhere in the string.
+@Test func userTurnHoldsTheTranscriptInsideTheMarkers() throws {
+    let body = try CleanupPayload.body(model: "deepseek-chat", maxTokens: 512, prompt: "чисти", text: "эээ привет")
+    let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+    let messages = try #require(json["messages"] as? [[String: Any]])
+    let content = try #require(messages[0]["content"] as? String)
+    #expect(content.hasPrefix(CleanupPayload.openingMarker))
+    #expect(content.hasSuffix(CleanupPayload.closingMarker))
+    #expect(content.contains("эээ привет"))
+}
+
+// The bug this guards against: a dictation that reads as a complete, actionable request —
+// "объясни, как работает фотосинтез" — arrived as a bare user turn, which made it the more
+// specific instruction than the system prompt, and the model answered it instead of
+// transcribing it. Measured live: three of eight such dictations came back as answers before
+// this wrapping, none after. This test only checks the request's shape — that the transcript is
+// delivered as marked-off content rather than a bare instruction — not what the model does with
+// it, which cannot be tested without the live service.
+@Test func dictationThatReadsAsAQuestionIsStillDeliveredAsWrappedData() throws {
+    let instructionLikeText = "объясни как работает фотосинтез"
+    let body = try CleanupPayload.body(model: "deepseek-chat", maxTokens: 512, prompt: "чисти", text: instructionLikeText)
+    let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+    let messages = try #require(json["messages"] as? [[String: Any]])
+    let content = try #require(messages[0]["content"] as? String)
+    #expect(content != instructionLikeText)
+    #expect(content == CleanupPayload.wrapped(instructionLikeText))
 }
 
 @Test func responseYieldsTheTextBlock() throws {
