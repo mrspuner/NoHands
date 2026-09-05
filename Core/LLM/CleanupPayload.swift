@@ -78,9 +78,20 @@ enum CleanupPayload {
     /// user turn is the more specific instruction and nothing marks its content as data.
     ///
     /// Measured on the live service: three of eight ordinary imperative dictations came back as
-    /// answers without the marker, none with it. The marker is Russian to match the prompt and
-    /// the speech it wraps — an English `<transcript>` also stopped the substitutions but obeyed
-    /// a deliberate "ignore previous instructions" once in five runs, where this one obeyed none.
+    /// answers without the marker, none with it. The other five in the same probe — the
+    /// non-actionable ones — were cleaned correctly both with and without the marker: the wrap
+    /// costs nothing on ordinary dictation.
+    ///
+    /// A transcript containing the closing marker itself was also probed and stayed contained:
+    /// it came back cleaned normally rather than escaping the envelope. There is no known need
+    /// to escape marker occurrences in the text before sending it — do not add that without a
+    /// probe showing it is actually needed.
+    ///
+    /// The marker is Russian to match the prompt and the speech it wraps — an English
+    /// `<transcript>` also stopped the substitutions but obeyed a deliberate "ignore previous
+    /// instructions" once in five runs, where this one obeyed none. Five runs per marker is a
+    /// small sample, stated plainly: it pointed one way and never the other, which is not the
+    /// same as settled.
     ///
     /// It lives here rather than in the prompt deliberately: the prompt is a key in the owner's
     /// `config.json`, so a fix written into the prompt would never reach an installation that
