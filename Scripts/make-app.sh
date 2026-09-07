@@ -21,12 +21,6 @@ mkdir -p "$APP/Contents/MacOS"
 cp "$BIN_PATH/NoHandsApp" "$APP/Contents/MacOS/NoHands"
 cp App/Info.plist "$APP/Contents/Info.plist"
 
-# Resource bundles SwiftPM generates for targets with resources. `Bundle.module` looks for them
-# next to the executable and in Contents/Resources; without this the app is the one build that
-# cannot find summarize.py, and tests would never catch it.
-mkdir -p "$APP/Contents/Resources"
-cp -R "$BIN_PATH"/*.bundle "$APP/Contents/Resources/"
-
 codesign --force --sign "$IDENTITY" --identifier com.nohands.app "$APP"
 codesign --verify --verbose "$APP"
 

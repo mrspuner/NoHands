@@ -30,12 +30,24 @@ private let meetingFileWithNoReplies = """
 
     """
 
+/// An ordinary Obsidian note living in the same folder — `~/Meetings` is an Obsidian directory
+/// by design, so this is expected, not a broken meeting file.
+private let strayNote = """
+    Заметка про понедельник. Никакой встречи здесь нет.
+
+    - купить молока
+
+    """
+
 private struct FakeRunner: SummaryRunning {
     let answer: MeetingSummary?
     // A closure, not `any Error`: `Error` does not imply `Sendable`, and `SummaryRunning`
     // requires it — a bare existential here simply would not compile under Swift 6.
     let failure: (@Sendable () -> any Error)?
     let calls: Counter
+    /// Makes the runner actually suspend, so an overlapping pass has a window to enter the
+    /// actor. Without it the overlap test would pass by accident on timing.
+    var slow = false
 
     final class Counter: @unchecked Sendable {
         private let lock = NSLock()
@@ -46,6 +58,7 @@ private struct FakeRunner: SummaryRunning {
 
     func summarize(transcript: String) async throws -> MeetingSummary {
         calls.bump()
+        if slow { try? await Task.sleep(for: .milliseconds(100)) }
         if let failure { throw failure() }
         return answer!
     }
@@ -175,6 +188,57 @@ private let summary = MeetingSummary(
     await summarizer.scanArchive()
     #expect(counter.count == 0)
     #expect(outcomes.all.count == 1)
+}
+
+// Три входа зовут заход: исход очереди, запуск приложения и «Перечитать конфиг». Актор
+// реентерабелен, а заход висит на модели минутами — второй проход прочитал бы файл, который
+// первый уже разбирает, но ещё не записал, и наложил бы вставку на устаревший текст, стерев
+// ручную правку. Ровно то, ради ненаступления чего вставка вообще устроена вставкой.
+@Test func twoOverlappingScansSummariseEachFileOnce() async throws {
+    let directory = try archive(files: ["a.md": meetingFile, "b.md": meetingFile])
+    let counter = FakeRunner.Counter()
+    let summarizer = MeetingSummarizer(
+        archive: directory, config: .default,
+        makeRunner: { FakeRunner(answer: summary, failure: nil, calls: counter, slow: true) },
+        report: { _ in }
+    )
+    async let first: Void = summarizer.scanArchive()
+    // Долго достаточно, чтобы первый заход уже висел на бегунке, когда придёт второй.
+    try await Task.sleep(for: .milliseconds(20))
+    await summarizer.scanArchive()
+    await first
+
+    #expect(counter.count == 2)
+    for name in ["a.md", "b.md"] {
+        let written = try String(contentsOf: directory.appendingPathComponent(name), encoding: .utf8)
+        #expect(written.components(separatedBy: "## Саммари").count == 2)
+    }
+}
+
+// `~/Meetings` — папка Obsidian, и заметка без транскрипта в ней ожидаема. Раньше такая
+// заметка получала отказ, который некуда было записать, и он всплывал уведомлением при каждом
+// запуске до конца времён.
+@Test func aNoteWithoutATranscriptHeadingIsSkippedWithoutAWord() async throws {
+    let directory = try archive(files: [
+        "заметка.md": strayNote, "2026-09-04-1053-telemost.md": meetingFile,
+    ])
+    let counter = FakeRunner.Counter()
+    let outcomes = OutcomeBox()
+    let summarizer = MeetingSummarizer(
+        archive: directory, config: .default,
+        makeRunner: { FakeRunner(answer: summary, failure: nil, calls: counter) },
+        report: { outcomes.add($0) }
+    )
+    await summarizer.scanArchive()
+
+    #expect(counter.count == 1)
+    #expect(outcomes.all.map(\.file) == ["2026-09-04-1053-telemost.md"])
+    let note = try String(contentsOf: directory.appendingPathComponent("заметка.md"), encoding: .utf8)
+    #expect(note == strayNote)
+    let meeting = try String(
+        contentsOf: directory.appendingPathComponent("2026-09-04-1053-telemost.md"), encoding: .utf8
+    )
+    #expect(meeting.contains("## Саммари"))
 }
 
 @Test func theSwitchInTheConfigActuallySwitchesItOff() async throws {

@@ -39,8 +39,13 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
     #expect(!MLXSummaryRunner.Failure.runnerFailed("что-то").isPermanent)
 }
 
-@Test func theScriptTravelsWithTheModule() throws {
-    #expect(Bundle.module.url(forResource: "summarize", withExtension: "py") != nil)
+// Скрипт вкомпилирован строкой, а не лежит ресурсом: `Bundle.module` в собранном приложении
+// искал его не там, куда его клал `make-app.sh`, и промах был бы не отказом, а падением.
+// Проверяются две строки, на которых стоит вся фаза: без первой в файл встречи попадёт
+// полминуты раздумий модели, без второй расшифровка станет творческой задачей.
+@Test func theScriptKeepsTheTwoSettingsTheDesignRestsOn() {
+    #expect(SummaryScript.source.contains("enable_thinking=False"))
+    #expect(SummaryScript.source.contains("temp=0.0"))
 }
 
 @Test func theTranscriptGoesToTheModelInsideTheMarker() {

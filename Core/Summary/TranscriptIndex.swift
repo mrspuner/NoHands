@@ -52,6 +52,18 @@ public struct TranscriptIndex: Equatable, Sendable {
     /// The transcript exactly as the model gets it: reply lines, nothing above them.
     public var body: String
 
+    /// Whether the file carries the transcript heading at all.
+    ///
+    /// Deliberately told apart from "the heading is there and nothing parses under it". The
+    /// second is a meeting file edited past recognition and gets a refusal written into it; this
+    /// one is somebody else's note — `~/Meetings` is an Obsidian folder by design — and there is
+    /// nowhere to write a refusal into it, so it is left alone without a word.
+    public static func hasHeading(_ markdown: String) -> Bool {
+        markdown.components(separatedBy: "\n").contains {
+            $0.trimmingCharacters(in: .whitespaces) == heading
+        }
+    }
+
     public static func parse(_ markdown: String) -> TranscriptIndex {
         let all = markdown.components(separatedBy: "\n")
         guard

@@ -56,7 +56,7 @@ public enum SummaryInsertion {
 
         if mode == .replace {
             front.removeAll { $0.hasPrefix("title:") }
-            middle = []
+            middle = withoutSummarySections(middle)
         }
         // Only into an existing front matter block: there is no sensible place for `title:` in a
         // file that has none, and inventing one would be rewriting somebody else's file.
@@ -107,6 +107,28 @@ public enum SummaryInsertion {
         }
         out.append("")
         return out
+    }
+
+    /// Drops the `## Саммари` and `## Решения` blocks and nothing else.
+    ///
+    /// Each block runs from its heading to the next `## ` heading or to the end of the region.
+    /// Clearing the whole region instead would be indistinguishable on a file this pipeline
+    /// wrote, and wrong on the owner's own: `meeting summarize` exists to be re-run over the
+    /// real archive while a threshold is tuned, and a note somebody typed above the transcript
+    /// has to survive that. The same line also cost a file without front matter its `---`.
+    private static func withoutSummarySections(_ lines: [String]) -> [String] {
+        var kept: [String] = []
+        var dropping = false
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed == summaryHeading || trimmed == decisionsHeading {
+                dropping = true
+                continue
+            }
+            if dropping, trimmed.hasPrefix("## ") { dropping = false }
+            if !dropping { kept.append(line) }
+        }
+        return kept
     }
 
     private static func endOfFrontMatter(_ lines: [String]) -> Int? {

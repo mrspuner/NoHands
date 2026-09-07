@@ -8,7 +8,6 @@ import Foundation
 public struct MLXSummaryRunner: SummaryRunning {
     public enum Failure: LocalizedError, SummaryFailure, Equatable {
         case uvMissing(String)
-        case scriptMissing
         case tooLong(estimated: Int, limit: Int)
         case timedOut(TimeInterval)
         case runnerFailed(String)
@@ -17,8 +16,6 @@ public struct MLXSummaryRunner: SummaryRunning {
             switch self {
             case .uvMissing(let path):
                 return "uv not found at \(path)"
-            case .scriptMissing:
-                return "summarize.py is missing from the application bundle"
             case .tooLong(let estimated, let limit):
                 return "The meeting is longer than the model's window: about \(estimated) tokens against \(limit)"
             case .timedOut(let seconds):
@@ -77,9 +74,6 @@ public struct MLXSummaryRunner: SummaryRunning {
         guard FileManager.default.isExecutableFile(atPath: uv) else {
             throw Failure.uvMissing(uvPath)
         }
-        guard let script = Bundle.module.url(forResource: "summarize", withExtension: "py") else {
-            throw Failure.scriptMissing
-        }
 
         let request = try JSONEncoder().encode(
             Request(
@@ -89,17 +83,17 @@ public struct MLXSummaryRunner: SummaryRunning {
                 maxTokens: Self.maxTokens
             )
         )
-        let answer = try await run(uv: URL(fileURLWithPath: uv), script: script, request: request)
+        let answer = try await run(uv: URL(fileURLWithPath: uv), request: request)
         return try SummaryResponse.parse(answer)
     }
 
     /// The whole subprocess dance is blocking, and blocking a cooperative thread for two minutes
     /// starves the pool. It runs on a queue of its own and comes back through a continuation.
-    private func run(uv: URL, script: URL, request: Data) async throws -> String {
+    private func run(uv: URL, request: Data) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             Self.queue.async {
                 do {
-                    continuation.resume(returning: try blockingRun(uv: uv, script: script, request: request))
+                    continuation.resume(returning: try blockingRun(uv: uv, request: request))
                 } catch {
                     continuation.resume(throwing: error)
                 }
@@ -107,6 +101,10 @@ public struct MLXSummaryRunner: SummaryRunning {
         }
     }
 
+    /// Serial, and load-bearing rather than tidy: the child process holds the 4.3 GB model, and
+    /// two of them at once do not fit beside the owner's work on a 16 GB machine. Every runner
+    /// instance shares this one queue — hence `static` — because `MeetingSummarizer` and the CLI
+    /// each build their own runner, and a per-instance queue would serialise nothing.
     private static let queue = DispatchQueue(label: "nohands.summary", qos: .utility)
 
     /// How long to wait after `terminate()` before escalating to `SIGKILL`. A child stuck
@@ -115,7 +113,7 @@ public struct MLXSummaryRunner: SummaryRunning {
     /// cooperating process to exit and short enough not to matter when it is not.
     private static let terminationGrace: TimeInterval = 2
 
-    private func blockingRun(uv: URL, script: URL, request: Data) throws -> String {
+    private func blockingRun(uv: URL, request: Data) throws -> String {
         let process = Process()
 
         // The request travels as a file, not on stdin. A meeting transcript is 65-140 KB of
@@ -130,9 +128,24 @@ public struct MLXSummaryRunner: SummaryRunning {
         FileManager.default.createFile(atPath: requestFile.path, contents: request)
         defer { try? FileManager.default.removeItem(at: requestFile) }
 
+        // The script travels the same way the request does — written out beside it, removed in the
+        // same breath. It is compiled into the binary as text rather than shipped as a bundle
+        // resource; see `SummaryScript` for what that cost the built application. `defer` before
+        // the `guard`, so a failure to create the file still cleans up after itself.
+        let scriptFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("nohands-summarize-\(UUID().uuidString).py")
+        defer { try? FileManager.default.removeItem(at: scriptFile) }
+        guard
+            FileManager.default.createFile(
+                atPath: scriptFile.path, contents: Data(SummaryScript.source.utf8)
+            )
+        else {
+            throw Failure.runnerFailed("no temporary file for the summary script")
+        }
+
         process.executableURL = uv
         process.arguments = [
-            "run", "--quiet", "--with", "mlx-lm==\(Self.mlxVersion)", "python", script.path,
+            "run", "--quiet", "--with", "mlx-lm==\(Self.mlxVersion)", "python", scriptFile.path,
             requestFile.path,
         ]
 

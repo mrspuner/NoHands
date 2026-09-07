@@ -31,6 +31,9 @@ public actor MeetingSummarizer {
     private var config: MeetingsConfig
     private var makeRunner: @Sendable () -> any SummaryRunning
     private let report: @Sendable (Outcome) -> Void
+    /// See `scanArchive` for why one pass at a time is a requirement rather than a tidiness.
+    private var scanning = false
+    private var rescanRequested = false
 
     public init(
         archive: URL = MeetingFolder.archiveURL,
@@ -54,10 +57,36 @@ public actor MeetingSummarizer {
         self.makeRunner = makeRunner
     }
 
+    /// One pass at a time, exactly like `MeetingQueue.drain`, and for a sharper reason: a pass
+    /// suspends for minutes per file inside the runner, and three callers can start one — the
+    /// queue's outcome, launch, and every «Перечитать конфиг». Overlapping passes would read the
+    /// same file before the first had written it, find no summary, and summarise it twice; the
+    /// later write would then land on text read before the earlier one, silently undoing any
+    /// hand edit made in that window. `rescanRequested` keeps the request rather than dropping
+    /// it: a file that appeared mid-pass gets exactly one more pass afterwards, not an
+    /// overlapping one.
     public func scanArchive() async {
         guard config.summaryEnabled else { return }
+        guard !scanning else {
+            rescanRequested = true
+            return
+        }
+        scanning = true
+        defer { scanning = false }
+        repeat {
+            rescanRequested = false
+            await pass()
+        } while rescanRequested
+    }
+
+    private func pass() async {
         for file in files() {
             guard let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
+            // Selection, per spec §10: the heading present and no summary yet. A file without
+            // the heading is not ours — `~/Meetings` is an Obsidian folder, notes live there —
+            // and is skipped in silence. Reporting it would raise the same failure at every
+            // launch for ever, because nothing about the file will ever change.
+            guard TranscriptIndex.hasHeading(text) else { continue }
             guard !SummaryInsertion.hasSummary(text) else { continue }
             switch await summarize(file, text: text) {
             case .done:
@@ -100,9 +129,13 @@ public actor MeetingSummarizer {
             return .done
         } catch let failure as any SummaryFailure where failure.isPermanent {
             return refuse(failure.localizedDescription, file: file, text: text)
-        } catch let failure as SummaryInsertion.Failure {
-            return .permanent(failure.localizedDescription)
         } catch {
+            // `SummaryInsertion.Failure` used to have a clause of its own here, returning
+            // `.permanent` without writing anything into the file — the forever-loop shape: a
+            // notice at every launch and nothing that could ever mark the file done. Selection
+            // in `pass()` makes it unreachable, and if it ever becomes reachable again a
+            // temporary failure stops the pass, which is loud and visible, instead of quietly
+            // repeating for ever.
             return .temporary(error.localizedDescription)
         }
     }

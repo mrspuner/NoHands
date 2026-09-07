@@ -75,6 +75,42 @@ private let decisions = [
     #expect(twice.contains("[00:41:12] Собеседник: Они тратят время и ресурсы."))
 }
 
+// Команда существует, чтобы гонять её по настоящему архиву при подборе порога, а там над
+// транскриптом лежит то, что владелец написал руками. Замена ограничена разделами «Саммари» и
+// «Решения» — спека, §5.
+@Test func replacingKeepsAHandWrittenSectionAboveTheTranscript() throws {
+    let withNote = file.replacingOccurrences(
+        of: "## Транскрипт",
+        with: "## Мои заметки\n\n- позвонить в понедельник\n\n## Саммари\n\n- старое\n\n## Транскрипт"
+    )
+    let result = try SummaryInsertion.apply(
+        summary: summary, decisions: [], to: withNote, named: "тест.md", mode: .replace
+    )
+    #expect(result.contains("## Мои заметки"))
+    #expect(result.contains("- позвонить в понедельник"))
+    #expect(!result.contains("- старое"))
+    #expect(result.components(separatedBy: "## Саммари").count == 2)
+}
+
+// Файла без фронтматтера конвейер не пишет, но `meeting summarize` наводят на что угодно, и
+// `middle = []` съедало вместе с разделами весь текст сверху.
+@Test func replacingAFileWithNoFrontMatterKeepsTheTextAboveTheTranscript() throws {
+    let bare = """
+        Просто заметка без фронтматтера.
+
+        ## Транскрипт
+
+        [00:00:07] Я: Помимо неверных, существуют и пустышки.
+
+        """
+    let result = try SummaryInsertion.apply(
+        summary: summary, decisions: [], to: bare, named: "тест.md", mode: .replace
+    )
+    #expect(result.hasPrefix("Просто заметка без фронтматтера."))
+    #expect(result.contains("## Саммари"))
+    #expect(result.contains("[00:00:07] Я: Помимо неверных, существуют и пустышки."))
+}
+
 @Test func aTitleWithAQuoteOrANewlineIsEscaped() throws {
     let result = try SummaryInsertion.apply(
         summary: MeetingSummary(title: "Про \"это\"", summary: ["раз"], decisions: []),
