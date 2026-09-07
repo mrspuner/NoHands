@@ -17,6 +17,19 @@ private let meetingFile = """
 
     """
 
+/// Carries the heading but no reply lines under it — either not a meeting file at all, or one
+/// edited past recognition.
+private let meetingFileWithNoReplies = """
+    ---
+    date: 2026-09-04
+    started: 10:53
+    duration: 4m
+    ---
+
+    ## Транскрипт
+
+    """
+
 private struct FakeRunner: SummaryRunning {
     let answer: MeetingSummary?
     // A closure, not `any Error`: `Error` does not imply `Sendable`, and `SummaryRunning`
@@ -138,6 +151,30 @@ private let summary = MeetingSummary(
     let written = try String(contentsOf: directory.appendingPathComponent("a.md"), encoding: .utf8)
     #expect(written.contains("Конспект не сделан: слишком длинная встреча"))
     #expect(SummaryInsertion.hasSummary(written))
+}
+
+// A file with no transcript lines is not a model problem and trying again will not change it —
+// the refusal has to land in the file itself, or the same meeting is re-attempted and
+// re-reported at every launch for ever.
+@Test func aFileWithNoTranscriptLinesGetsTheRefusalWrittenAndIsNotRetried() async throws {
+    let directory = try archive(files: ["a.md": meetingFileWithNoReplies])
+    let counter = FakeRunner.Counter()
+    let outcomes = OutcomeBox()
+    let summarizer = MeetingSummarizer(
+        archive: directory, config: .default,
+        makeRunner: { FakeRunner(answer: summary, failure: nil, calls: counter) },
+        report: { outcomes.add($0) }
+    )
+    await summarizer.scanArchive()
+    #expect(counter.count == 0)
+    let written = try String(contentsOf: directory.appendingPathComponent("a.md"), encoding: .utf8)
+    #expect(written.contains("Конспект не сделан:"))
+    #expect(SummaryInsertion.hasSummary(written))
+    #expect(outcomes.all.map(\.failure) == ["The file carries no transcript lines"])
+
+    await summarizer.scanArchive()
+    #expect(counter.count == 0)
+    #expect(outcomes.all.count == 1)
 }
 
 @Test func theSwitchInTheConfigActuallySwitchesItOff() async throws {

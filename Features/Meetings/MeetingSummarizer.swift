@@ -76,8 +76,14 @@ public actor MeetingSummarizer {
         // No reply lines at all: either not a meeting file or one edited past recognition. Not a
         // model problem, and trying again will not change it.
         guard !index.lines.isEmpty else {
-            return .permanent("The file carries no transcript lines")
+            return refuse("The file carries no transcript lines", file: file, text: text)
         }
+        // Snapshotted once, before the only suspension point below. Actors are reentrant:
+        // `update(config:makeRunner:)` can land while `summarize` is suspended on the runner, and
+        // a file scored against a threshold that was not in effect when its processing began
+        // would be a defect nobody could reproduce from outside this actor — same reasoning as
+        // `MeetingQueue.process`'s own snapshot.
+        let config = self.config
         do {
             let summary = try await makeRunner().summarize(transcript: index.body)
             let decisions = QuoteMatch.check(
@@ -93,18 +99,24 @@ public actor MeetingSummarizer {
             try Data(updated.utf8).write(to: file, options: .atomic)
             return .done
         } catch let failure as any SummaryFailure where failure.isPermanent {
-            let reason = failure.localizedDescription
-            if let refused = try? SummaryInsertion.refusal(
-                reason, to: text, named: file.lastPathComponent
-            ) {
-                try? Data(refused.utf8).write(to: file, options: .atomic)
-            }
-            return .permanent(reason)
+            return refuse(failure.localizedDescription, file: file, text: text)
         } catch let failure as SummaryInsertion.Failure {
             return .permanent(failure.localizedDescription)
         } catch {
             return .temporary(error.localizedDescription)
         }
+    }
+
+    /// Writes the reason into the file as its `## Саммари` section so `hasSummary` stops
+    /// offering it — the whole point of a permanent failure being permanent. `try?` on the write:
+    /// a failed refusal write must still return rather than crash the pass over one bad file.
+    private func refuse(_ reason: String, file: URL, text: String) -> Step {
+        if let refused = try? SummaryInsertion.refusal(
+            reason, to: text, named: file.lastPathComponent
+        ) {
+            try? Data(refused.utf8).write(to: file, options: .atomic)
+        }
+        return .permanent(reason)
     }
 
     private func files() -> [URL] {
