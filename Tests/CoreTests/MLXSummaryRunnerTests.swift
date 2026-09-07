@@ -8,9 +8,13 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
 
 // Порядок проверок — часть поведения: длина известна до всякого запуска, и мерить её после
 // попытки найти uv значило бы отвечать «нет uv» на встречу, которая всё равно не влезла бы.
+// The uv path here is /nonexistent/uv — if the guards were swapped, this would throw
+// .uvMissing instead, and #expect(throws: MLXSummaryRunner.Failure.self) alone would not
+// catch that: it matches any case of the type. Asserting the exact case is what protects the
+// ordering.
 @Test func aMeetingLongerThanTheWindowIsRefusedBeforeAnythingIsLaunched() async {
     let transcript = String(repeating: "слово ", count: 20_000)
-    await #expect(throws: MLXSummaryRunner.Failure.self) {
+    await #expect(throws: MLXSummaryRunner.Failure.tooLong(estimated: 48_000, limit: 100)) {
         try await runner(context: 100).summarize(transcript: transcript)
     }
 }

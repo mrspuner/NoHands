@@ -1,8 +1,11 @@
 """Runs Qwen3 8B over one meeting transcript and prints the model's answer.
 
-Launched as a subprocess by MLXSummaryRunner: request as JSON on stdin, answer on stdout,
-diagnostics on stderr. Kept deliberately small — everything that can be decided in Swift is
-decided in Swift, because this file is the one part of the pipeline no test covers.
+Launched as a subprocess by MLXSummaryRunner: request as a JSON file whose path is the first
+argument, answer on stdout, diagnostics on stderr. The request travels as a file rather than on
+stdin because a transcript is large enough to exceed a pipe's buffer, and writing it to stdin
+would block the parent process until this script started draining it. Kept deliberately small —
+everything that can be decided in Swift is decided in Swift, because this file is the one part
+of the pipeline no test covers.
 
 enable_thinking=False is not optional: Qwen3 is a reasoning model and without it half a minute
 of deliberation lands in the meeting file. temp=0.0 for the same reason a transcript is not
@@ -17,7 +20,8 @@ from mlx_lm.sample_utils import make_sampler
 
 
 def main():
-    request = json.load(sys.stdin)
+    with open(sys.argv[1], encoding="utf-8") as request_file:
+        request = json.load(request_file)
     model, tokenizer = load(request["model"])
     prompt = tokenizer.apply_chat_template(
         [

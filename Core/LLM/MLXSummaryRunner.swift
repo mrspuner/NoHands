@@ -109,18 +109,41 @@ public struct MLXSummaryRunner: SummaryRunning {
 
     private static let queue = DispatchQueue(label: "nohands.summary", qos: .utility)
 
+    /// How long to wait after `terminate()` before escalating to `SIGKILL`. A child stuck
+    /// inside an MLX kernel, or a `uv` that does not forward SIGTERM, would otherwise keep
+    /// 4.3 GB resident while the next summary starts — a couple of seconds is enough for a
+    /// cooperating process to exit and short enough not to matter when it is not.
+    private static let terminationGrace: TimeInterval = 2
+
     private func blockingRun(uv: URL, script: URL, request: Data) throws -> String {
         let process = Process()
+
+        // The request travels as a file, not on stdin. A meeting transcript is 65-140 KB of
+        // UTF-8 — past Darwin's 64 KB pipe capacity — so writing it to stdin blocks the parent
+        // until the child drains it, which only happens after `uv` has resolved mlx-lm and
+        // Python has imported it. That stretch would sit outside the timeout below, and a
+        // child that never reads (a stalled cache lock, a hung download) would leave this
+        // function never returning — wedging every summary queued behind it on the shared
+        // serial queue. A file has no such blocking write.
+        let requestFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("nohands-summary-request-\(UUID().uuidString).json")
+        FileManager.default.createFile(atPath: requestFile.path, contents: request)
+        defer { try? FileManager.default.removeItem(at: requestFile) }
+
         process.executableURL = uv
         process.arguments = [
             "run", "--quiet", "--with", "mlx-lm==\(Self.mlxVersion)", "python", script.path,
+            requestFile.path,
         ]
 
-        let input = Pipe()
         let output = Pipe()
         // Diagnostics go to a file, not to a pipe. `uv` and `mlx` print progress to stderr, and a
         // pipe nobody drains fills its buffer and hangs the child — which would surface as a
         // timeout on a run that was working fine. There is no transcript content here.
+        //
+        // stdout stays a pipe: that only works because `maxTokens = 1500` keeps the answer well
+        // under the pipe's buffer. Raising `maxTokens` later without revisiting this would turn
+        // a working run into a silent timeout, for the same reason stderr cannot be a pipe.
         let diagnostics = FileManager.default.temporaryDirectory
             .appendingPathComponent("nohands-summary-\(UUID().uuidString).log")
         FileManager.default.createFile(atPath: diagnostics.path, contents: nil)
@@ -129,7 +152,6 @@ public struct MLXSummaryRunner: SummaryRunning {
             throw Failure.runnerFailed("no temporary file for diagnostics")
         }
 
-        process.standardInput = input
         process.standardOutput = output
         process.standardError = errors
 
@@ -141,11 +163,15 @@ public struct MLXSummaryRunner: SummaryRunning {
         } catch {
             throw Failure.runnerFailed(error.localizedDescription)
         }
-        try? input.fileHandleForWriting.write(contentsOf: request)
-        try? input.fileHandleForWriting.close()
 
         if finished.wait(timeout: .now() + timeout) == .timedOut {
             process.terminate()
+            // SIGTERM is a request, not a guarantee. If the child is stuck inside an MLX
+            // kernel, or `uv` does not forward the signal, it would otherwise keep the model
+            // resident in memory indefinitely while the next summary starts.
+            if finished.wait(timeout: .now() + Self.terminationGrace) == .timedOut {
+                kill(process.processIdentifier, SIGKILL)
+            }
             throw Failure.timedOut(timeout)
         }
 

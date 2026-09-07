@@ -6,7 +6,7 @@ import Foundation
 /// section. An empty section in the archive reads as "nothing was said", which is a claim
 /// nobody made.
 public enum SummaryResponse {
-    public enum Failure: LocalizedError, Equatable {
+    public enum Failure: LocalizedError, SummaryFailure, Equatable {
         case notJSON
         case emptySummary
 
@@ -18,6 +18,12 @@ public enum SummaryResponse {
                 return "The model returned an empty summary"
             }
         }
+
+        /// Both permanent: generation runs at temperature 0, so the same transcript produces
+        /// the same unparseable answer every time — retrying buys nothing. Marking either as
+        /// temporary would stop the whole archive pass over one bad meeting, blocking the
+        /// summary of every other one behind it.
+        public var isPermanent: Bool { true }
     }
 
     private struct Payload: Decodable {

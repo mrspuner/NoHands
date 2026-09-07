@@ -53,3 +53,11 @@ import Testing
         try SummaryResponse.parse("Конечно! Вот конспект встречи:")
     }
 }
+
+// Generation runs at temperature 0: the same transcript produces the same unparseable answer
+// every time, so retrying buys nothing. A temporary classification would stop the whole
+// archive pass over one bad meeting — see docs, §11.
+@Test func bothParseFailuresArePermanent() {
+    #expect(SummaryResponse.Failure.notJSON.isPermanent)
+    #expect(SummaryResponse.Failure.emptySummary.isPermanent)
+}
