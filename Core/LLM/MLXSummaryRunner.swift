@@ -53,13 +53,14 @@ public struct MLXSummaryRunner: SummaryRunning {
     /// `tasks` with four of its own (one a 5-15 word quote) and `openIssues`.
     ///
     /// Getting it wrong is not a shorter answer, it is a broken one: a truncated answer is not
-    /// valid JSON. On a single-chunk meeting that is a permanent failure written into the archive;
-    /// inside a merge it used to arrive as prose the merge would quietly absorb, which is why the
-    /// script now checks every partial parses before it travels.
+    /// valid JSON. Alone it reaches `SummaryResponse` as a permanent failure with the reason in
+    /// the file, which is the right outcome; inside a merge it used to arrive as prose the merge
+    /// would quietly absorb, which is why the script now checks each partial before merging.
     ///
-    /// Moving it is not free either: `MeetingsConfigTests` holds this against
-    /// `maxMeetingSeconds` and `summaryChunkSeconds`, because a bigger partial means fewer of them
-    /// fit the merge call, and a meeting refused there is refused for ever.
+    /// Moving it is not free either. A bigger partial means fewer of them fit one merge call,
+    /// and that number is how long a meeting the app can summarise at all — see
+    /// `theSupportedMeetingLengthIsWhateverTheMergeGuardAllows`, which fails with the new
+    /// supported length rather than letting it be discovered on a real meeting.
     static let maxTokens = 2500
     /// The merge pass answers about a whole meeting rather than a chunk of one, so it gets more
     /// room than a single chunk's summary needs.

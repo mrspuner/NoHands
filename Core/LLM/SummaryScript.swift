@@ -59,6 +59,8 @@ enum SummaryScript {
         def is_json(text):
             """Whether an answer is the JSON object the prompt asked for.
 
+            Used on the way into a merge, never on the single-chunk answer — see main().
+
             The fence is stripped first, mirroring SummaryResponse.stripFence on the Swift side:
             the prompt forbids a markdown fence, the model writes one anyway now and then, and the
             pipeline already accepts that. Only what Swift would also reject counts as a failure
@@ -87,15 +89,23 @@ enum SummaryScript {
                 partial = answer(
                     model, tokenizer, request["system"], chunk, request["maxTokens"]
                 )
-                # An answer cut off at maxTokens is not valid JSON, and neither place it could go
-                # is survivable: alone it reaches the parser as a permanent failure whose cause is
-                # invisible, and in a merge it arrives as prose the merge absorbs, taking a
-                # fifteenth of the meeting with it and marking nothing. Stop, named.
+                # An answer cut off at maxTokens is not valid JSON, and inside a merge that is
+                # invisible: it arrives as prose the merge absorbs, taking a fifteenth of the
+                # meeting with it and marking nothing. Stop, named.
+                #
+                # Checked only when there is going to be a merge — the same condition that decides
+                # whether one happens at all. With a single chunk the answer goes to Swift
+                # unvalidated on purpose: SummaryResponse.Failure.notJSON is permanent, so the
+                # reason lands in the meeting file and the archive pass moves on to the next
+                # meeting, whereas exiting non-zero here is runnerFailed, which is temporary and
+                # would stop the whole pass at every launch for ever — over an answer that is
+                # identical every time, because generation runs at temperature 0. Swift classifies
+                # that failure better than this script can.
                 #
                 # The chunk number and nothing else: this line is recognised speech's neighbour,
                 # it goes to a diagnostics file, and the last line of that file is read back into
                 # a panel. Transcript content is never logged.
-                if not is_json(partial):
+                if len(request["chunks"]) > 1 and not is_json(partial):
                     sys.stderr.write("chunk %d: the model's answer is not JSON\n" % number)
                     sys.exit(1)
                 partials.append(partial)

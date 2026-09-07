@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import Core
 
-private func runner(uv: String = "/nonexistent/uv", context: Int = 48_000) -> MLXSummaryRunner {
+private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> MLXSummaryRunner {
     MLXSummaryRunner(uvPath: uv, model: "mlx-community/Qwen3-8B-4bit", timeout: 5, contextTokens: context)
 }
 
@@ -78,13 +78,21 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 48_000) -> ML
     #expect(MLXSummaryRunner.mergeMaxTokens > MLXSummaryRunner.maxTokens)
 }
 
-// A partial that will not parse must stop the run with a named failure rather than travel on. The
-// message carries the chunk number and nothing else: the project does not log recognised speech,
-// and the diagnostics file this lands in is read back into a panel line.
-@Test func theScriptRefusesAPartialThatIsNotJSON() {
+// A partial that will not parse must stop the run with a named failure rather than travel into the
+// merge, where it would arrive as prose the merge quietly absorbs. The message carries the chunk
+// number and nothing else: the project does not log recognised speech, and the diagnostics file
+// this lands in is read back into a panel line.
+//
+// Gated on there being a merge at all — the same condition that decides whether one happens. With
+// one chunk the answer goes to Swift unvalidated on purpose: `SummaryResponse.Failure.notJSON` is
+// permanent, so the reason lands in the meeting file and the archive pass moves on, whereas a
+// non-zero exit here is `runnerFailed`, which is temporary and would stop the pass at every launch
+// for ever over an answer that is identical every time at temperature 0.
+@Test func theScriptRefusesAPartialThatIsNotJSONOnlyWhenThereWillBeAMerge() {
     #expect(SummaryScript.source.contains("json.loads"))
     #expect(SummaryScript.source.contains("sys.exit(1)"))
     #expect(SummaryScript.source.contains("chunk %d"))
+    #expect(SummaryScript.source.contains("len(request[\"chunks\"]) > 1 and not is_json(partial)"))
     // No `%s` anywhere in the message written to stderr — that is how the partial's own text
     // would get there.
     #expect(!SummaryScript.source.contains("sys.stderr.write(\"chunk %d: %s"))
@@ -124,8 +132,8 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 48_000) -> ML
 // else is fixed by trying again, and writing it into the archive would close the meeting for
 // ever over a network hiccup.
 @Test func onlyLengthGuardsArePermanentFailures() {
-    #expect(MLXSummaryRunner.Failure.tooLong(estimated: 60_000, limit: 48_000).isPermanent)
-    #expect(MLXSummaryRunner.Failure.tooManyChunks(count: 20, limit: 18).isPermanent)
+    #expect(MLXSummaryRunner.Failure.tooLong(estimated: 40_000, limit: 28_000).isPermanent)
+    #expect(MLXSummaryRunner.Failure.tooManyChunks(count: 20, limit: 10).isPermanent)
     #expect(!MLXSummaryRunner.Failure.uvMissing("/x").isPermanent)
     #expect(!MLXSummaryRunner.Failure.timedOut(1800).isPermanent)
     #expect(!MLXSummaryRunner.Failure.runnerFailed("что-то").isPermanent)

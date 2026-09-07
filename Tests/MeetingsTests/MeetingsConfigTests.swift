@@ -145,41 +145,44 @@ import Testing
     // 71-minute meeting" — was superseded the same week by a live 68-minute run that took
     // 5 min 51 s.
     #expect(config.summaryTimeoutSeconds == 1800)
-    #expect(config.summaryContextTokens == 48_000)
+    // Still the model's window minus the answer, and deliberately not raised past it to make the
+    // merge guard's arithmetic come out — see
+    // `theSupportedMeetingLengthIsWhateverTheMergeGuardAllows`.
+    #expect(config.summaryContextTokens == 28_000)
     #expect(config.quoteMatchRatio == 0.4)
 }
 
-// Four constants in two modules decide whether a meeting the app was willing to record can be
-// summarised at all, and nothing compares them. `MLXSummaryRunner` refuses a meeting whose
-// partial summaries would not fit the merge call, and that refusal is *permanent*: it is written
-// into the meeting file, the file then counts as done, and moving the knob back afterwards does
-// not recover it. So the worst case a recording can produce has to fit, and this is the one place
-// that says so.
+// How long a meeting this app can summarise at all. Four constants across two modules decide it
+// between them, and this is the only place that says the answer out loud.
 //
-// Worst case: recording stops at `maxMeetingSeconds`; chunks are cut at `summaryChunkSeconds` on
-// utterance boundaries, so a meeting yields at most one chunk more than the whole division —
-// 14400 / 900 + 1 = 17. The guard allows (48000 - 3000) / 2500 = 18.
+// The merge call holds one partial summary per chunk, each up to `maxTokens`, plus its own answer
+// at `mergeMaxTokens`, all inside `summaryContextTokens` — the model's window. That division is
+// the ceiling: (28000 - 3000) / 2500 = 10 chunks, and at fifteen minutes a chunk that is 150
+// minutes of meeting. Longer than that is refused by name — `tooManyChunks`, permanent, the
+// reason recorded in the meeting file — instead of crashing inside the subprocess. Note that
+// `maxMeetingSeconds` is 240 minutes: the app will record meetings it then refuses to summarise.
+// That is the honest state of this branch, not an oversight.
 //
-// If this went red, one of four numbers moved. Raising `maxMeetingSeconds` or lowering
-// `summaryChunkSeconds` makes more chunks; raising `MLXSummaryRunner.maxTokens` or
-// `mergeMaxTokens` makes each partial bigger. The fix is to raise `summaryContextTokens` until it
-// holds again — not to delete this test, whose alternative is a four-hour recording the app made
-// itself and then permanently refuses to summarise.
+// Four numbers move this line: `maxTokens` and `mergeMaxTokens` in `MLXSummaryRunner`,
+// `summaryContextTokens` and `summaryChunkSeconds` here. When this test goes red the failure
+// message carries the supported length the new numbers produce — read it, decide whether it is
+// acceptable, then update these expectations. What must not be done is raising
+// `summaryContextTokens` past the model's window to make the arithmetic come out: the guard would
+// admit a merge call the model physically cannot take, trading a named refusal for a crash the
+// pipeline has no way to explain.
 //
-// Said plainly, because the number is not innocent: eighteen partials of 2500 tokens is a
-// 45 000-token merge call, past this model's native 32k window and past a comfortable memory
-// peak. This invariant only keeps the guard from firing on a recording the app itself produced;
-// it is not a memory budget. Bounding the merge input properly means merging hierarchically, and
-// that is deliberately outside this branch — the owner's longest meeting today is 68 minutes,
-// which is five chunks.
-@Test func theWorstCaseChunkCountAMeetingCanProduceStillFitsTheMergeGuard() {
+// Lifting the ceiling for real means merging hierarchically, so that the merge holds a fixed
+// number of partials however long the meeting was. That is deliberately not in this branch — the
+// owner's longest meeting today is 68 minutes, which is five chunks.
+@Test func theSupportedMeetingLengthIsWhateverTheMergeGuardAllows() {
     let config = MeetingsConfig.default
-    let worstCase = Int(config.maxMeetingSeconds / config.summaryChunkSeconds) + 1
-    let limit =
+    let chunkLimit =
         (config.summaryContextTokens - MLXSummaryRunner.mergeMaxTokens) / MLXSummaryRunner.maxTokens
+    let supportedMinutes = Double(chunkLimit) * config.summaryChunkSeconds / 60
+    #expect(chunkLimit == 10, "the merge guard now allows \(chunkLimit) chunks")
     #expect(
-        worstCase <= limit,
-        "a recording can produce \(worstCase) chunks, the merge guard allows \(limit)"
+        supportedMinutes == 150,
+        "the longest meeting that can be summarised is now \(supportedMinutes) minutes"
     )
 }
 

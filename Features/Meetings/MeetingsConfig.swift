@@ -74,7 +74,8 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
     /// the week by the live run of 2026-09-07: 68 minutes took 5 min 51 s, of which 349 s was
     /// generation, because that meeting was 105 KB of transcript against the probe's 36 KB. And
     /// that was one generation. Chunking makes the same meeting five partial summaries plus a
-    /// merge, and a four-hour recording seventeen of them.
+    /// merge, and the longest meeting this branch will accept at all — 150 minutes, see
+    /// `theSupportedMeetingLengthIsWhateverTheMergeGuardAllows` — ten of them plus a merge.
     ///
     /// Half an hour is that arithmetic with room for a cold load and for `uv` fetching packages
     /// after a cache wipe. Generous on purpose: `timedOut` is a *temporary* failure, and a
@@ -82,21 +83,18 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
     /// meeting that reliably runs over would block every later file in `~/Meetings`, at every
     /// launch, for ever — the cost of guessing low is not a slow evening, it is a stalled archive.
     public var summaryTimeoutSeconds: Double
-    /// Two ceilings in one number: the longest chunk the runner will accept, and the window the
-    /// merge call is assumed to have when it works out how many partial summaries fit in it.
+    /// The model's 32k window minus the answer and the system part. It describes the model, and
+    /// it must keep describing the model: raising it to make some other arithmetic come out would
+    /// let the runner wave through a call Qwen3 physically cannot take, and a crash inside the
+    /// subprocess is worse than a refusal with a name on it.
     ///
-    /// It used to be "the 32k window minus the answer", and it is honestly no longer that. The
-    /// merge guard has to allow the seventeen chunks a four-hour recording can produce — see
-    /// `theWorstCaseChunkCountAMeetingCanProduceStillFitsTheMergeGuard`, which owns the arithmetic
-    /// — because refusing such a meeting is permanent: the refusal is written into its file, the
-    /// file then counts as done, and lowering this number back does not recover it. So the
-    /// invariant sets the number, not the model's window.
+    /// Since this branch it is a limit on a *chunk*, not on a meeting: `tooLong` now means "this
+    /// quarter hour is abnormally dense", not "this meeting is long", and it is a long way from
+    /// firing — fifteen minutes at the measured 296 tokens a minute is about 4500 tokens.
     ///
-    /// As a per-chunk limit it is inert either way, and was before: fifteen minutes at the
-    /// measured 296 tokens a minute is about 4500 tokens, an order of magnitude below this. The
-    /// guard it feeds now means "the app will not refuse a recording it was willing to make", not
-    /// "this merge call is small" — that second thing needs a hierarchical merge, which this
-    /// branch deliberately leaves alone.
+    /// The same window bounds the merge call, which holds one partial summary per chunk. That is
+    /// what actually decides how long a meeting this app can summarise, and the arithmetic lives
+    /// in `theSupportedMeetingLengthIsWhateverTheMergeGuardAllows` rather than in anyone's head.
     public var summaryContextTokens: Int
     /// Share of a quote's longest run that has to be found in the transcript. Measured: real
     /// quotes 65–100%, invented or foreign ones 12–18%, so the threshold sits in the gap.
@@ -145,7 +143,7 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         summaryModel: "mlx-community/Qwen3-8B-4bit",
         uvPath: "~/.local/bin/uv",
         summaryTimeoutSeconds: 1800,
-        summaryContextTokens: 48_000,
+        summaryContextTokens: 28_000,
         quoteMatchRatio: 0.4,
         summaryChunkSeconds: 900
     )
@@ -166,7 +164,7 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         summaryModel: String = "mlx-community/Qwen3-8B-4bit",
         uvPath: String = "~/.local/bin/uv",
         summaryTimeoutSeconds: Double = 1800,
-        summaryContextTokens: Int = 48_000,
+        summaryContextTokens: Int = 28_000,
         quoteMatchRatio: Double = 0.4,
         summaryChunkSeconds: Double = 900
     ) {
