@@ -26,7 +26,13 @@ public enum SummaryInsertion {
 
     public static let summaryHeading = "## Саммари"
     public static let decisionsHeading = "## Решения"
+    public static let tasksHeading = "## Задачи"
+    public static let openIssuesHeading = "## Открытые вопросы"
     public static let unfoundedNote = "основание не найдено"
+    /// Written in full rather than left blank: an empty column in an archive reads as an
+    /// oversight, while these two say plainly that nobody named an owner or a date out loud.
+    public static let noOwnerNote = "не назначено"
+    public static let noDueNote = "срок не назван"
 
     public static func hasSummary(_ file: String) -> Bool {
         file.components(separatedBy: "\n").contains {
@@ -37,6 +43,7 @@ public enum SummaryInsertion {
     public static func apply(
         summary: MeetingSummary,
         decisions: [CheckedDecision],
+        tasks: [CheckedTask],
         to file: String,
         named name: String,
         mode: Mode
@@ -72,7 +79,7 @@ public enum SummaryInsertion {
         var result = front
         result.append(contentsOf: middle)
         result.append("")
-        result.append(contentsOf: sections(summary, decisions))
+        result.append(contentsOf: sections(summary, decisions, tasks))
         result.append(contentsOf: tail)
         return result.joined(separator: "\n")
     }
@@ -85,31 +92,59 @@ public enum SummaryInsertion {
         try apply(
             summary: MeetingSummary(title: "", summary: ["Конспект не сделан: \(reason)"], decisions: []),
             decisions: [],
+            tasks: [],
             to: file,
             named: name,
             mode: .insert
         )
     }
 
-    private static func sections(_ summary: MeetingSummary, _ decisions: [CheckedDecision]) -> [String] {
+    private static func sections(
+        _ summary: MeetingSummary,
+        _ decisions: [CheckedDecision],
+        _ tasks: [CheckedTask]
+    ) -> [String] {
         var out = [summaryHeading, ""]
         out.append(contentsOf: summary.summary.map { "- \($0)" })
         out.append("")
-        guard !decisions.isEmpty else { return out }
-        out.append(decisionsHeading)
-        out.append("")
-        for decision in decisions {
-            if let timecode = decision.timecode {
-                out.append("- \(decision.text) — [\(MeetingMarkdown.timestamp(timecode))]")
-            } else {
-                out.append("- \(decision.text) — \(unfoundedNote)")
+
+        if !decisions.isEmpty {
+            out.append(decisionsHeading)
+            out.append("")
+            for decision in decisions {
+                out.append("- \(decision.text) — \(mark(decision.timecode))")
             }
+            out.append("")
         }
-        out.append("")
+
+        if !tasks.isEmpty {
+            out.append(tasksHeading)
+            out.append("")
+            for task in tasks {
+                let owner = task.owner.isEmpty ? noOwnerNote : task.owner
+                let due = task.due.isEmpty ? noDueNote : task.due
+                out.append("- \(task.text) — \(owner) — \(due) — \(mark(task.timecode))")
+            }
+            out.append("")
+        }
+
+        if !summary.openIssues.isEmpty {
+            out.append(openIssuesHeading)
+            out.append("")
+            out.append(contentsOf: summary.openIssues.map { "- \($0)" })
+            out.append("")
+        }
+
         return out
     }
 
-    /// Drops the `## Саммари` and `## Решения` blocks and nothing else.
+    private static func mark(_ timecode: TimeInterval?) -> String {
+        guard let timecode else { return unfoundedNote }
+        return "[\(MeetingMarkdown.timestamp(timecode))]"
+    }
+
+    /// Drops the `## Саммари`, `## Решения`, `## Задачи` and `## Открытые вопросы` blocks and
+    /// nothing else.
     ///
     /// Each block runs from its heading to the next `## ` heading or to the end of the region.
     /// Clearing the whole region instead would be indistinguishable on a file this pipeline
@@ -121,7 +156,8 @@ public enum SummaryInsertion {
         var dropping = false
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed == summaryHeading || trimmed == decisionsHeading {
+            if trimmed == summaryHeading || trimmed == decisionsHeading
+                || trimmed == tasksHeading || trimmed == openIssuesHeading {
                 dropping = true
                 continue
             }

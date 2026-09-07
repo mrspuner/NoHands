@@ -129,6 +129,7 @@ func runMeetingSummarize(_ file: URL) async throws {
     let updated = try SummaryInsertion.apply(
         summary: summary,
         decisions: checked,
+        tasks: [],
         to: text,
         named: file.lastPathComponent,
         mode: .replace

@@ -30,7 +30,7 @@ private let decisions = [
 
 @Test func theSummaryLandsAboveTheTranscript() throws {
     let result = try SummaryInsertion.apply(
-        summary: summary, decisions: decisions, to: file, named: "тест.md", mode: .insert
+        summary: summary, decisions: decisions, tasks: [], to: file, named: "тест.md", mode: .insert
     )
     let summaryAt = try #require(result.range(of: "## Саммари"))
     let transcriptAt = try #require(result.range(of: "## Транскрипт"))
@@ -44,7 +44,7 @@ private let decisions = [
 // Транскрипт — архив, который переживёт ещё две фазы, и метки в нём правит человек.
 @Test func theTranscriptItselfIsUntouched() throws {
     let result = try SummaryInsertion.apply(
-        summary: summary, decisions: decisions, to: file, named: "тест.md", mode: .insert
+        summary: summary, decisions: decisions, tasks: [], to: file, named: "тест.md", mode: .insert
     )
     let tail = "## Транскрипт\n\n[00:00:07] Я: Помимо неверных, существуют и пустышки."
     #expect(result.contains(tail))
@@ -53,7 +53,7 @@ private let decisions = [
 
 @Test func noDecisionsMeansNoDecisionsSection() throws {
     let result = try SummaryInsertion.apply(
-        summary: summary, decisions: [], to: file, named: "тест.md", mode: .insert
+        summary: summary, decisions: [], tasks: [], to: file, named: "тест.md", mode: .insert
     )
     #expect(!result.contains("## Решения"))
     #expect(result.contains("## Саммари"))
@@ -61,11 +61,11 @@ private let decisions = [
 
 @Test func replacingDoesNotStackASecondSummary() throws {
     let once = try SummaryInsertion.apply(
-        summary: summary, decisions: decisions, to: file, named: "тест.md", mode: .insert
+        summary: summary, decisions: decisions, tasks: [], to: file, named: "тест.md", mode: .insert
     )
     let twice = try SummaryInsertion.apply(
         summary: MeetingSummary(title: "Другое имя", summary: ["иначе"], decisions: []),
-        decisions: [], to: once, named: "тест.md", mode: .replace
+        decisions: [], tasks: [], to: once, named: "тест.md", mode: .replace
     )
     #expect(twice.components(separatedBy: "## Саммари").count == 2)
     #expect(twice.components(separatedBy: "title:").count == 2)
@@ -84,7 +84,7 @@ private let decisions = [
         with: "## Мои заметки\n\n- позвонить в понедельник\n\n## Саммари\n\n- старое\n\n## Транскрипт"
     )
     let result = try SummaryInsertion.apply(
-        summary: summary, decisions: [], to: withNote, named: "тест.md", mode: .replace
+        summary: summary, decisions: [], tasks: [], to: withNote, named: "тест.md", mode: .replace
     )
     #expect(result.contains("## Мои заметки"))
     #expect(result.contains("- позвонить в понедельник"))
@@ -104,7 +104,7 @@ private let decisions = [
 
         """
     let result = try SummaryInsertion.apply(
-        summary: summary, decisions: [], to: bare, named: "тест.md", mode: .replace
+        summary: summary, decisions: [], tasks: [], to: bare, named: "тест.md", mode: .replace
     )
     #expect(result.hasPrefix("Просто заметка без фронтматтера."))
     #expect(result.contains("## Саммари"))
@@ -114,7 +114,7 @@ private let decisions = [
 @Test func aTitleWithAQuoteOrANewlineIsEscaped() throws {
     let result = try SummaryInsertion.apply(
         summary: MeetingSummary(title: "Про \"это\"", summary: ["раз"], decisions: []),
-        decisions: [], to: file, named: "тест.md", mode: .insert
+        decisions: [], tasks: [], to: file, named: "тест.md", mode: .insert
     )
     #expect(result.contains("title: \"Про \\\"это\\\"\""))
 }
@@ -124,7 +124,7 @@ private let decisions = [
 @Test func aFileWithoutATranscriptIsNotTouched() {
     #expect(throws: SummaryInsertion.Failure.noTranscriptSection("чужое.md")) {
         try SummaryInsertion.apply(
-            summary: summary, decisions: [], to: "просто заметка", named: "чужое.md", mode: .insert
+            summary: summary, decisions: [], tasks: [], to: "просто заметка", named: "чужое.md", mode: .insert
         )
     }
 }
@@ -140,4 +140,76 @@ private let decisions = [
 
 @Test func hasSummaryTellsAFinishedFileFromAFreshOne() {
     #expect(!SummaryInsertion.hasSummary(file))
+}
+
+@Test func tasksAndOpenIssuesGetTheirOwnSections() throws {
+    let summary = MeetingSummary(
+        title: "Синк", summary: ["обсудили"], decisions: [],
+        tasks: [], openIssues: ["чем красить график"]
+    )
+    let tasks = [
+        CheckedTask(text: "собрать визуализацию", owner: "Настя", due: "до 9-10 числа",
+                    ratio: 0.9, timecode: 49),
+        CheckedTask(text: "прогнать тест", owner: "", due: "", ratio: 0.1, timecode: nil),
+    ]
+    let result = try SummaryInsertion.apply(
+        summary: summary, decisions: [], tasks: tasks, to: file, named: "тест.md", mode: .insert
+    )
+    #expect(result.contains("## Задачи"))
+    #expect(result.contains("- собрать визуализацию — Настя — до 9-10 числа — [00:00:49]"))
+    #expect(result.contains("- прогнать тест — не назначено — срок не назван — основание не найдено"))
+    #expect(result.contains("## Открытые вопросы"))
+    #expect(result.contains("- чем красить график"))
+}
+
+@Test func theFourSectionsComeInOrderAboveTheTranscript() throws {
+    let summary = MeetingSummary(
+        title: "Синк", summary: ["обсудили"],
+        decisions: [], tasks: [], openIssues: ["вопрос"]
+    )
+    let result = try SummaryInsertion.apply(
+        summary: summary,
+        decisions: [CheckedDecision(text: "решение", ratio: 0.9, timecode: 10)],
+        tasks: [CheckedTask(text: "задача", owner: "", due: "", ratio: 0.9, timecode: 20)],
+        to: file, named: "тест.md", mode: .insert
+    )
+    let order = ["## Саммари", "## Решения", "## Задачи", "## Открытые вопросы", "## Транскрипт"]
+    var position = result.startIndex
+    for heading in order {
+        let found = try #require(result.range(of: heading, range: position..<result.endIndex))
+        position = found.upperBound
+    }
+}
+
+@Test func emptySectionsAreNotWritten() throws {
+    let result = try SummaryInsertion.apply(
+        summary: MeetingSummary(title: "Т", summary: ["раз"], decisions: [], tasks: [], openIssues: []),
+        decisions: [], tasks: [], to: file, named: "тест.md", mode: .insert
+    )
+    #expect(!result.contains("## Задачи"))
+    #expect(!result.contains("## Открытые вопросы"))
+    #expect(!result.contains("## Решения"))
+}
+
+// Replacement stays scoped: all four of our headings go, anything the owner wrote stays.
+@Test func replacingRemovesAllFourSectionsAndKeepsAHandWrittenOne() throws {
+    let once = try SummaryInsertion.apply(
+        summary: MeetingSummary(title: "Т", summary: ["раз"], decisions: [], tasks: [],
+                                openIssues: ["вопрос"]),
+        decisions: [],
+        tasks: [CheckedTask(text: "задача", owner: "", due: "", ratio: 0.9, timecode: 20)],
+        to: file, named: "тест.md", mode: .insert
+    )
+    let withNote = once.replacingOccurrences(
+        of: "## Транскрипт", with: "## Моя заметка\n\n- не трогать\n\n## Транскрипт"
+    )
+    let twice = try SummaryInsertion.apply(
+        summary: MeetingSummary(title: "Т2", summary: ["два"], decisions: [], tasks: [], openIssues: []),
+        decisions: [], tasks: [], to: withNote, named: "тест.md", mode: .replace
+    )
+    #expect(twice.contains("## Моя заметка"))
+    #expect(twice.contains("- не трогать"))
+    #expect(!twice.contains("## Задачи"))
+    #expect(!twice.contains("## Открытые вопросы"))
+    #expect(twice.components(separatedBy: "## Саммари").count == 2)
 }

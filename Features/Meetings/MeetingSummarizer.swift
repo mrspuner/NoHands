@@ -121,6 +121,7 @@ public actor MeetingSummarizer {
             let updated = try SummaryInsertion.apply(
                 summary: summary,
                 decisions: decisions,
+                tasks: [],
                 to: text,
                 named: file.lastPathComponent,
                 mode: .insert
