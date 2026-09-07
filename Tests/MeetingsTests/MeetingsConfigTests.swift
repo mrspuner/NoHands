@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Testing
+@testable import Core
 @testable import Meetings
 
 // A trigger identifier is the one thing in this feature nothing else can check. A wrong one
@@ -139,9 +140,47 @@ import Testing
     #expect(config.summaryEnabled)
     #expect(config.summaryModel == "mlx-community/Qwen3-8B-4bit")
     #expect(config.uvPath == "~/.local/bin/uv")
-    #expect(config.summaryTimeoutSeconds == 900)
-    #expect(config.summaryContextTokens == 28_000)
+    // Half an hour, not the original fifteen minutes: the timeout covers one model load, one
+    // generation per chunk and the merge pass, and the number it used to cite — "2 minutes on a
+    // 71-minute meeting" — was superseded the same week by a live 68-minute run that took
+    // 5 min 51 s.
+    #expect(config.summaryTimeoutSeconds == 1800)
+    #expect(config.summaryContextTokens == 48_000)
     #expect(config.quoteMatchRatio == 0.4)
+}
+
+// Four constants in two modules decide whether a meeting the app was willing to record can be
+// summarised at all, and nothing compares them. `MLXSummaryRunner` refuses a meeting whose
+// partial summaries would not fit the merge call, and that refusal is *permanent*: it is written
+// into the meeting file, the file then counts as done, and moving the knob back afterwards does
+// not recover it. So the worst case a recording can produce has to fit, and this is the one place
+// that says so.
+//
+// Worst case: recording stops at `maxMeetingSeconds`; chunks are cut at `summaryChunkSeconds` on
+// utterance boundaries, so a meeting yields at most one chunk more than the whole division —
+// 14400 / 900 + 1 = 17. The guard allows (48000 - 3000) / 2500 = 18.
+//
+// If this went red, one of four numbers moved. Raising `maxMeetingSeconds` or lowering
+// `summaryChunkSeconds` makes more chunks; raising `MLXSummaryRunner.maxTokens` or
+// `mergeMaxTokens` makes each partial bigger. The fix is to raise `summaryContextTokens` until it
+// holds again — not to delete this test, whose alternative is a four-hour recording the app made
+// itself and then permanently refuses to summarise.
+//
+// Said plainly, because the number is not innocent: eighteen partials of 2500 tokens is a
+// 45 000-token merge call, past this model's native 32k window and past a comfortable memory
+// peak. This invariant only keeps the guard from firing on a recording the app itself produced;
+// it is not a memory budget. Bounding the merge input properly means merging hierarchically, and
+// that is deliberately outside this branch — the owner's longest meeting today is 68 minutes,
+// which is five chunks.
+@Test func theWorstCaseChunkCountAMeetingCanProduceStillFitsTheMergeGuard() {
+    let config = MeetingsConfig.default
+    let worstCase = Int(config.maxMeetingSeconds / config.summaryChunkSeconds) + 1
+    let limit =
+        (config.summaryContextTokens - MLXSummaryRunner.mergeMaxTokens) / MLXSummaryRunner.maxTokens
+    #expect(
+        worstCase <= limit,
+        "a recording can produce \(worstCase) chunks, the merge guard allows \(limit)"
+    )
 }
 
 // A config the owner already wrote has none of the new keys. A missing key is a default,

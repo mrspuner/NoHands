@@ -56,27 +56,70 @@ enum SummaryScript {
             )
 
 
+        def is_json(text):
+            """Whether an answer is the JSON object the prompt asked for.
+
+            The fence is stripped first, mirroring SummaryResponse.stripFence on the Swift side:
+            the prompt forbids a markdown fence, the model writes one anyway now and then, and the
+            pipeline already accepts that. Only what Swift would also reject counts as a failure
+            here.
+            """
+            stripped = text.strip()
+            if stripped.startswith("```"):
+                lines = stripped.split("\n")[1:]
+                if lines and lines[-1].strip().startswith("```"):
+                    lines = lines[:-1]
+                stripped = "\n".join(lines)
+            try:
+                json.loads(stripped)
+            except ValueError:
+                return False
+            return True
+
+
         def main():
             with open(sys.argv[1], encoding="utf-8") as request_file:
                 request = json.load(request_file)
             model, tokenizer = load(request["model"])
 
             partials = []
-            for chunk in request["chunks"]:
-                partials.append(
-                    answer(model, tokenizer, request["system"], chunk, request["maxTokens"])
+            for number, chunk in enumerate(request["chunks"], 1):
+                partial = answer(
+                    model, tokenizer, request["system"], chunk, request["maxTokens"]
                 )
+                # An answer cut off at maxTokens is not valid JSON, and neither place it could go
+                # is survivable: alone it reaches the parser as a permanent failure whose cause is
+                # invisible, and in a merge it arrives as prose the merge absorbs, taking a
+                # fifteenth of the meeting with it and marking nothing. Stop, named.
+                #
+                # The chunk number and nothing else: this line is recognised speech's neighbour,
+                # it goes to a diagnostics file, and the last line of that file is read back into
+                # a panel. Transcript content is never logged.
+                if not is_json(partial):
+                    sys.stderr.write("chunk %d: the model's answer is not JSON\n" % number)
+                    sys.exit(1)
+                partials.append(partial)
 
             if len(partials) == 1:
                 sys.stdout.write(partials[0])
                 return
 
+            # Each partial travels inside the same envelope a chunk does. It is not the
+            # transcript, but it carries pieces of it verbatim — every decision and task holds a
+            # quote copied out of the speech — and an unmarked user turn is read as a request.
+            # The markers arrive in the request so there is one copy of them, in Swift.
             merged = answer(
                 model,
                 tokenizer,
                 request["mergeSystem"],
                 request["mergePrefix"] + "\n\n" + "\n\n".join(
-                    "Часть %d:\n%s" % (number, text) for number, text in enumerate(partials, 1)
+                    "Часть %d:\n%s\n%s\n%s" % (
+                        number,
+                        request["openingMarker"],
+                        text,
+                        request["closingMarker"],
+                    )
+                    for number, text in enumerate(partials, 1)
                 ),
                 request["mergeMaxTokens"],
             )

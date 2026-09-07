@@ -57,6 +57,14 @@ public enum SummaryPrompt {
         полями: title, summary, decisions, tasks, openIssues.
         """
 
+    /// The line above the partial summaries in the merge message.
+    ///
+    /// Here rather than at the call site in `MLXSummaryRunner`, where it was written inline: it is
+    /// prompt text like everything else in this file, and the merge prompt's own tests could not
+    /// see it there. The message itself is still assembled in Python — the partials only exist
+    /// there — from this prefix and the two envelope markers the request carries.
+    public static let mergePrefix = "Частичные конспекты встречи по порядку:"
+
     public static func user(chunk: String) -> String {
         "Кусок расшифровки встречи:\n\n" + TranscriptEnvelope.wrapped(chunk)
     }

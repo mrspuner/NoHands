@@ -67,10 +67,36 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
     /// Configured rather than looked up: an application launched from Finder has a PATH that does
     /// not include `~/.local/bin`.
     public var uvPath: String
-    /// Measured: 2 minutes on a 71-minute meeting, so a four-hour one lands around 7. The rest is
-    /// headroom for a cold model load and for `uv` fetching packages after a cache wipe.
+    /// One timeout for the whole subprocess: the model load, a generation for every chunk, and
+    /// the merge pass on top.
+    ///
+    /// The number it used to cite — two minutes on a 71-minute meeting — was superseded within
+    /// the week by the live run of 2026-09-07: 68 minutes took 5 min 51 s, of which 349 s was
+    /// generation, because that meeting was 105 KB of transcript against the probe's 36 KB. And
+    /// that was one generation. Chunking makes the same meeting five partial summaries plus a
+    /// merge, and a four-hour recording seventeen of them.
+    ///
+    /// Half an hour is that arithmetic with room for a cold load and for `uv` fetching packages
+    /// after a cache wipe. Generous on purpose: `timedOut` is a *temporary* failure, and a
+    /// temporary failure stops the whole archive pass. Files are taken in filename order, so one
+    /// meeting that reliably runs over would block every later file in `~/Meetings`, at every
+    /// launch, for ever — the cost of guessing low is not a slow evening, it is a stalled archive.
     public var summaryTimeoutSeconds: Double
-    /// 32k window minus the answer and the system part.
+    /// Two ceilings in one number: the longest chunk the runner will accept, and the window the
+    /// merge call is assumed to have when it works out how many partial summaries fit in it.
+    ///
+    /// It used to be "the 32k window minus the answer", and it is honestly no longer that. The
+    /// merge guard has to allow the seventeen chunks a four-hour recording can produce — see
+    /// `theWorstCaseChunkCountAMeetingCanProduceStillFitsTheMergeGuard`, which owns the arithmetic
+    /// — because refusing such a meeting is permanent: the refusal is written into its file, the
+    /// file then counts as done, and lowering this number back does not recover it. So the
+    /// invariant sets the number, not the model's window.
+    ///
+    /// As a per-chunk limit it is inert either way, and was before: fifteen minutes at the
+    /// measured 296 tokens a minute is about 4500 tokens, an order of magnitude below this. The
+    /// guard it feeds now means "the app will not refuse a recording it was willing to make", not
+    /// "this merge call is small" — that second thing needs a hierarchical merge, which this
+    /// branch deliberately leaves alone.
     public var summaryContextTokens: Int
     /// Share of a quote's longest run that has to be found in the transcript. Measured: real
     /// quotes 65–100%, invented or foreign ones 12–18%, so the threshold sits in the gap.
@@ -118,8 +144,8 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         summaryEnabled: true,
         summaryModel: "mlx-community/Qwen3-8B-4bit",
         uvPath: "~/.local/bin/uv",
-        summaryTimeoutSeconds: 900,
-        summaryContextTokens: 28_000,
+        summaryTimeoutSeconds: 1800,
+        summaryContextTokens: 48_000,
         quoteMatchRatio: 0.4,
         summaryChunkSeconds: 900
     )
@@ -139,8 +165,8 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         summaryEnabled: Bool = true,
         summaryModel: String = "mlx-community/Qwen3-8B-4bit",
         uvPath: String = "~/.local/bin/uv",
-        summaryTimeoutSeconds: Double = 900,
-        summaryContextTokens: Int = 28_000,
+        summaryTimeoutSeconds: Double = 1800,
+        summaryContextTokens: Int = 48_000,
         quoteMatchRatio: Double = 0.4,
         summaryChunkSeconds: Double = 900
     ) {

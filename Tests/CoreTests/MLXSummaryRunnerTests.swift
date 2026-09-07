@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import Core
 
-private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> MLXSummaryRunner {
+private func runner(uv: String = "/nonexistent/uv", context: Int = 48_000) -> MLXSummaryRunner {
     MLXSummaryRunner(uvPath: uv, model: "mlx-community/Qwen3-8B-4bit", timeout: 5, contextTokens: context)
 }
 
@@ -37,7 +37,7 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
 // so a meeting cut into too many chunks would overflow the merge call even though every single
 // chunk fits its own window. Named refusal instead of a silent overflow.
 //
-// context: 5000 gives a limit of (5000 - mergeMaxTokens 2000) / maxTokens 1500 = 2. Three tiny
+// context: 8000 gives a limit of (8000 - mergeMaxTokens 3000) / maxTokens 2500 = 2. Three tiny
 // chunks — each far under the per-chunk length guard on its own — trips only this guard.
 //
 // Exact case with its numbers, not `#expect(throws: MLXSummaryRunner.Failure.self)`: the bare
@@ -46,15 +46,15 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
 @Test func tooManyChunksIsRefusedBeforeAnythingIsLaunched() async {
     let chunks = Array(repeating: "[00:00:01] Я: раз", count: 3)
     await #expect(throws: MLXSummaryRunner.Failure.tooManyChunks(count: 3, limit: 2)) {
-        try await runner(context: 5000).summarize(chunks: chunks)
+        try await runner(context: 8000).summarize(chunks: chunks)
     }
 }
 
 // A single chunk never goes through the merge pass at all: the script writes `partials[0]`
 // straight back when `len(partials) == 1`, without ever building `mergePrefix`. So the guard has
 // nothing to protect for one chunk, and must not fire for it even when `contextTokens` is small
-// enough to make the limit zero or negative — context: 1000 gives (1000 - mergeMaxTokens 2000) /
-// maxTokens 1500 = 0, which would refuse a single chunk if the guard did not exempt count == 1.
+// enough to make the limit zero or negative — context: 1000 gives (1000 - mergeMaxTokens 3000) /
+// maxTokens 2500 = 0, which would refuse a single chunk if the guard did not exempt count == 1.
 //
 // Asserts `.uvMissing` rather than merely "no `.tooManyChunks`": that proves execution actually
 // passed this guard and reached the next one, rather than some earlier guard swallowing the case
@@ -65,8 +65,43 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
     }
 }
 
+// The ceilings were measured under the prompt this branch replaced: a five-point cap, three
+// fields, a 1948-character answer. The prompt now has no cap on the number of points and two more
+// fields — `tasks`, four fields each including a 5-15 word quote, and `openIssues` — so the same
+// meeting yields a much longer answer. A truncated answer is not JSON, and neither place it can
+// land is survivable: on one chunk it is a permanent failure written into the archive, and inside
+// a merge it arrives as prose whose content can vanish with nothing marking it.
+@Test func theAnswerCeilingsFitThePromptThatIsActuallySent() {
+    #expect(MLXSummaryRunner.maxTokens == 2500)
+    #expect(MLXSummaryRunner.mergeMaxTokens == 3000)
+    // The merge answers about a whole meeting rather than one chunk of it.
+    #expect(MLXSummaryRunner.mergeMaxTokens > MLXSummaryRunner.maxTokens)
+}
+
+// A partial that will not parse must stop the run with a named failure rather than travel on. The
+// message carries the chunk number and nothing else: the project does not log recognised speech,
+// and the diagnostics file this lands in is read back into a panel line.
+@Test func theScriptRefusesAPartialThatIsNotJSON() {
+    #expect(SummaryScript.source.contains("json.loads"))
+    #expect(SummaryScript.source.contains("sys.exit(1)"))
+    #expect(SummaryScript.source.contains("chunk %d"))
+    // No `%s` anywhere in the message written to stderr — that is how the partial's own text
+    // would get there.
+    #expect(!SummaryScript.source.contains("sys.stderr.write(\"chunk %d: %s"))
+}
+
+// The merge sees text lifted out of the transcript — every partial carries `quote` fields copied
+// from it verbatim — so it travels in the same envelope the chunk pass uses. The markers come
+// from the request rather than being typed a second time in Python: two sources of truth for this
+// marker is exactly the drift the envelope exists to avoid.
+@Test func theScriptWrapsEachPartialInTheMarkersItIsGiven() {
+    #expect(SummaryScript.source.contains("request[\"openingMarker\"]"))
+    #expect(SummaryScript.source.contains("request[\"closingMarker\"]"))
+    #expect(!SummaryScript.source.contains("расшифровка"))
+}
+
 @Test func theScriptLoadsTheModelOnceAndMergesOnlyWhenThereIsMoreThanOneChunk() {
-    #expect(SummaryScript.source.contains("for chunk in request[\"chunks\"]"))
+    #expect(SummaryScript.source.contains("enumerate(request[\"chunks\"], 1)"))
     #expect(SummaryScript.source.contains("if len(partials) == 1"))
     #expect(SummaryScript.source.contains("load(request[\"model\"])"))
     // One load call in the whole script — the model must not be reloaded per chunk.
@@ -89,10 +124,10 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
 // else is fixed by trying again, and writing it into the archive would close the meeting for
 // ever over a network hiccup.
 @Test func onlyLengthGuardsArePermanentFailures() {
-    #expect(MLXSummaryRunner.Failure.tooLong(estimated: 40_000, limit: 28_000).isPermanent)
-    #expect(MLXSummaryRunner.Failure.tooManyChunks(count: 20, limit: 17).isPermanent)
+    #expect(MLXSummaryRunner.Failure.tooLong(estimated: 60_000, limit: 48_000).isPermanent)
+    #expect(MLXSummaryRunner.Failure.tooManyChunks(count: 20, limit: 18).isPermanent)
     #expect(!MLXSummaryRunner.Failure.uvMissing("/x").isPermanent)
-    #expect(!MLXSummaryRunner.Failure.timedOut(900).isPermanent)
+    #expect(!MLXSummaryRunner.Failure.timedOut(1800).isPermanent)
     #expect(!MLXSummaryRunner.Failure.runnerFailed("что-то").isPermanent)
 }
 
@@ -120,6 +155,27 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
 @Test func theAnalystPromptDoesNotCapTheNumberOfPoints() {
     #expect(!SummaryPrompt.system.contains("до пяти"))
     #expect(!SummaryPrompt.system.contains("пяти пунктов"))
+}
+
+// The line above the partials belongs with the rest of the prompt text, not in the runner: it is
+// the only prompt string that was written at the call site, and the merge prompt's own tests
+// could not see it there.
+@Test func theMergePrefixLivesWithTheOtherPromptText() {
+    #expect(SummaryPrompt.mergePrefix.contains("Частичные конспекты"))
+}
+
+// What actually travels to the subprocess. The markers are in the request because Python wraps
+// each partial with them, and they have to be the same two strings dictation uses — asserted
+// against `TranscriptEnvelope` rather than against literals, so a change there cannot leave the
+// merge pass behind.
+@Test func theRequestCarriesThePromptTextAndTheMarkers() throws {
+    let data = try runner().encodedRequest(chunks: ["[00:00:01] Я: раз"])
+    let request = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+    #expect(request?["openingMarker"] as? String == TranscriptEnvelope.openingMarker)
+    #expect(request?["closingMarker"] as? String == TranscriptEnvelope.closingMarker)
+    #expect(request?["mergePrefix"] as? String == SummaryPrompt.mergePrefix)
+    #expect(request?["maxTokens"] as? Int == MLXSummaryRunner.maxTokens)
+    #expect(request?["mergeMaxTokens"] as? Int == MLXSummaryRunner.mergeMaxTokens)
 }
 
 // The merge pass never sees the transcript — only the partial summaries. That is what makes it

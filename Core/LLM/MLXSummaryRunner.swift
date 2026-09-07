@@ -43,12 +43,27 @@ public struct MLXSummaryRunner: SummaryRunning {
     /// next door, not a preference. `load_tokenizer` had already moved out of
     /// `mlx_lm.tokenizer_utils` by 0.31.3, and the probe tripped over exactly that.
     static let mlxVersion = "0.31.3"
-    /// The 71-minute meeting in the probe answered in 1948 characters, roughly 700 tokens. The
-    /// ceiling is here to stop a runaway generation, not to shape the answer.
-    static let maxTokens = 1500
+    /// Ceiling on one chunk's partial summary. It is here to stop a runaway generation, not to
+    /// shape the answer — but it has to be past where an honest answer ends, and 1500 no longer
+    /// was.
+    ///
+    /// That number came from a probe under the prompt this branch replaced: a five-point cap,
+    /// three fields, a 1948-character answer, roughly 700 tokens. This prompt caps nothing — the
+    /// cap is what turned an hour of talk into a table of contents — and carries two more fields,
+    /// `tasks` with four of its own (one a 5-15 word quote) and `openIssues`.
+    ///
+    /// Getting it wrong is not a shorter answer, it is a broken one: a truncated answer is not
+    /// valid JSON. On a single-chunk meeting that is a permanent failure written into the archive;
+    /// inside a merge it used to arrive as prose the merge would quietly absorb, which is why the
+    /// script now checks every partial parses before it travels.
+    ///
+    /// Moving it is not free either: `MeetingsConfigTests` holds this against
+    /// `maxMeetingSeconds` and `summaryChunkSeconds`, because a bigger partial means fewer of them
+    /// fit the merge call, and a meeting refused there is refused for ever.
+    static let maxTokens = 2500
     /// The merge pass answers about a whole meeting rather than a chunk of one, so it gets more
     /// room than a single chunk's summary needs.
-    static let mergeMaxTokens = 2000
+    static let mergeMaxTokens = 3000
     /// Characters per token, deliberately pessimistic: the probe measured 3.04 on plain
     /// transcript text, and speaker labels with timecodes tokenise worse than prose.
     ///
@@ -73,9 +88,33 @@ public struct MLXSummaryRunner: SummaryRunning {
         var system: String
         var mergeSystem: String
         var mergePrefix: String
+        /// The envelope the merge pass wraps each partial summary in. It travels in the request
+        /// rather than being written out again in Python: the partials carry `quote` fields
+        /// copied verbatim out of the transcript, so they need the same envelope the chunk pass
+        /// uses, and a second copy of the marker in the script is the drift this project spends
+        /// its comments avoiding.
+        var openingMarker: String
+        var closingMarker: String
         var chunks: [String]
         var maxTokens: Int
         var mergeMaxTokens: Int
+    }
+
+    /// Everything the subprocess is told, built apart from running it so a test can read it back.
+    func encodedRequest(chunks: [String]) throws -> Data {
+        try JSONEncoder().encode(
+            Request(
+                model: model,
+                system: SummaryPrompt.system,
+                mergeSystem: SummaryPrompt.merge,
+                mergePrefix: SummaryPrompt.mergePrefix,
+                openingMarker: TranscriptEnvelope.openingMarker,
+                closingMarker: TranscriptEnvelope.closingMarker,
+                chunks: chunks.map { SummaryPrompt.user(chunk: $0) },
+                maxTokens: Self.maxTokens,
+                mergeMaxTokens: Self.mergeMaxTokens
+            )
+        )
     }
 
     public func summarize(chunks: [String]) async throws -> MeetingSummary {
@@ -116,17 +155,7 @@ public struct MLXSummaryRunner: SummaryRunning {
             throw Failure.uvMissing(uvPath)
         }
 
-        let request = try JSONEncoder().encode(
-            Request(
-                model: model,
-                system: SummaryPrompt.system,
-                mergeSystem: SummaryPrompt.merge,
-                mergePrefix: "Частичные конспекты встречи по порядку:",
-                chunks: chunks.map { SummaryPrompt.user(chunk: $0) },
-                maxTokens: Self.maxTokens,
-                mergeMaxTokens: Self.mergeMaxTokens
-            )
-        )
+        let request = try encodedRequest(chunks: chunks)
         let answer = try await run(uv: URL(fileURLWithPath: uv), request: request)
         return try SummaryResponse.parse(answer)
     }
@@ -198,9 +227,13 @@ public struct MLXSummaryRunner: SummaryRunning {
         // pipe nobody drains fills its buffer and hangs the child — which would surface as a
         // timeout on a run that was working fine. There is no transcript content here.
         //
-        // stdout stays a pipe: that only works because `maxTokens = 1500` keeps the answer well
-        // under the pipe's buffer. Raising `maxTokens` later without revisiting this would turn
-        // a working run into a silent timeout, for the same reason stderr cannot be a pipe.
+        // stdout stays a pipe, and that only works because the answer is bounded. Exactly one
+        // answer is ever written there — the merged summary, or the single partial when there is
+        // only one chunk — so the ceiling is `mergeMaxTokens`, 3000 tokens. Cyrillic JSON runs
+        // around 2-3 bytes per token, so about 9 KB against Darwin's 64 KB buffer. Room for
+        // roughly seven times the current ceiling; past about 20 000 tokens the child would block
+        // writing and this would surface as a timeout on a run that was working fine, for the
+        // same reason stderr cannot be a pipe.
         let diagnostics = FileManager.default.temporaryDirectory
             .appendingPathComponent("nohands-summary-\(UUID().uuidString).log")
         FileManager.default.createFile(atPath: diagnostics.path, contents: nil)
