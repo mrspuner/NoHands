@@ -27,7 +27,7 @@ public enum MeetingMarkdown {
         if let appName { lines.append("app: \(quoted(appName))") }
         lines.append("---")
         lines.append("")
-        lines.append("## Транскрипт")
+        lines.append(TranscriptIndex.heading)
         lines.append("")
         for utterance in transcript {
             lines.append("[\(timestamp(utterance.start))] \(label(utterance.speaker)): \(utterance.text)")
