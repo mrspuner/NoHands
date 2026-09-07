@@ -71,4 +71,25 @@ public enum QuoteMatch {
             )
         }
     }
+
+    /// The same check the decisions get. Kept as a second method rather than a generic one: the
+    /// two results carry different fields, and a protocol to unify them would cost more than the
+    /// six lines it saves.
+    public static func check(
+        tasks: [MeetingSummary.Task],
+        against index: TranscriptIndex,
+        threshold: Double
+    ) -> [CheckedTask] {
+        tasks.map { task in
+            let result = find(quote: task.quote, in: index)
+            let passed = result.ratio >= threshold
+            return CheckedTask(
+                text: task.text,
+                owner: task.owner,
+                due: task.due,
+                ratio: result.ratio,
+                timecode: passed ? result.line.map { index.lines[$0].timecode } : nil
+            )
+        }
+    }
 }

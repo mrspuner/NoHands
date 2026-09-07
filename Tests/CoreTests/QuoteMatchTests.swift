@@ -51,3 +51,20 @@ private let index = TranscriptIndex.parse("""
     #expect(checked[1].ratio > 0)
     #expect(checked.map(\.text) == ["настоящее", "выдуманное"])
 }
+
+@Test func tasksAreCheckedTheSameWayDecisionsAre() {
+    let tasks = [
+        MeetingSummary.Task(
+            text: "настоящая", owner: "Настя", due: "до среды", quote: "они тратят время и ресурсы"
+        ),
+        MeetingSummary.Task(
+            text: "выдуманная", owner: "", due: "", quote: "переозвучить видеоролик и водность"
+        ),
+    ]
+    let checked = QuoteMatch.check(tasks: tasks, against: index, threshold: 0.4)
+    #expect(checked[0].timecode == 2472)
+    #expect(checked[0].owner == "Настя")
+    #expect(checked[0].due == "до среды")
+    #expect(checked[1].timecode == nil)
+    #expect(checked[1].ratio > 0)
+}

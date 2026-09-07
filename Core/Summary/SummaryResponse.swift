@@ -32,9 +32,18 @@ public enum SummaryResponse {
             var quote: String
         }
 
+        struct Task: Decodable {
+            var text: String
+            var owner: String?
+            var due: String?
+            var quote: String
+        }
+
         var title: String?
         var summary: [String]?
         var decisions: [Decision]?
+        var tasks: [Task]?
+        var openIssues: [String]?
     }
 
     public static func parse(_ raw: String) throws -> MeetingSummary {
@@ -57,10 +66,29 @@ public enum SummaryResponse {
             return MeetingSummary.Decision(text: text, quote: quote)
         }
 
+        // A task with no quote is dropped for the same reason a decision is: the whole check
+        // rests on the quote, and one that never arrived cannot be told from one that failed.
+        let tasks = (payload.tasks ?? []).compactMap { task -> MeetingSummary.Task? in
+            let text = task.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let quote = task.quote.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty, !quote.isEmpty else { return nil }
+            return MeetingSummary.Task(
+                text: text,
+                owner: (task.owner ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                due: (task.due ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                quote: quote
+            )
+        }
+        let openIssues = (payload.openIssues ?? [])
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
         return MeetingSummary(
             title: (payload.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
             summary: summary,
-            decisions: decisions
+            decisions: decisions,
+            tasks: tasks,
+            openIssues: openIssues
         )
     }
 

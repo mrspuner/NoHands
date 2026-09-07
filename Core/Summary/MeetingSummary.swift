@@ -14,14 +14,41 @@ public struct MeetingSummary: Equatable, Sendable {
         }
     }
 
+    /// Something somebody took on. `owner` and `due` carry what was actually said out loud and
+    /// are empty when it was not: until phase 2г the transcript knows only «Я» and «Собеседник»,
+    /// so a name appears here only when a participant used one.
+    public struct Task: Equatable, Sendable {
+        public var text: String
+        public var owner: String
+        public var due: String
+        public var quote: String
+
+        public init(text: String, owner: String, due: String, quote: String) {
+            self.text = text
+            self.owner = owner
+            self.due = due
+            self.quote = quote
+        }
+    }
+
     public var title: String
     public var summary: [String]
     public var decisions: [Decision]
+    public var tasks: [Task]
+    public var openIssues: [String]
 
-    public init(title: String, summary: [String], decisions: [Decision]) {
+    public init(
+        title: String,
+        summary: [String],
+        decisions: [Decision],
+        tasks: [Task] = [],
+        openIssues: [String] = []
+    ) {
         self.title = title
         self.summary = summary
         self.decisions = decisions
+        self.tasks = tasks
+        self.openIssues = openIssues
     }
 }
 
@@ -39,6 +66,24 @@ public struct CheckedDecision: Equatable, Sendable {
 
     public init(text: String, ratio: Double, timecode: TimeInterval?) {
         self.text = text
+        self.ratio = ratio
+        self.timecode = timecode
+    }
+}
+
+/// A task after the transcript has been asked about its quote. Mirrors `CheckedDecision` and
+/// carries the two fields a decision does not have.
+public struct CheckedTask: Equatable, Sendable {
+    public var text: String
+    public var owner: String
+    public var due: String
+    public var ratio: Double
+    public var timecode: TimeInterval?
+
+    public init(text: String, owner: String, due: String, ratio: Double, timecode: TimeInterval?) {
+        self.text = text
+        self.owner = owner
+        self.due = due
         self.ratio = ratio
         self.timecode = timecode
     }
