@@ -92,13 +92,20 @@ public struct MLXSummaryRunner: SummaryRunning {
         }
         // Checked after every chunk is known to fit on its own: a tiny context that cannot even
         // hold one chunk is a `tooLong` problem, not a `tooManyChunks` one, and the arithmetic
-        // below can go negative for such a context. The merge call is `mergePrefix` plus one
-        // partial per chunk, each up to `maxTokens` — nothing bounds that today. The number of
-        // chunks a meeting yields is fixed by its length, so a retry cannot help: same reasoning
-        // as `tooLong` being permanent.
-        let chunkLimit = (contextTokens - Self.mergeMaxTokens) / Self.maxTokens
-        guard chunks.count <= chunkLimit else {
-            throw Failure.tooManyChunks(count: chunks.count, limit: chunkLimit)
+        // below can go negative for such a context.
+        //
+        // Only when there is actually going to be a merge: with one chunk the script writes
+        // `partials[0]` straight back and returns — `if len(partials) == 1` — without ever
+        // building `mergePrefix`. So a single chunk has no merge call for this limit to protect,
+        // and the guard must not fire for it no matter how small `contextTokens` is. The merge
+        // call, when there is one, is `mergePrefix` plus one partial per chunk, each up to
+        // `maxTokens` — nothing else bounds that. The number of chunks a meeting yields is fixed
+        // by its length, so a retry cannot help: same reasoning as `tooLong` being permanent.
+        if chunks.count > 1 {
+            let chunkLimit = (contextTokens - Self.mergeMaxTokens) / Self.maxTokens
+            guard chunks.count <= chunkLimit else {
+                throw Failure.tooManyChunks(count: chunks.count, limit: chunkLimit)
+            }
         }
 
         // Expanded here rather than in the config so the file keeps the readable `~` the owner

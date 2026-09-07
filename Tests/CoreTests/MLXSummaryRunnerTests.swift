@@ -50,6 +50,21 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
     }
 }
 
+// A single chunk never goes through the merge pass at all: the script writes `partials[0]`
+// straight back when `len(partials) == 1`, without ever building `mergePrefix`. So the guard has
+// nothing to protect for one chunk, and must not fire for it even when `contextTokens` is small
+// enough to make the limit zero or negative — context: 1000 gives (1000 - mergeMaxTokens 2000) /
+// maxTokens 1500 = 0, which would refuse a single chunk if the guard did not exempt count == 1.
+//
+// Asserts `.uvMissing` rather than merely "no `.tooManyChunks`": that proves execution actually
+// passed this guard and reached the next one, rather than some earlier guard swallowing the case
+// by accident and leaving this one unexercised.
+@Test func aSingleChunkIsNeverTooManyEvenWhenTheLimitIsNonPositive() async {
+    await #expect(throws: MLXSummaryRunner.Failure.uvMissing("/nonexistent/uv")) {
+        try await runner(context: 1000).summarize(chunks: ["[00:00:01] Я: раз"])
+    }
+}
+
 @Test func theScriptLoadsTheModelOnceAndMergesOnlyWhenThereIsMoreThanOneChunk() {
     #expect(SummaryScript.source.contains("for chunk in request[\"chunks\"]"))
     #expect(SummaryScript.source.contains("if len(partials) == 1"))
@@ -69,9 +84,10 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
     }
 }
 
-// Длина одного куска и число кусков — единственные постоянные отказы: оба вычисляются из длины
-// встречи, а она у одной и той же встречи не меняется от попытки к попытке. Всё остальное чинится
-// следующей попыткой, и записывать это в архив значило бы закрывать встречу навсегда из-за сети.
+// A single chunk's length and the number of chunks are the only permanent failures: both are
+// computed from the meeting's own length, which does not change between attempts. Everything
+// else is fixed by trying again, and writing it into the archive would close the meeting for
+// ever over a network hiccup.
 @Test func onlyLengthGuardsArePermanentFailures() {
     #expect(MLXSummaryRunner.Failure.tooLong(estimated: 40_000, limit: 28_000).isPermanent)
     #expect(MLXSummaryRunner.Failure.tooManyChunks(count: 20, limit: 17).isPermanent)
