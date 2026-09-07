@@ -39,3 +39,15 @@ import Testing
     )
     #expect(notice.isFailure)
 }
+
+@Test func theSummaryNoticeSaysWhichWayItWent() {
+    let good = MeetingNotice.forSummary(MeetingSummarizer.Outcome(file: "a.md", failure: nil))
+    #expect(good.text == "Конспект готов")
+    #expect(!good.isFailure)
+
+    let bad = MeetingNotice.forSummary(
+        MeetingSummarizer.Outcome(file: "a.md", failure: "uv not found at /x")
+    )
+    #expect(bad.text == "Конспект не сделан: uv not found at /x")
+    #expect(bad.isFailure)
+}

@@ -38,4 +38,14 @@ public struct MeetingNotice: Equatable, Sendable {
     private static func length(_ minutes: Int) -> String {
         minutes < 1 ? "меньше минуты" : "\(minutes) мин"
     }
+
+    /// The summary arrives a couple of minutes after the transcription notice, as a second
+    /// notice rather than a rewrite of the first: the two are different events with different
+    /// ways of failing, and one merged line would be wrong half the time.
+    public static func forSummary(_ outcome: MeetingSummarizer.Outcome) -> MeetingNotice {
+        if let failure = outcome.failure {
+            return MeetingNotice(text: "Конспект не сделан: \(failure)", isFailure: true)
+        }
+        return MeetingNotice(text: "Конспект готов", isFailure: false)
+    }
 }

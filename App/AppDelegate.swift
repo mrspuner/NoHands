@@ -11,6 +11,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Built once and reconfigured in place afterwards, never rebuilt — see its own `config` for
     /// why a rebuild on every reload would be unsafe rather than merely wasteful.
     private var meetingQueue: MeetingQueue?
+    /// Same "build once, `update` in place" rule as `meetingQueue`, and for the same reason: two
+    /// summarizers over the same archive would race each other's writes.
+    private var meetingSummarizer: MeetingSummarizer?
     /// Unlike `meetingQueue`, this one *is* recreated every time `rebuildMeetings` runs, as a
     /// side effect of that method always rebuilding this whole block rather than only at launch.
     /// The old timer is invalidated first, so a reload never leaves two of them sweeping.
@@ -126,6 +129,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let makeTranscriber: @Sendable () async throws -> any TimedTranscriber = {
             try await ParakeetTranscriber.load(language: dictationLanguage)
         }
+        // Built before the queue below, because the queue's own `report` closure calls it: a
+        // summarizer created after the queue could never be reached from that closure, since the
+        // queue is built exactly once for the life of the app, same as `meetingQueue` itself.
+        let makeRunner: @Sendable () -> any SummaryRunning = {
+            MLXSummaryRunner(
+                uvPath: config.uvPath,
+                model: config.summaryModel,
+                timeout: config.summaryTimeoutSeconds,
+                contextTokens: config.summaryContextTokens
+            )
+        }
+        if let existing = meetingSummarizer {
+            await existing.update(config: config, makeRunner: makeRunner)
+        } else {
+            meetingSummarizer = MeetingSummarizer(
+                config: config,
+                makeRunner: makeRunner,
+                report: { [panel] outcome in
+                    Task { @MainActor in
+                        panel.show(notice: MeetingNotice.forSummary(outcome))
+                        panel.hideNotice(after: MeetingNotice.dwell)
+                    }
+                }
+            )
+        }
+        guard let summarizer = meetingSummarizer else { return nil }
+
         // Built once and afterwards only re-configured. «Перечитать конфиг» is the single reload
         // path for every setting in this application, and a backlog drain can run for hours, so
         // replacing the actor here would routinely leave two of them working the same folder —
@@ -141,6 +171,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     Task { @MainActor in
                         panel.show(notice: MeetingNotice.forOutcome(outcome))
                         panel.hideNotice(after: MeetingNotice.dwell)
+                    }
+                    // A meeting that failed has no file in the archive to summarise; one that
+                    // succeeded does, and `scanArchive` finds it without being told the path.
+                    if outcome.failure == nil {
+                        Task { await summarizer.scanArchive() }
                     }
                 }
             )
@@ -183,6 +218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // fresh to sweep, but the order that needs no such argument is the better one.
             await queue.sweep()
             await queue.scanAll()
+            await summarizer.scanArchive()
         }
         // The machine is always on, so a once-a-day timer is all the scheduler this needs.
         let timer = Timer.scheduledTimer(withTimeInterval: 86400, repeats: true) { _ in
