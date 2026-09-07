@@ -103,33 +103,50 @@ func runMeetingSummarize(_ file: URL) async throws {
         timeout: config.summaryTimeoutSeconds,
         contextTokens: config.summaryContextTokens
     )
-    note("модель считает, первый запуск дольше на загрузку")
+    // This command and `MeetingSummarizer` inside the running application each spawn their own
+    // 4.3 GB model subprocess; two at once do not fit beside the owner's work on a 16 GB machine.
+    note("Не запускайте эту команду, пока работает приложение: две модели по 4,3 ГБ не помещаются в память вместе.")
+
+    let chunks = TranscriptChunks.split(
+        index,
+        maxSeconds: config.summaryChunkSeconds,
+        maxCharacters: Int(Double(config.summaryContextTokens) * MLXSummaryRunner.charactersPerToken)
+    )
+    note("кусков: \(chunks.count)")
     let started = Date()
-    let summary = try await runner.summarize(chunks: [index.body])
+    let summary = try await runner.summarize(chunks: chunks)
     note("ответ за \(Int(Date().timeIntervalSince(started))) с")
 
     let checked = QuoteMatch.check(
         summary.decisions, against: index, threshold: config.quoteMatchRatio
     )
+    let checkedTasks = QuoteMatch.check(
+        tasks: summary.tasks, against: index, threshold: config.quoteMatchRatio
+    )
     note("название: \(summary.title)")
     for decision in checked {
         let stamp = decision.timecode.map { "[\(MeetingMarkdown.timestamp($0))]" } ?? "нет"
         let mark = decision.timecode == nil ? "×" : " "
-        note(String(format: "%@ %.2f %@ %@", mark, decision.ratio, stamp, decision.text))
+        note(String(format: "%@ %.2f %@ решение: %@", mark, decision.ratio, stamp, decision.text))
+    }
+    for task in checkedTasks {
+        let stamp = task.timecode.map { "[\(MeetingMarkdown.timestamp($0))]" } ?? "нет"
+        let mark = task.timecode == nil ? "×" : " "
+        note(String(format: "%@ %.2f %@ задача: %@", mark, task.ratio, stamp, task.text))
     }
     // The six new keys never appear in the owner's config file: `loadOrCreate` only ever writes
     // the whole `meetings` section, and only when it is absent entirely — an existing section
     // gets missing keys from the in-memory default instead. So the knob this command exists to
     // help tune is real but invisible in the owner's file, and naming where it lives is the only
     // way to know it can be turned at all.
-    if checked.contains(where: { $0.timecode == nil }) {
+    if checked.contains(where: { $0.timecode == nil }) || checkedTasks.contains(where: { $0.timecode == nil }) {
         note("порог quoteMatchRatio правится в \(MeetingsConfig.configFileURL.path), секция meetings")
     }
 
     let updated = try SummaryInsertion.apply(
         summary: summary,
         decisions: checked,
-        tasks: [],
+        tasks: checkedTasks,
         to: text,
         named: file.lastPathComponent,
         mode: .replace

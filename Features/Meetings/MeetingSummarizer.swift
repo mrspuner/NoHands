@@ -114,14 +114,24 @@ public actor MeetingSummarizer {
         // `MeetingQueue.process`'s own snapshot.
         let config = self.config
         do {
-            let summary = try await makeRunner().summarize(chunks: [index.body])
+            // Cut here rather than inside the runner: the summarizer is where the config lives,
+            // and the runner should not have to know what a meeting is.
+            let chunks = TranscriptChunks.split(
+                index,
+                maxSeconds: config.summaryChunkSeconds,
+                maxCharacters: Int(Double(config.summaryContextTokens) * MLXSummaryRunner.charactersPerToken)
+            )
+            let summary = try await makeRunner().summarize(chunks: chunks)
             let decisions = QuoteMatch.check(
                 summary.decisions, against: index, threshold: config.quoteMatchRatio
+            )
+            let tasks = QuoteMatch.check(
+                tasks: summary.tasks, against: index, threshold: config.quoteMatchRatio
             )
             let updated = try SummaryInsertion.apply(
                 summary: summary,
                 decisions: decisions,
-                tasks: [],
+                tasks: tasks,
                 to: text,
                 named: file.lastPathComponent,
                 mode: .insert

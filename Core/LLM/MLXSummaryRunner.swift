@@ -9,6 +9,10 @@ public struct MLXSummaryRunner: SummaryRunning {
     public enum Failure: LocalizedError, SummaryFailure, Equatable {
         case uvMissing(String)
         case tooLong(estimated: Int, limit: Int)
+        /// The merge pass holds `mergePrefix` plus one partial summary per chunk, each up to
+        /// `maxTokens` — a meeting cut into too many chunks would overflow that call even though
+        /// every individual chunk fits its own window. See `chunkLimit` for the arithmetic.
+        case tooManyChunks(count: Int, limit: Int)
         case timedOut(TimeInterval)
         case runnerFailed(String)
 
@@ -18,6 +22,8 @@ public struct MLXSummaryRunner: SummaryRunning {
                 return "uv not found at \(path)"
             case .tooLong(let estimated, let limit):
                 return "The meeting is longer than the model's window: about \(estimated) tokens against \(limit)"
+            case .tooManyChunks(let count, let limit):
+                return "The meeting has too many chunks for the merge pass to hold: \(count) against \(limit)"
             case .timedOut(let seconds):
                 return "The model did not answer within \(Int(seconds / 60)) min"
             case .runnerFailed(let detail):
@@ -26,8 +32,10 @@ public struct MLXSummaryRunner: SummaryRunning {
         }
 
         public var isPermanent: Bool {
-            if case .tooLong = self { return true }
-            return false
+            switch self {
+            case .tooLong, .tooManyChunks: return true
+            case .uvMissing, .timedOut, .runnerFailed: return false
+            }
         }
     }
 
@@ -43,7 +51,10 @@ public struct MLXSummaryRunner: SummaryRunning {
     static let mergeMaxTokens = 2000
     /// Characters per token, deliberately pessimistic: the probe measured 3.04 on plain
     /// transcript text, and speaker labels with timecodes tokenise worse than prose.
-    static let charactersPerToken = 2.5
+    ///
+    /// `public`: `Meetings` cuts the transcript before calling the runner and needs the same
+    /// character budget to turn `MeetingsConfig.summaryContextTokens` into a character count.
+    public static let charactersPerToken = 2.5
 
     private let uvPath: String
     private let model: String
@@ -78,6 +89,16 @@ public struct MLXSummaryRunner: SummaryRunning {
             guard estimated <= contextTokens else {
                 throw Failure.tooLong(estimated: estimated, limit: contextTokens)
             }
+        }
+        // Checked after every chunk is known to fit on its own: a tiny context that cannot even
+        // hold one chunk is a `tooLong` problem, not a `tooManyChunks` one, and the arithmetic
+        // below can go negative for such a context. The merge call is `mergePrefix` plus one
+        // partial per chunk, each up to `maxTokens` — nothing bounds that today. The number of
+        // chunks a meeting yields is fixed by its length, so a retry cannot help: same reasoning
+        // as `tooLong` being permanent.
+        let chunkLimit = (contextTokens - Self.mergeMaxTokens) / Self.maxTokens
+        guard chunks.count <= chunkLimit else {
+            throw Failure.tooManyChunks(count: chunks.count, limit: chunkLimit)
         }
 
         // Expanded here rather than in the config so the file keeps the readable `~` the owner

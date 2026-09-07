@@ -75,6 +75,10 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
     /// Share of a quote's longest run that has to be found in the transcript. Measured: real
     /// quotes 65–100%, invented or foreign ones 12–18%, so the threshold sits in the gap.
     public var quoteMatchRatio: Double
+    /// Length of one chunk in seconds. Fifteen minutes is the length of the meeting that ran on
+    /// this machine on 2026-09-07 and produced the best summary of that day, while the
+    /// sixty-eight-minute one took ten gigabytes and was killed by the system.
+    public var summaryChunkSeconds: Double
 
     /// Both identifiers are read off the applications installed on the owner's machine, not
     /// guessed from their names — `ru.yandex.telemost` was a guess, and the desktop client calls
@@ -116,7 +120,8 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         uvPath: "~/.local/bin/uv",
         summaryTimeoutSeconds: 900,
         summaryContextTokens: 28_000,
-        quoteMatchRatio: 0.4
+        quoteMatchRatio: 0.4,
+        summaryChunkSeconds: 900
     )
 
     public init(
@@ -136,7 +141,8 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         uvPath: String = "~/.local/bin/uv",
         summaryTimeoutSeconds: Double = 900,
         summaryContextTokens: Int = 28_000,
-        quoteMatchRatio: Double = 0.4
+        quoteMatchRatio: Double = 0.4,
+        summaryChunkSeconds: Double = 900
     ) {
         self.triggerApps = triggerApps
         self.excludedApps = excludedApps
@@ -155,6 +161,7 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         self.summaryTimeoutSeconds = summaryTimeoutSeconds
         self.summaryContextTokens = summaryContextTokens
         self.quoteMatchRatio = quoteMatchRatio
+        self.summaryChunkSeconds = summaryChunkSeconds
     }
 
     public init(from decoder: any Decoder) throws {
@@ -193,6 +200,8 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
             ?? fallback.summaryContextTokens
         quoteMatchRatio = try container.decodeIfPresent(Double.self, forKey: .quoteMatchRatio)
             ?? fallback.quoteMatchRatio
+        summaryChunkSeconds = try container.decodeIfPresent(Double.self, forKey: .summaryChunkSeconds)
+            ?? fallback.summaryChunkSeconds
     }
 
     public static func decode(_ data: Data) throws -> MeetingsConfig {

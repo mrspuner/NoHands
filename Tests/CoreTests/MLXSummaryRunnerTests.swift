@@ -33,6 +33,23 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
     }
 }
 
+// The merge pass holds `mergePrefix` plus one partial summary per chunk, each up to `maxTokens`,
+// so a meeting cut into too many chunks would overflow the merge call even though every single
+// chunk fits its own window. Named refusal instead of a silent overflow.
+//
+// context: 5000 gives a limit of (5000 - mergeMaxTokens 2000) / maxTokens 1500 = 2. Three tiny
+// chunks — each far under the per-chunk length guard on its own — trips only this guard.
+//
+// Exact case with its numbers, not `#expect(throws: MLXSummaryRunner.Failure.self)`: the bare
+// type would still pass if this guard were deleted and the empty-list guard or the per-chunk
+// length guard happened to fire instead, proving nothing about the guard this test names.
+@Test func tooManyChunksIsRefusedBeforeAnythingIsLaunched() async {
+    let chunks = Array(repeating: "[00:00:01] Я: раз", count: 3)
+    await #expect(throws: MLXSummaryRunner.Failure.tooManyChunks(count: 3, limit: 2)) {
+        try await runner(context: 5000).summarize(chunks: chunks)
+    }
+}
+
 @Test func theScriptLoadsTheModelOnceAndMergesOnlyWhenThereIsMoreThanOneChunk() {
     #expect(SummaryScript.source.contains("for chunk in request[\"chunks\"]"))
     #expect(SummaryScript.source.contains("if len(partials) == 1"))
@@ -52,10 +69,12 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
     }
 }
 
-// Только длина постоянна: всё остальное чинится следующей попыткой, и записывать это в архив
-// значило бы закрывать встречу навсегда из-за сети.
-@Test func onlyLengthIsAPermanentFailure() {
+// Длина одного куска и число кусков — единственные постоянные отказы: оба вычисляются из длины
+// встречи, а она у одной и той же встречи не меняется от попытки к попытке. Всё остальное чинится
+// следующей попыткой, и записывать это в архив значило бы закрывать встречу навсегда из-за сети.
+@Test func onlyLengthGuardsArePermanentFailures() {
     #expect(MLXSummaryRunner.Failure.tooLong(estimated: 40_000, limit: 28_000).isPermanent)
+    #expect(MLXSummaryRunner.Failure.tooManyChunks(count: 20, limit: 17).isPermanent)
     #expect(!MLXSummaryRunner.Failure.uvMissing("/x").isPermanent)
     #expect(!MLXSummaryRunner.Failure.timedOut(900).isPermanent)
     #expect(!MLXSummaryRunner.Failure.runnerFailed("что-то").isPermanent)

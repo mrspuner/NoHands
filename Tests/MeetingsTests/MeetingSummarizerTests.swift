@@ -48,6 +48,8 @@ private struct FakeRunner: SummaryRunning {
     /// Makes the runner actually suspend, so an overlapping pass has a window to enter the
     /// actor. Without it the overlap test would pass by accident on timing.
     var slow = false
+    /// Chunk counts of every call, so a test can prove the meeting arrived cut up rather than whole.
+    let chunkCounts: Counts
 
     final class Counter: @unchecked Sendable {
         private let lock = NSLock()
@@ -56,8 +58,16 @@ private struct FakeRunner: SummaryRunning {
         var count: Int { lock.lock(); defer { lock.unlock() }; return value }
     }
 
+    final class Counts: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [Int] = []
+        func record(_ value: Int) { lock.lock(); values.append(value); lock.unlock() }
+        var all: [Int] { lock.lock(); defer { lock.unlock() }; return values }
+    }
+
     func summarize(chunks: [String]) async throws -> MeetingSummary {
         calls.bump()
+        chunkCounts.record(chunks.count)
         if slow { try? await Task.sleep(for: .milliseconds(100)) }
         if let failure { throw failure() }
         return answer!
@@ -100,7 +110,7 @@ private let summary = MeetingSummary(
     let summarizer = MeetingSummarizer(
         archive: directory,
         config: .default,
-        makeRunner: { FakeRunner(answer: summary, failure: nil, calls: counter) },
+        makeRunner: { FakeRunner(answer: summary, failure: nil, calls: counter, chunkCounts: FakeRunner.Counts()) },
         report: { outcomes.add($0) }
     )
     await summarizer.scanArchive()
@@ -123,7 +133,7 @@ private let summary = MeetingSummary(
     let counter = FakeRunner.Counter()
     let summarizer = MeetingSummarizer(
         archive: directory, config: .default,
-        makeRunner: { FakeRunner(answer: summary, failure: nil, calls: counter) },
+        makeRunner: { FakeRunner(answer: summary, failure: nil, calls: counter, chunkCounts: FakeRunner.Counts()) },
         report: { _ in }
     )
     await summarizer.scanArchive()
@@ -137,7 +147,7 @@ private let summary = MeetingSummary(
     let outcomes = OutcomeBox()
     let summarizer = MeetingSummarizer(
         archive: directory, config: .default,
-        makeRunner: { FakeRunner(answer: nil, failure: { TemporaryFailure() }, calls: counter) },
+        makeRunner: { FakeRunner(answer: nil, failure: { TemporaryFailure() }, calls: counter, chunkCounts: FakeRunner.Counts()) },
         report: { outcomes.add($0) }
     )
     await summarizer.scanArchive()
@@ -156,7 +166,7 @@ private let summary = MeetingSummary(
     let counter = FakeRunner.Counter()
     let summarizer = MeetingSummarizer(
         archive: directory, config: .default,
-        makeRunner: { FakeRunner(answer: nil, failure: { PermanentFailure() }, calls: counter) },
+        makeRunner: { FakeRunner(answer: nil, failure: { PermanentFailure() }, calls: counter, chunkCounts: FakeRunner.Counts()) },
         report: { _ in }
     )
     await summarizer.scanArchive()
@@ -175,7 +185,7 @@ private let summary = MeetingSummary(
     let outcomes = OutcomeBox()
     let summarizer = MeetingSummarizer(
         archive: directory, config: .default,
-        makeRunner: { FakeRunner(answer: summary, failure: nil, calls: counter) },
+        makeRunner: { FakeRunner(answer: summary, failure: nil, calls: counter, chunkCounts: FakeRunner.Counts()) },
         report: { outcomes.add($0) }
     )
     await summarizer.scanArchive()
@@ -199,7 +209,7 @@ private let summary = MeetingSummary(
     let counter = FakeRunner.Counter()
     let summarizer = MeetingSummarizer(
         archive: directory, config: .default,
-        makeRunner: { FakeRunner(answer: summary, failure: nil, calls: counter, slow: true) },
+        makeRunner: { FakeRunner(answer: summary, failure: nil, calls: counter, slow: true, chunkCounts: FakeRunner.Counts()) },
         report: { _ in }
     )
     async let first: Void = summarizer.scanArchive()
@@ -226,7 +236,7 @@ private let summary = MeetingSummary(
     let outcomes = OutcomeBox()
     let summarizer = MeetingSummarizer(
         archive: directory, config: .default,
-        makeRunner: { FakeRunner(answer: summary, failure: nil, calls: counter) },
+        makeRunner: { FakeRunner(answer: summary, failure: nil, calls: counter, chunkCounts: FakeRunner.Counts()) },
         report: { outcomes.add($0) }
     )
     await summarizer.scanArchive()
@@ -248,11 +258,41 @@ private let summary = MeetingSummary(
     let counter = FakeRunner.Counter()
     let summarizer = MeetingSummarizer(
         archive: directory, config: config,
-        makeRunner: { FakeRunner(answer: summary, failure: nil, calls: counter) },
+        makeRunner: { FakeRunner(answer: summary, failure: nil, calls: counter, chunkCounts: FakeRunner.Counts()) },
         report: { _ in }
     )
     await summarizer.scanArchive()
     #expect(counter.count == 0)
+}
+
+// A meeting longer than the chunk limit must reach the runner cut into pieces: that is the whole
+// point of the change, and nothing else in the pass would reveal it.
+@Test func aLongMeetingReachesTheRunnerInChunks() async throws {
+    var lines: [String] = []
+    for minute in 0..<40 {
+        lines.append("[\(MeetingMarkdown.timestamp(TimeInterval(minute) * 60))] Я: реплика \(minute)")
+    }
+    let long = """
+        ---
+        date: 2026-09-07
+        ---
+
+        ## Транскрипт
+
+        \(lines.joined(separator: "\n"))
+
+        """
+    let directory = try archive(files: ["long.md": long])
+    let counts = FakeRunner.Counts()
+    let summarizer = MeetingSummarizer(
+        archive: directory, config: .default,
+        makeRunner: {
+            FakeRunner(answer: summary, failure: nil, calls: FakeRunner.Counter(), chunkCounts: counts)
+        },
+        report: { _ in }
+    )
+    await summarizer.scanArchive()
+    #expect(counts.all == [3])
 }
 
 private final class OutcomeBox: @unchecked Sendable {
