@@ -60,6 +60,21 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
     /// 32 kbit/s is roughly 14 MB per hour per track — speech at 16 kHz survives it, and this
     /// is the number that turns the arithmetic above from gigabytes into megabytes.
     public var aacBitrate: Int
+    /// Whether the summary step runs at all. A switch rather than a decision: if the model turns
+    /// out to get in the way of real work, the archive should keep filling with transcripts.
+    public var summaryEnabled: Bool
+    public var summaryModel: String
+    /// Configured rather than looked up: an application launched from Finder has a PATH that does
+    /// not include `~/.local/bin`.
+    public var uvPath: String
+    /// Measured: 2 minutes on a 71-minute meeting, so a four-hour one lands around 7. The rest is
+    /// headroom for a cold model load and for `uv` fetching packages after a cache wipe.
+    public var summaryTimeoutSeconds: Double
+    /// 32k window minus the answer and the system part.
+    public var summaryContextTokens: Int
+    /// Share of a quote's longest run that has to be found in the transcript. Measured: real
+    /// quotes 65–100%, invented or foreign ones 12–18%, so the threshold sits in the gap.
+    public var quoteMatchRatio: Double
 
     /// Both identifiers are read off the applications installed on the owner's machine, not
     /// guessed from their names — `ru.yandex.telemost` was a guess, and the desktop client calls
@@ -95,7 +110,13 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         // room below the quietest speech measured, 9 dB above the loudest leak.
         micThresholdDBFS: -40,
         audioRetentionDays: 7,
-        aacBitrate: 32000
+        aacBitrate: 32000,
+        summaryEnabled: true,
+        summaryModel: "mlx-community/Qwen3-8B-4bit",
+        uvPath: "~/.local/bin/uv",
+        summaryTimeoutSeconds: 900,
+        summaryContextTokens: 28_000,
+        quoteMatchRatio: 0.4
     )
 
     public init(
@@ -109,7 +130,13 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         maxPhraseSeconds: Double,
         micThresholdDBFS: Double,
         audioRetentionDays: Int,
-        aacBitrate: Int
+        aacBitrate: Int,
+        summaryEnabled: Bool = true,
+        summaryModel: String = "mlx-community/Qwen3-8B-4bit",
+        uvPath: String = "~/.local/bin/uv",
+        summaryTimeoutSeconds: Double = 900,
+        summaryContextTokens: Int = 28_000,
+        quoteMatchRatio: Double = 0.4
     ) {
         self.triggerApps = triggerApps
         self.excludedApps = excludedApps
@@ -122,6 +149,12 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         self.micThresholdDBFS = micThresholdDBFS
         self.audioRetentionDays = audioRetentionDays
         self.aacBitrate = aacBitrate
+        self.summaryEnabled = summaryEnabled
+        self.summaryModel = summaryModel
+        self.uvPath = uvPath
+        self.summaryTimeoutSeconds = summaryTimeoutSeconds
+        self.summaryContextTokens = summaryContextTokens
+        self.quoteMatchRatio = quoteMatchRatio
     }
 
     public init(from decoder: any Decoder) throws {
@@ -149,6 +182,17 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
             ?? fallback.audioRetentionDays
         aacBitrate = try container.decodeIfPresent(Int.self, forKey: .aacBitrate)
             ?? fallback.aacBitrate
+        summaryEnabled = try container.decodeIfPresent(Bool.self, forKey: .summaryEnabled)
+            ?? fallback.summaryEnabled
+        summaryModel = try container.decodeIfPresent(String.self, forKey: .summaryModel)
+            ?? fallback.summaryModel
+        uvPath = try container.decodeIfPresent(String.self, forKey: .uvPath) ?? fallback.uvPath
+        summaryTimeoutSeconds = try container.decodeIfPresent(Double.self, forKey: .summaryTimeoutSeconds)
+            ?? fallback.summaryTimeoutSeconds
+        summaryContextTokens = try container.decodeIfPresent(Int.self, forKey: .summaryContextTokens)
+            ?? fallback.summaryContextTokens
+        quoteMatchRatio = try container.decodeIfPresent(Double.self, forKey: .quoteMatchRatio)
+            ?? fallback.quoteMatchRatio
     }
 
     public static func decode(_ data: Data) throws -> MeetingsConfig {

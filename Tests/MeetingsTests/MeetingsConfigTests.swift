@@ -133,3 +133,25 @@ import Testing
     // Keys absent from the file stayed at their defaults — the general rule for this config.
     #expect(config.autoStopSeconds == MeetingsConfig.default.autoStopSeconds)
 }
+
+@Test func summaryDefaultsAreTheMeasuredOnes() {
+    let config = MeetingsConfig.default
+    #expect(config.summaryEnabled)
+    #expect(config.summaryModel == "mlx-community/Qwen3-8B-4bit")
+    #expect(config.uvPath == "~/.local/bin/uv")
+    #expect(config.summaryTimeoutSeconds == 900)
+    #expect(config.summaryContextTokens == 28_000)
+    #expect(config.quoteMatchRatio == 0.4)
+}
+
+// A config the owner already wrote has none of the new keys. A missing key is a default,
+// not a reason to refuse reading the whole file.
+@Test func aConfigWrittenBeforePhase2vStillReads() throws {
+    let json = """
+        {"silenceSeconds": 0, "micThresholdDBFS": -40}
+        """
+    let decoded = try JSONDecoder().decode(MeetingsConfig.self, from: Data(json.utf8))
+    #expect(decoded.micThresholdDBFS == -40)
+    #expect(decoded.quoteMatchRatio == 0.4)
+    #expect(decoded.uvPath == "~/.local/bin/uv")
+}
