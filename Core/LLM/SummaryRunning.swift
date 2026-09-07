@@ -4,7 +4,9 @@ import Foundation
 /// the whole reason it exists: the fake is how the queue above it gets tested without a 4.3 GB
 /// model and two minutes per case.
 public protocol SummaryRunning: Sendable {
-    func summarize(transcript: String) async throws -> MeetingSummary
+    /// - Parameter chunks: the meeting cut into pieces the model can hold at once, in order.
+    ///   One chunk is summarised directly; several are summarised apart and then merged.
+    func summarize(chunks: [String]) async throws -> MeetingSummary
 }
 
 /// A failure that knows whether trying again could ever help.

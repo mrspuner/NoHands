@@ -105,7 +105,7 @@ func runMeetingSummarize(_ file: URL) async throws {
     )
     note("модель считает, первый запуск дольше на загрузку")
     let started = Date()
-    let summary = try await runner.summarize(transcript: index.body)
+    let summary = try await runner.summarize(chunks: [index.body])
     note("ответ за \(Int(Date().timeIntervalSince(started))) с")
 
     let checked = QuoteMatch.check(

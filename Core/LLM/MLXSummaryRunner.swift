@@ -38,6 +38,9 @@ public struct MLXSummaryRunner: SummaryRunning {
     /// The 71-minute meeting in the probe answered in 1948 characters, roughly 700 tokens. The
     /// ceiling is here to stop a runaway generation, not to shape the answer.
     static let maxTokens = 1500
+    /// The merge pass answers about a whole meeting rather than a chunk of one, so it gets more
+    /// room than a single chunk's summary needs.
+    static let mergeMaxTokens = 2000
     /// Characters per token, deliberately pessimistic: the probe measured 3.04 on plain
     /// transcript text, and speaker labels with timecodes tokenise worse than prose.
     static let charactersPerToken = 2.5
@@ -57,14 +60,24 @@ public struct MLXSummaryRunner: SummaryRunning {
     private struct Request: Encodable {
         var model: String
         var system: String
-        var prompt: String
+        var mergeSystem: String
+        var mergePrefix: String
+        var chunks: [String]
         var maxTokens: Int
+        var mergeMaxTokens: Int
     }
 
-    public func summarize(transcript: String) async throws -> MeetingSummary {
-        let estimated = Int(Double(transcript.count) / Self.charactersPerToken)
-        guard estimated <= contextTokens else {
-            throw Failure.tooLong(estimated: estimated, limit: contextTokens)
+    public func summarize(chunks: [String]) async throws -> MeetingSummary {
+        guard !chunks.isEmpty else {
+            throw Failure.runnerFailed("the meeting has no transcript to summarise")
+        }
+        // Per chunk, not per meeting: the whole point of chunking is that a long meeting is many
+        // ordinary requests rather than one impossible one.
+        for chunk in chunks {
+            let estimated = Int(Double(chunk.count) / Self.charactersPerToken)
+            guard estimated <= contextTokens else {
+                throw Failure.tooLong(estimated: estimated, limit: contextTokens)
+            }
         }
 
         // Expanded here rather than in the config so the file keeps the readable `~` the owner
@@ -79,8 +92,11 @@ public struct MLXSummaryRunner: SummaryRunning {
             Request(
                 model: model,
                 system: SummaryPrompt.system,
-                prompt: SummaryPrompt.user(chunk: transcript),
-                maxTokens: Self.maxTokens
+                mergeSystem: SummaryPrompt.merge,
+                mergePrefix: "Частичные конспекты встречи по порядку:",
+                chunks: chunks.map { SummaryPrompt.user(chunk: $0) },
+                maxTokens: Self.maxTokens,
+                mergeMaxTokens: Self.mergeMaxTokens
             )
         )
         let answer = try await run(uv: URL(fileURLWithPath: uv), request: request)

@@ -114,7 +114,7 @@ public actor MeetingSummarizer {
         // `MeetingQueue.process`'s own snapshot.
         let config = self.config
         do {
-            let summary = try await makeRunner().summarize(transcript: index.body)
+            let summary = try await makeRunner().summarize(chunks: [index.body])
             let decisions = QuoteMatch.check(
                 summary.decisions, against: index, threshold: config.quoteMatchRatio
             )

@@ -12,18 +12,21 @@
 /// otherwise close the Swift literal. Everything between the delimiters is verbatim.
 enum SummaryScript {
     static let source = #"""
-        """Runs Qwen3 8B over one meeting transcript and prints the model's answer.
+        """Runs Qwen3 8B over one meeting, chunk by chunk, and prints the merged summary.
 
         Launched as a subprocess by MLXSummaryRunner: request as a JSON file whose path is the first
         argument, answer on stdout, diagnostics on stderr. The request travels as a file rather than on
-        stdin because a transcript is large enough to exceed a pipe's buffer, and writing it to stdin
-        would block the parent process until this script started draining it. Kept deliberately small —
-        everything that can be decided in Swift is decided in Swift, because this file is the one part
-        of the pipeline no test covers.
+        stdin because a transcript is large enough to exceed a pipe's buffer.
 
-        enable_thinking=False is not optional: Qwen3 is a reasoning model and without it half a minute
-        of deliberation lands in the meeting file. temp=0.0 for the same reason a transcript is not
-        creative writing.
+        The model is loaded once and reused for every chunk: loading costs fifteen seconds cold, and a
+        five-chunk meeting would otherwise pay it five times. Chunking exists because a whole
+        sixty-eight-minute meeting took about ten gigabytes and was killed by the system on a 16 GB
+        machine; a fifteen-minute chunk takes a fraction of that, and the peak no longer depends on how
+        long the meeting was.
+
+        enable_thinking=False is not optional: Qwen3 is a reasoning model and without it half a minute of
+        deliberation lands in the meeting file. temp=0.0 for the same reason a transcript is not creative
+        writing.
         """
 
         import json
@@ -33,28 +36,51 @@ enum SummaryScript {
         from mlx_lm.sample_utils import make_sampler
 
 
-        def main():
-            with open(sys.argv[1], encoding="utf-8") as request_file:
-                request = json.load(request_file)
-            model, tokenizer = load(request["model"])
+        def answer(model, tokenizer, system, user, max_tokens):
             prompt = tokenizer.apply_chat_template(
                 [
-                    {"role": "system", "content": request["system"]},
-                    {"role": "user", "content": request["prompt"]},
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
                 ],
                 add_generation_prompt=True,
                 tokenize=False,
                 enable_thinking=False,
             )
-            answer = generate(
+            return generate(
                 model,
                 tokenizer,
                 prompt=prompt,
-                max_tokens=request["maxTokens"],
+                max_tokens=max_tokens,
                 sampler=make_sampler(temp=0.0),
                 verbose=False,
             )
-            sys.stdout.write(answer)
+
+
+        def main():
+            with open(sys.argv[1], encoding="utf-8") as request_file:
+                request = json.load(request_file)
+            model, tokenizer = load(request["model"])
+
+            partials = []
+            for chunk in request["chunks"]:
+                partials.append(
+                    answer(model, tokenizer, request["system"], chunk, request["maxTokens"])
+                )
+
+            if len(partials) == 1:
+                sys.stdout.write(partials[0])
+                return
+
+            merged = answer(
+                model,
+                tokenizer,
+                request["mergeSystem"],
+                request["mergePrefix"] + "\n\n" + "\n\n".join(
+                    "Часть %d:\n%s" % (number, text) for number, text in enumerate(partials, 1)
+                ),
+                request["mergeMaxTokens"],
+            )
+            sys.stdout.write(merged)
 
 
         main()

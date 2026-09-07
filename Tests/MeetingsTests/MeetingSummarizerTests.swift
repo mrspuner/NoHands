@@ -56,7 +56,7 @@ private struct FakeRunner: SummaryRunning {
         var count: Int { lock.lock(); defer { lock.unlock() }; return value }
     }
 
-    func summarize(transcript: String) async throws -> MeetingSummary {
+    func summarize(chunks: [String]) async throws -> MeetingSummary {
         calls.bump()
         if slow { try? await Task.sleep(for: .milliseconds(100)) }
         if let failure { throw failure() }

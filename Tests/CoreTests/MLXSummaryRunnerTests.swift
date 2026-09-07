@@ -6,22 +6,38 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
     MLXSummaryRunner(uvPath: uv, model: "mlx-community/Qwen3-8B-4bit", timeout: 5, contextTokens: context)
 }
 
+// The limit is per chunk now: a long meeting is many chunks, and none of them is too long unless
+// the speech inside it is abnormally dense.
+@Test func aChunkLongerThanTheWindowIsRefusedBeforeAnythingIsLaunched() async {
+    let chunk = String(repeating: "слово ", count: 20_000)
+    await #expect(throws: MLXSummaryRunner.Failure.tooLong(estimated: 48_000, limit: 100)) {
+        try await runner(context: 100).summarize(chunks: [chunk])
+    }
+}
+
+@Test func anEmptyChunkListIsARefusalRatherThanAnEmptyRun() async {
+    await #expect(throws: MLXSummaryRunner.Failure.self) {
+        try await runner().summarize(chunks: [])
+    }
+}
+
+@Test func theScriptLoadsTheModelOnceAndMergesOnlyWhenThereIsMoreThanOneChunk() {
+    #expect(SummaryScript.source.contains("for chunk in request[\"chunks\"]"))
+    #expect(SummaryScript.source.contains("if len(partials) == 1"))
+    #expect(SummaryScript.source.contains("load(request[\"model\"])"))
+    // One load call in the whole script — the model must not be reloaded per chunk.
+    #expect(SummaryScript.source.components(separatedBy: "load(request[\"model\"])").count == 2)
+}
+
 // Порядок проверок — часть поведения: длина известна до всякого запуска, и мерить её после
 // попытки найти uv значило бы отвечать «нет uv» на встречу, которая всё равно не влезла бы.
 // The uv path here is /nonexistent/uv — if the guards were swapped, this would throw
 // .uvMissing instead, and #expect(throws: MLXSummaryRunner.Failure.self) alone would not
 // catch that: it matches any case of the type. Asserting the exact case is what protects the
 // ordering.
-@Test func aMeetingLongerThanTheWindowIsRefusedBeforeAnythingIsLaunched() async {
-    let transcript = String(repeating: "слово ", count: 20_000)
-    await #expect(throws: MLXSummaryRunner.Failure.tooLong(estimated: 48_000, limit: 100)) {
-        try await runner(context: 100).summarize(transcript: transcript)
-    }
-}
-
 @Test func aMissingUvIsNamedWithItsPath() async {
     do {
-        _ = try await runner().summarize(transcript: "[00:00:01] Я: раз")
+        _ = try await runner().summarize(chunks: ["[00:00:01] Я: раз"])
         Issue.record("должен был отказать")
     } catch let failure as MLXSummaryRunner.Failure {
         #expect(failure == .uvMissing("/nonexistent/uv"))
