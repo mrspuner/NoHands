@@ -33,6 +33,11 @@ nohands meeting process <папка встречи>
 nohands meeting levels <папка встречи>
     Печатает реплики дорожки микрофона с их уровнем в dBFS. Крестик слева — реплика
     не проходит текущий порог micThresholdDBFS. Инструмент подбора порога.
+
+nohands meeting summarize <файл встречи.md>
+    Считает конспект локальной моделью и переписывает разделы в файле.
+    Печатает по каждому решению долю совпадения цитаты и таймкод — инструмент
+    подбора порога quoteMatchRatio. Первый запуск дольше: модель грузится 15 с.
 """
 
 func fail(_ message: String) -> Never {
@@ -98,9 +103,11 @@ struct NoHands {
                 }
                 switch parsed.subcommand {
                 case .process:
-                    try await runMeetingProcess(parsed.folder)
+                    try await runMeetingProcess(parsed.path)
                 case .levels:
-                    try await runMeetingLevels(parsed.folder)
+                    try await runMeetingLevels(parsed.path)
+                case .summarize:
+                    try await runMeetingSummarize(parsed.path)
                 }
             default:
                 fail("Неизвестная команда: \(command)\n\n\(usage)")

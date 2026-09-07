@@ -83,3 +83,56 @@ func runMeetingLevels(_ folder: URL) async throws {
         )
     }
 }
+
+/// `nohands meeting summarize` — a tool for tuning `quoteMatchRatio`.
+///
+/// Unlike the application, this rewrites sections that are already there: the command exists for
+/// repeated runs over the same file while the threshold is being chosen, exactly like
+/// `meeting process` exists for repeated runs while `micThresholdDBFS` is being chosen.
+func runMeetingSummarize(_ file: URL) async throws {
+    let config = try MeetingsConfig.loadOrCreate()
+    let text = try String(contentsOf: file, encoding: .utf8)
+    let index = TranscriptIndex.parse(text)
+    guard !index.lines.isEmpty else {
+        fail("В файле нет строк транскрипта: \(file.lastPathComponent)")
+    }
+
+    let runner = MLXSummaryRunner(
+        uvPath: config.uvPath,
+        model: config.summaryModel,
+        timeout: config.summaryTimeoutSeconds,
+        contextTokens: config.summaryContextTokens
+    )
+    note("модель считает, первый запуск дольше на загрузку")
+    let started = Date()
+    let summary = try await runner.summarize(transcript: index.body)
+    note("ответ за \(Int(Date().timeIntervalSince(started))) с")
+
+    let checked = QuoteMatch.check(
+        summary.decisions, against: index, threshold: config.quoteMatchRatio
+    )
+    note("название: \(summary.title)")
+    for decision in checked {
+        let stamp = decision.timecode.map { "[\(MeetingMarkdown.timestamp($0))]" } ?? "нет"
+        let mark = decision.timecode == nil ? "×" : " "
+        note(String(format: "%@ %.2f %@ %@", mark, decision.ratio, stamp, decision.text))
+    }
+    // The six new keys never appear in the owner's config file: `loadOrCreate` only ever writes
+    // the whole `meetings` section, and only when it is absent entirely — an existing section
+    // gets missing keys from the in-memory default instead. So the knob this command exists to
+    // help tune is real but invisible in the owner's file, and naming where it lives is the only
+    // way to know it can be turned at all.
+    if checked.contains(where: { $0.timecode == nil }) {
+        note("порог quoteMatchRatio правится в \(MeetingsConfig.configFileURL.path), секция meetings")
+    }
+
+    let updated = try SummaryInsertion.apply(
+        summary: summary,
+        decisions: checked,
+        to: text,
+        named: file.lastPathComponent,
+        mode: .replace
+    )
+    try Data(updated.utf8).write(to: file, options: .atomic)
+    note("записано: \(file.path)")
+}
