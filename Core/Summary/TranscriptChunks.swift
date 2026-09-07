@@ -12,9 +12,14 @@ import Foundation
 /// budget is the guard for dense speech, where fifteen minutes can still overflow the model's
 /// window.
 public enum TranscriptChunks {
-    /// - Returns: chunks in meeting order, each one whole reply lines joined by newlines, in the
-    ///   same form they have in the meeting file. Concatenating them with newlines reproduces
-    ///   `index.body` exactly — that is the property that guarantees nothing was dropped.
+    /// - Returns: chunks in meeting order, each one whole reply lines joined by newlines. Every
+    ///   reply in `index.lines` appears in exactly one chunk, in meeting order, and none is split
+    ///   across two — that is the property that guarantees nothing was dropped. This is not the
+    ///   same as reproducing `index.body` byte for byte: each line here is rebuilt from the
+    ///   parsed `timecode`, `speaker` and `text`, which `TranscriptIndex.parse` trims, while
+    ///   `body` keeps the raw source line untouched. A file with irregular whitespace — an extra
+    ///   space after `]`, two spaces after the speaker's colon, a trailing space — round-trips to
+    ///   text that reads the same but is not necessarily identical to `index.body`.
     public static func split(
         _ index: TranscriptIndex,
         maxSeconds: TimeInterval,

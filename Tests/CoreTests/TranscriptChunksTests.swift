@@ -75,3 +75,34 @@ private func index(_ lines: [(TimeInterval, String)]) -> TranscriptIndex {
     let rejoined = chunks.joined(separator: "\n")
     #expect(rejoined == source.body)
 }
+
+// The `index()` helper above renders lines with the same template `split` uses internally, so
+// `everyReplyEndsUpInExactlyOneChunk` cannot tell a byte-exact reproduction of `index.body` from
+// one that merely reads the same. This test parses a hand-written file with irregular
+// whitespace — the kind hand-edited speaker labels introduce — where `TranscriptIndex.parse`
+// trims the parsed fields but `body` keeps the raw source line, so byte-exact reproduction does
+// not hold. What does hold, and is what this pins: every reply survives once, none merged or
+// dropped.
+@Test func everyReplySurvivesIrregularWhitespace() {
+    // Built from an array, not a triple-quoted literal, so the trailing space on the third line
+    // is an explicit character rather than whitespace an editor could silently trim away.
+    let markdown = [
+        "## Транскрипт",
+        "",
+        "[00:00:00]  Я: раз",  // extra space after "]"
+        "[00:13:20] Я:  два",  // two spaces after the speaker's colon
+        "[00:31:40] Я: три" + " ",  // trailing space
+    ].joined(separator: "\n")
+    let source = TranscriptIndex.parse(markdown)
+    #expect(source.lines.count == 3)
+
+    let chunks = TranscriptChunks.split(source, maxSeconds: 900, maxCharacters: 100_000)
+
+    let replyLineCount = chunks.reduce(0) { $0 + $1.components(separatedBy: "\n").count }
+    #expect(replyLineCount == source.lines.count)
+
+    for line in source.lines {
+        let containingChunks = chunks.filter { $0.contains(line.text) }
+        #expect(containingChunks.count == 1)
+    }
+}
