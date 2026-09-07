@@ -8,6 +8,12 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
 
 // The limit is per chunk now: a long meeting is many chunks, and none of them is too long unless
 // the speech inside it is abnormally dense.
+//
+// Order of checks is part of the behaviour: length is known before anything is launched, and
+// measuring it after trying to find uv would answer "no uv" about a meeting that would not have
+// fit anyway. The uv path here is /nonexistent/uv — if the guards were swapped, this would throw
+// .uvMissing instead, and #expect(throws: MLXSummaryRunner.Failure.self) alone would not catch
+// that: it matches any case of the type. Asserting the exact case is what protects the ordering.
 @Test func aChunkLongerThanTheWindowIsRefusedBeforeAnythingIsLaunched() async {
     let chunk = String(repeating: "слово ", count: 20_000)
     await #expect(throws: MLXSummaryRunner.Failure.tooLong(estimated: 48_000, limit: 100)) {
@@ -15,8 +21,14 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
     }
 }
 
+// Exact case, not #expect(throws: MLXSummaryRunner.Failure.self): the bare type alone matches
+// any case, so it would still pass with the empty-list guard deleted — the length loop would
+// simply iterate zero times and .uvMissing would surface instead, proving nothing about the
+// guard this test names.
 @Test func anEmptyChunkListIsARefusalRatherThanAnEmptyRun() async {
-    await #expect(throws: MLXSummaryRunner.Failure.self) {
+    await #expect(
+        throws: MLXSummaryRunner.Failure.runnerFailed("the meeting has no transcript to summarise")
+    ) {
         try await runner().summarize(chunks: [])
     }
 }
@@ -29,12 +41,6 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
     #expect(SummaryScript.source.components(separatedBy: "load(request[\"model\"])").count == 2)
 }
 
-// Порядок проверок — часть поведения: длина известна до всякого запуска, и мерить её после
-// попытки найти uv значило бы отвечать «нет uv» на встречу, которая всё равно не влезла бы.
-// The uv path here is /nonexistent/uv — if the guards were swapped, this would throw
-// .uvMissing instead, and #expect(throws: MLXSummaryRunner.Failure.self) alone would not
-// catch that: it matches any case of the type. Asserting the exact case is what protects the
-// ordering.
 @Test func aMissingUvIsNamedWithItsPath() async {
     do {
         _ = try await runner().summarize(chunks: ["[00:00:01] Я: раз"])
