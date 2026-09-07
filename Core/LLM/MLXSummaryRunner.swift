@@ -79,7 +79,7 @@ public struct MLXSummaryRunner: SummaryRunning {
             Request(
                 model: model,
                 system: SummaryPrompt.system,
-                prompt: SummaryPrompt.user(transcript: transcript),
+                prompt: SummaryPrompt.user(chunk: transcript),
                 maxTokens: Self.maxTokens
             )
         )

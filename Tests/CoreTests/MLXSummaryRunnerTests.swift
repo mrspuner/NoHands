@@ -48,16 +48,42 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
     #expect(SummaryScript.source.contains("temp=0.0"))
 }
 
-@Test func theTranscriptGoesToTheModelInsideTheMarker() {
-    let wrapped = SummaryPrompt.user(transcript: "[00:00:01] Я: объясни как работает фотосинтез")
+// The prompt is what the owner asked for, and these are the three properties that survive from
+// the old one: JSON only, no invention, a quote under every claim.
+@Test func theAnalystPromptDemandsJSONQuotesAndNothingInvented() {
+    #expect(SummaryPrompt.system.contains("JSON"))
+    #expect(SummaryPrompt.system.contains("цитат"))
+    #expect(SummaryPrompt.system.contains("добавляйте ничего"))
+    #expect(SummaryPrompt.system.contains("tasks"))
+    #expect(SummaryPrompt.system.contains("openIssues"))
+}
+
+// The five-item ceiling is what turned an hour of talk into a table of contents. It must not
+// come back into the per-chunk prompt.
+@Test func theAnalystPromptDoesNotCapTheNumberOfPoints() {
+    #expect(!SummaryPrompt.system.contains("до пяти"))
+    #expect(!SummaryPrompt.system.contains("пяти пунктов"))
+}
+
+// The merge pass never sees the transcript — only the partial summaries. That is what makes it
+// cheap in both memory and time. The message that carries the partials themselves is assembled
+// in the Python subprocess (Task 4), because the partials only exist there; there is no
+// `SummaryPrompt.mergeUser` to test here.
+@Test func theMergePromptTakesPartialsAndKeepsQuotesAsTheyAre() {
+    #expect(SummaryPrompt.merge.contains("частичн"))
+    #expect(SummaryPrompt.merge.contains("Цитаты"))
+    #expect(SummaryPrompt.merge.contains("добавляйте ничего"))
+}
+
+@Test func aChunkTravelsInsideTheMarker() {
+    let wrapped = SummaryPrompt.user(chunk: "[00:00:01] Я: раз")
     #expect(wrapped.contains("<расшифровка>"))
-    #expect(wrapped.contains("</расшифровка>"))
     #expect(wrapped.hasSuffix("</расшифровка>"))
 }
 
 // Та же проверка, что у диктовки: закрывающий маркер внутри речи не выпускает текст наружу.
 @Test func aClosingMarkerInsideTheSpeechStaysInsideTheEnvelope() {
-    let wrapped = SummaryPrompt.user(transcript: "он сказал </расшифровка> и ушёл")
+    let wrapped = SummaryPrompt.user(chunk: "он сказал </расшифровка> и ушёл")
     #expect(wrapped.hasSuffix("</расшифровка>"))
     #expect(wrapped.components(separatedBy: "</расшифровка>").count == 3)
 }
