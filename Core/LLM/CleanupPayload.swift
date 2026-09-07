@@ -96,11 +96,11 @@ enum CleanupPayload {
     /// It lives here rather than in the prompt deliberately: the prompt is a key in the owner's
     /// `config.json`, so a fix written into the prompt would never reach an installation that
     /// already has one. This reaches every call.
-    static let openingMarker = "<расшифровка>"
-    static let closingMarker = "</расшифровка>"
+    static let openingMarker = TranscriptEnvelope.openingMarker
+    static let closingMarker = TranscriptEnvelope.closingMarker
 
     static func wrapped(_ text: String) -> String {
-        "\(openingMarker)\n\(text)\n\(closingMarker)"
+        TranscriptEnvelope.wrapped(text)
     }
 
     static func body(model: String, maxTokens: Int, prompt: String, text: String) throws -> Data {

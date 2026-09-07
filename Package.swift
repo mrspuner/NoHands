@@ -20,7 +20,11 @@ let package = Package(
             dependencies: [
                 .product(name: "FluidAudio", package: "FluidAudio"),
             ],
-            path: "Core"
+            path: "Core",
+            // The summary script travels with the module so tests, the CLI and the app all find
+            // it the same way — `Bundle.module`. `Scripts/make-app.sh` copies the generated
+            // bundle into the app, or the built application would be the only one that cannot.
+            resources: [.copy("LLM/summarize.py")]
         ),
         .target(
             name: "Dictation",
