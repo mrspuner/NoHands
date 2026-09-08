@@ -75,9 +75,20 @@ public final class InboxCoordinator {
     private func perform() async {
         let source = readSource()
         let at = now()
+        var createdFolder: URL?
         do {
             let text = try await capture()
+
+            // Cancellation is cooperative: `Task.cancel()` alone does not stop work already in
+            // flight, and `InboxCapture.selection()`'s own wait loop swallows the resulting
+            // `CancellationError`. This is the one place after the only suspension point that can
+            // still honour it before any side effect happens — a superseded capture must be
+            // silent, so it returns rather than falling through to create a folder, touch state,
+            // or play anything.
+            guard !Task.isCancelled else { return }
+
             let folder = try InboxFolder.create(in: root, capturedAt: at, slug: source.slug)
+            createdFolder = folder
             let note = InboxNote.render(
                 capturedAt: at,
                 appName: source.appName,
@@ -97,12 +108,15 @@ public final class InboxCoordinator {
             play(.done)
             announce()
         } catch {
-            // Nothing is created on the way out. The folder is made only once there is text to
-            // put in it, so a refusal cannot leave an empty one — and an empty one would look
-            // exactly like a capture that happened.
-            play(.error)
-            showPanel(.failure(error.localizedDescription))
-            hidePanel(Self.failureDwell)
+            // Nothing is left behind on the way out. The folder is made only once there is text
+            // to put in it; if it was created but the write after it failed, remove it here too
+            // — `target` is not set until after the write succeeds, so no dropped file can have
+            // landed inside it yet, which is what makes the removal safe. An empty folder would
+            // look exactly like a capture that happened.
+            if let createdFolder {
+                try? FileManager.default.removeItem(at: createdFolder)
+            }
+            reportFailure(error)
         }
     }
 
@@ -118,13 +132,18 @@ public final class InboxCoordinator {
             }
             play(.done)
         } catch {
-            play(.error)
-            showPanel(.failure(error.localizedDescription))
-            hidePanel(Self.failureDwell)
+            reportFailure(error)
             return true
         }
         announce()
         return true
+    }
+
+    /// Reports a refusal the same way regardless of which step it broke in: sound, panel, dwell.
+    private func reportFailure(_ error: Error) {
+        play(.error)
+        showPanel(.failure(error.localizedDescription))
+        hidePanel(Self.failureDwell)
     }
 
     /// Shows the strip and re-arms both clocks — the panel's and the target's — so a file

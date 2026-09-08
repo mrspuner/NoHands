@@ -18,6 +18,10 @@ private final class Harness {
     let root: URL
     var text: Result<String, Error> = .success("> Натали:\nтекст")
     var source = InboxSource(appName: "Telegram", bundleID: "ru.keepcoder.Telegram", url: nil)
+    /// How long the `capture` closure suspends before answering. Zero by default, so every
+    /// existing test's closure returns without ever yielding. Set to simulate a capture still in
+    /// flight when a second `captureRequested()` supersedes it.
+    var captureDelay: Duration = .zero
     private(set) var shown: [InboxPanelState] = []
     private(set) var hidden: [TimeInterval] = []
     private(set) var sounds: [InboxCoordinator.Sound] = []
@@ -31,6 +35,9 @@ private final class Harness {
             root: root,
             capture: { [weak self] in
                 guard let self else { throw InboxCapture.Failure.nothingCopied }
+                if self.captureDelay > .zero {
+                    try? await Task.sleep(for: self.captureDelay)
+                }
                 return try self.text.get()
             },
             readSource: { [weak self] in
@@ -149,4 +156,62 @@ private final class Harness {
     await harness.capture()
     await harness.capture()
     #expect(harness.folders.count == 2)
+}
+
+// `captureRequested()`'s own doc comment promises the first hotkey is "already history" once a
+// second one arrives. `Task.cancel()` alone does not make that true — this pins the promise down.
+@MainActor
+@Test func aSupersededCaptureLeavesNothingBehind() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let harness = Harness(root: root)
+    harness.captureDelay = .milliseconds(50)
+
+    harness.coordinator.captureRequested()
+    harness.coordinator.captureRequested()
+    await harness.coordinator.settle()
+    // The orphaned first task is never awaited directly — nothing holds its handle once the
+    // second `captureRequested()` overwrites `work` — so give it time to finish on its own.
+    try await Task.sleep(for: .milliseconds(100))
+
+    #expect(harness.folders.count == 1)
+    #expect(harness.shown.count == 1)
+    if case .captured = harness.shown.first {} else {
+        Issue.record("ожидался единственный .captured от второго захвата: \(harness.shown)")
+    }
+    #expect(harness.sounds == [.done])
+}
+
+// A drop is a promise of more time, not just of a copied file: the design lets a file dropped at
+// the end of the window buy another one for the next file beside it.
+//
+// Margins are wide (a 500 ms window, not the 50 ms other tests use) because this one, unlike
+// `aDropAfterTheTargetClosedIsRefused`, has to land the second drop inside a narrow band — past
+// the original window's expiry, short of the re-armed one — rather than merely after both. Under
+// the full suite's parallel load a tighter margin was observed to flake.
+@MainActor
+@Test func aSuccessfulDropRearmsTheTargetsOwnExpiry() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let harness = Harness(root: root, dropWindow: 0.5)
+    await harness.capture()
+
+    let elsewhere = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: elsewhere) }
+
+    try await Task.sleep(for: .milliseconds(200))
+    let first = elsewhere.appendingPathComponent("первый.txt")
+    try "данные".write(to: first, atomically: true, encoding: .utf8)
+    #expect(harness.coordinator.drop([first]))
+
+    // Cumulative 600 ms: past the original 500 ms window, but the drop above re-armed it for
+    // another 500 ms starting from its own moment (200 + 500 = 700 ms).
+    try await Task.sleep(for: .milliseconds(400))
+    let second = elsewhere.appendingPathComponent("второй.txt")
+    try "данные".write(to: second, atomically: true, encoding: .utf8)
+    #expect(harness.coordinator.drop([second]))
+
+    let folder = root.appendingPathComponent(harness.folders[0])
+    #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("первый.txt").path))
+    #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("второй.txt").path))
 }
