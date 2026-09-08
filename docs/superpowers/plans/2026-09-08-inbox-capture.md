@@ -1804,8 +1804,8 @@ git commit -m "Приложение собирает координатор ло
         }
         let effects = subject.handle(.captureDown)
         #expect(effects == [.play(.error), .show(.captureRefused), .hidePanel(after: 3)],
-                "состояние \(state)")
-        #expect(!effects.contains(.capture), "состояние \(state)")
+                "state \(state)")
+        #expect(!effects.contains(.capture), "state \(state)")
     }
 }
 
