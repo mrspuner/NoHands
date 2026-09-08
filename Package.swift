@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .library(name: "Core", targets: ["Core"]),
         .library(name: "Dictation", targets: ["Dictation"]),
+        .library(name: "Inbox", targets: ["Inbox"]),
         .library(name: "Meetings", targets: ["Meetings"]),
         .executable(name: "nohands", targets: ["CLI"]),
         .executable(name: "NoHandsApp", targets: ["App"]),
@@ -28,6 +29,11 @@ let package = Package(
             path: "Features/Dictation"
         ),
         .target(
+            name: "Inbox",
+            dependencies: ["Core"],
+            path: "Features/Inbox"
+        ),
+        .target(
             name: "Meetings",
             dependencies: ["Core"],
             path: "Features/Meetings"
@@ -39,7 +45,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "App",
-            dependencies: ["Core", "Dictation", "Meetings"],
+            dependencies: ["Core", "Dictation", "Inbox", "Meetings"],
             path: "App",
             // Info.plist belongs to the bundle the script assembles, not to the binary; without
             // this SwiftPM treats it as an unhandled resource and warns on every build.
@@ -54,6 +60,11 @@ let package = Package(
             name: "DictationTests",
             dependencies: ["Dictation"],
             path: "Tests/DictationTests"
+        ),
+        .testTarget(
+            name: "InboxTests",
+            dependencies: ["Inbox"],
+            path: "Tests/InboxTests"
         ),
         .testTarget(
             name: "MeetingsTests",
