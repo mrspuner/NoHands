@@ -303,8 +303,9 @@ private struct InboxContent: View {
         var parts = ["во входящих"]
         if let app { parts.append(app) }
         parts.append("строк: \(lines)")
-        // Никаких «1 файл / 2 файла / 5 файлов»: в панели уже принято писать «N мин», а не
-        // склонять, и по той же причине — форма счётного слова не стоит ветки в интерфейсе.
+        // No "1 файл / 2 файла / 5 файлов" branching: the panel already writes "N мин" rather
+        // than declining, and for the same reason — a counted noun's grammatical form is not
+        // worth a branch in the interface.
         parts.append(attachments == 0 ? "перетащи файлы сюда" : "файлов: \(attachments)")
         return parts.joined(separator: " · ")
     }

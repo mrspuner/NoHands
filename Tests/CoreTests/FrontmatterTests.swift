@@ -6,8 +6,8 @@ import Testing
     #expect(Frontmatter.quoted("Telegram") == "\"Telegram\"")
 }
 
-// Настоящее имя приложения ничем не ограничено: `Яндекс Телемост` приехало в архив фазы 2б
-// именно так, с пробелом.
+// An application's real display name is unconstrained: `Яндекс Телемост` reached the phase 2б
+// archive exactly like that, with a space.
 @Test func aNameWithASpaceStaysOneValue() {
     #expect(Frontmatter.quoted("Яндекс Телемост") == "\"Яндекс Телемост\"")
 }
@@ -16,8 +16,8 @@ import Testing
     #expect(Frontmatter.quoted("a\"b\\c") == "\"a\\\"b\\\\c\"")
 }
 
-// Перевод строки внутри значения разорвал бы блок `---` для Obsidian и для всего, что этот
-// файл потом перечитывает.
+// A newline inside the value would break the `---` block, for Obsidian and for everything
+// else that reads this file back later.
 @Test func controlCharactersAreDropped() {
     #expect(Frontmatter.quoted("a\nb\tc") == "\"abc\"")
 }
