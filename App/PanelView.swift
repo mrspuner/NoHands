@@ -132,10 +132,26 @@ struct PanelView: View {
 /// which is whether this is being recorded at all. The two short-lived notices expand as well:
 /// they are on screen for five seconds and have to be readable in them.
 private struct MeetingContent: View {
-    /// Held, not observed: `PanelView` above already redraws on every change, and the one
-    /// thing read out of the model here — where a pressed button sends its answer — is not
-    /// published and must be read at the moment of the press rather than captured earlier.
-    let model: PanelModel
+    /// Observed, and it has to be. This was `let model: PanelModel` — held, not observed — and
+    /// the comment justifying that was true when it was written: the only thing read out of the
+    /// model here was `onMeetingAnswer`, which is not published, so there was nothing to observe.
+    ///
+    /// Then published warnings started being read below, and the arrangement stopped working
+    /// without anything failing. `PanelView` above does redraw on every change, but it hands this
+    /// view the same model reference and the same `state`, so SwiftUI finds the value unchanged
+    /// and never re-runs this body. Measured on the machine, with no input device and a recording
+    /// running: the coordinator raised the warning, the model carried it, the timer went on
+    /// ticking from `Elapsed`'s own state — and «микрофон молчит» never appeared once. The
+    /// narrowband warning on a meeting had been dead the same way since the day it was added.
+    ///
+    /// No test can hold this down: there is no test target on `App`, and a body SwiftUI declines
+    /// to re-run fails nothing. What holds it is the rule — a view reading anything published
+    /// observes the object it reads it from — and this comment, so the next person to write
+    /// "held, not observed" here knows what it costs.
+    ///
+    /// `onMeetingAnswer` is still read at the moment of the press rather than captured earlier;
+    /// observing the model does not change that.
+    @ObservedObject var model: PanelModel
     let state: MeetingPanelState
 
     var body: some View {
@@ -204,6 +220,7 @@ private struct MeetingContent: View {
                 .frame(width: 7, height: 7)
             Elapsed(since: since)
             narrowband
+            microphoneSilent
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -224,6 +241,18 @@ private struct MeetingContent: View {
         }
     }
 
+    /// Louder than the narrow-band warning, and deliberately: a narrow band costs quality, a
+    /// silent track costs the recording. It stays up for the length of the recording — the owner
+    /// is the only one who can plug a microphone in while that still saves something.
+    @ViewBuilder private var microphoneSilent: some View {
+        if model.meetingMicrophoneSilent {
+            Text("микрофон молчит")
+                .font(.system(size: 11))
+                .foregroundStyle(.red)
+                .lineLimit(1)
+        }
+    }
+
     private func prompt(
         _ text: String,
         yes: (String, MeetingCoordinator.Answer),
@@ -239,6 +268,7 @@ private struct MeetingContent: View {
                 .lineLimit(2)
             if warnAboutTheBand {
                 narrowband
+                microphoneSilent
             }
             PromptButton(title: yes.0, prominent: true) { model.onMeetingAnswer?(yes.1) }
             PromptButton(title: no.0, prominent: false) { model.onMeetingAnswer?(no.1) }

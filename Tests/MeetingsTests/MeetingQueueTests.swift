@@ -25,7 +25,11 @@ private struct Fixture {
 
 /// A meeting folder with real one-second WAV files: the pipeline reads duration from disk rather
 /// than being told it, so there is nothing to fake.
-private func makeMeetingFolder(name: String = "2026-09-04-1053-telemost") throws -> Fixture {
+private func makeMeetingFolder(
+    name: String = "2026-09-04-1053-telemost",
+    trailingMicrophoneSilenceSeconds: TimeInterval? = nil,
+    microphoneSawAudio: Bool? = nil
+) throws -> Fixture {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("mq-\(UUID().uuidString)")
     let archive = root
     let queue = root.appendingPathComponent(".queue")
@@ -54,7 +58,9 @@ private func makeMeetingFolder(name: String = "2026-09-04-1053-telemost") throws
         startedAt: Date(timeIntervalSince1970: 1_788_500_000), stoppedAt: nil,
         app: MeetingMetadata.App(bundleID: "ru.yandex.desktop.telemost", name: "Телемост", slug: "telemost"),
         sampleRate: 16000, channelCount: 1, inputDevice: nil, stopReason: .manual,
-        excludedApps: [], gaps: [], systemStartedAt: 100, microphoneStartedAt: 100
+        excludedApps: [], gaps: [], systemStartedAt: 100, microphoneStartedAt: 100,
+        trailingMicrophoneSilenceSeconds: trailingMicrophoneSilenceSeconds,
+        microphoneSawAudio: microphoneSawAudio
     )
     try metadata.write(to: folder.appendingPathComponent(MeetingMetadata.fileName))
     return Fixture(queue: queue, archive: archive, folder: folder)
@@ -104,6 +110,62 @@ private func makeQueue(
     #expect(!fm.fileExists(atPath: fixture.folder.appendingPathComponent("system.wav").path))
     #expect(MeetingFolderState.of(fixture.folder) != .waiting)
     #expect(box.all.first?.failure == nil)
+}
+
+// Число из `meeting.json` обязано доехать до архива: `sweep` сносит папку очереди целиком через
+// `audioRetentionDays`, а вопрос «почему в файле нет «Я»» задают позже.
+@Test func aSilentMicrophoneTrackIsExplainedInTheArchivedFile() async throws {
+    let fixture = try makeMeetingFolder(
+        trailingMicrophoneSilenceSeconds: 600, microphoneSawAudio: true
+    )
+    defer { try? FileManager.default.removeItem(at: fixture.archive) }
+    let transcriber = StubTranscriber(words: ["system.wav": [word("привет", 3)]])
+    let queue = makeQueue(fixture, transcriber: transcriber) { _ in }
+
+    await queue.enqueue(fixture.folder)
+
+    let text = try String(
+        contentsOf: fixture.archive.appendingPathComponent("2026-09-04-1053-telemost.md"),
+        encoding: .utf8
+    )
+    #expect(text.contains(#"microphone: "замолчал в конце — 10 мин тишины, дорожка неполная""#))
+}
+
+// Второй признак из `meeting.json` обязан доехать до архива вместе с числом: без него очередь
+// выбирает формулировку из одного числа, а одного числа хватает ровно на ту ложь, ради которой
+// заведена ветка, — «замолчал в конце» о дорожке, которой не было вовсе.
+@Test func aTrackThatNeverCarriedAudioIsCalledEmptyInTheArchivedFile() async throws {
+    let fixture = try makeMeetingFolder(
+        trailingMicrophoneSilenceSeconds: 5580, microphoneSawAudio: false
+    )
+    defer { try? FileManager.default.removeItem(at: fixture.archive) }
+    let transcriber = StubTranscriber(words: ["system.wav": [word("привет", 3)]])
+    let queue = makeQueue(fixture, transcriber: transcriber) { _ in }
+
+    await queue.enqueue(fixture.folder)
+
+    let text = try String(
+        contentsOf: fixture.archive.appendingPathComponent("2026-09-04-1053-telemost.md"),
+        encoding: .utf8
+    )
+    #expect(text.contains(#"microphone: "молчал всю запись — дорожка пустая""#))
+}
+
+// Тот же порог, что у панели: разрыв короче — это разрыв между буферами, и утверждать о нём в
+// архиве нечего.
+@Test func aGapShorterThanTheThresholdSaysNothingInTheArchivedFile() async throws {
+    let fixture = try makeMeetingFolder(trailingMicrophoneSilenceSeconds: 9)
+    defer { try? FileManager.default.removeItem(at: fixture.archive) }
+    let transcriber = StubTranscriber(words: ["system.wav": [word("привет", 3)]])
+    let queue = makeQueue(fixture, transcriber: transcriber) { _ in }
+
+    await queue.enqueue(fixture.folder)
+
+    let text = try String(
+        contentsOf: fixture.archive.appendingPathComponent("2026-09-04-1053-telemost.md"),
+        encoding: .utf8
+    )
+    #expect(!text.contains("microphone:"))
 }
 
 @Test func quietMicrophoneUtterancesDoNotReachTheFile() async throws {

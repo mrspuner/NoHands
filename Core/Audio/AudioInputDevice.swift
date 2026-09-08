@@ -8,6 +8,7 @@ import Foundation
 /// yields silence that looks like a recognition failure.
 public struct AudioInputDevice: Sendable {
     public let name: String
+    public let uid: String
     public let sampleRate: Double
     public let channelCount: UInt32
 
@@ -24,8 +25,9 @@ public struct AudioInputDevice: Sendable {
     /// Public so a test outside this module can stand in a device of its own. Nothing in the
     /// application builds one: `current()` is the only honest source, and a device described by
     /// hand would be a description of a microphone nobody is recording through.
-    public init(name: String, sampleRate: Double, channelCount: UInt32) {
+    public init(name: String, uid: String, sampleRate: Double, channelCount: UInt32) {
         self.name = name
+        self.uid = uid
         self.sampleRate = sampleRate
         self.channelCount = channelCount
     }
@@ -37,8 +39,14 @@ public struct AudioInputDevice: Sendable {
         else {
             return nil
         }
+        // Empty rather than fatal, unlike the three above. The uid is wanted by one caller — the
+        // meeting rebind — and `MicrophoneRecorder` turns a `nil` from here into
+        // `RecordingError.noInputDevice` and refuses to record. A device CoreAudio declines to
+        // name is still a microphone, and dictation must not stop because of a property it never
+        // asked for. `MeetingCoordinator.checkMicrophone` skips the rebind on an empty one.
         return AudioInputDevice(
             name: name,
+            uid: deviceUID(deviceID) ?? "",
             sampleRate: format.mSampleRate,
             channelCount: format.mChannelsPerFrame
         )
@@ -59,17 +67,29 @@ public struct AudioInputDevice: Sendable {
         return deviceID
     }
 
-    private static func deviceName(_ deviceID: AudioDeviceID) -> String? {
-        var name: CFString = "" as CFString
+    private static func readCFStringProperty(
+        _ deviceID: AudioDeviceID, selector: AudioObjectPropertySelector
+    ) -> String? {
+        var value: CFString = "" as CFString
         var size = UInt32(MemoryLayout<CFString>.size)
         var address = AudioObjectPropertyAddress(
-            mSelector: kAudioObjectPropertyName,
+            mSelector: selector,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &name)
+        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &value)
         guard status == noErr else { return nil }
-        return name as String
+        return value as String
+    }
+
+    private static func deviceName(_ deviceID: AudioDeviceID) -> String? {
+        readCFStringProperty(deviceID, selector: kAudioObjectPropertyName)
+    }
+
+    /// What ScreenCaptureKit binds a microphone to — `kAudioDevicePropertyDeviceUID`, the same
+    /// string `SCStreamConfiguration.microphoneCaptureDeviceID` takes.
+    private static func deviceUID(_ deviceID: AudioDeviceID) -> String? {
+        readCFStringProperty(deviceID, selector: kAudioDevicePropertyDeviceUID)
     }
 
     private static func streamFormat(_ deviceID: AudioDeviceID) -> AudioStreamBasicDescription? {

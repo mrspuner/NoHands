@@ -82,6 +82,35 @@ public struct MeetingMetadata: Equatable, Sendable, Codable {
     public var systemStartedAt: Double?
     public var microphoneStartedAt: Double?
 
+    /// How long the microphone track had been delivering nothing but digital zeroes when the
+    /// recording ended, or `nil` for a recording that ended before this was measured.
+    ///
+    /// Trailing silence, and the key says so: any sample that is not exactly zero restarts the
+    /// count, so this is how the track *ended* and never how much of it was empty. The Swift
+    /// comment used to be the only place that said it, and this folder is read as JSON.
+    ///
+    /// Not the same question as `inputDevice`: with no input device ScreenCaptureKit still hands
+    /// over a full-rate stream of zeroes, so a file can carry a perfectly good device and an
+    /// empty track. This is the number that explains a transcript with no "Я" in it — while this
+    /// folder lasts, which is `audioRetentionDays`; the archive's own front matter is what still
+    /// answers the question a year later.
+    public var trailingMicrophoneSilenceSeconds: TimeInterval?
+
+    /// Whether the microphone track ever carried a sample that was not exactly zero, or `nil` for
+    /// a recording that ended before this was measured.
+    ///
+    /// The other half of a sentence `trailingMicrophoneSilenceSeconds` cannot finish on its own.
+    /// That number says how long the track was quiet at the end; this says whether it ever
+    /// carried anything at all, and only the two together decide which is true — a track that was
+    /// never recorded into ("пустая"), or a good track whose last minutes are quiet
+    /// ("неполная"). Ten minutes of trailing zeroes look identical in both cases and mean
+    /// opposite things, so the archive's own front matter reads both keys and says neither when
+    /// this one is missing.
+    ///
+    /// Missing rather than `false` on an old folder, deliberately: `false` is the claim "the
+    /// track is empty", and it is exactly the claim nobody made when that folder was written.
+    public var microphoneSawAudio: Bool?
+
     public init(
         startedAt: Date,
         stoppedAt: Date?,
@@ -93,7 +122,9 @@ public struct MeetingMetadata: Equatable, Sendable, Codable {
         excludedApps: [String],
         gaps: [Gap],
         systemStartedAt: Double?,
-        microphoneStartedAt: Double?
+        microphoneStartedAt: Double?,
+        trailingMicrophoneSilenceSeconds: TimeInterval?,
+        microphoneSawAudio: Bool?
     ) {
         self.startedAt = startedAt
         self.stoppedAt = stoppedAt
@@ -106,6 +137,8 @@ public struct MeetingMetadata: Equatable, Sendable, Codable {
         self.gaps = gaps
         self.systemStartedAt = systemStartedAt
         self.microphoneStartedAt = microphoneStartedAt
+        self.trailingMicrophoneSilenceSeconds = trailingMicrophoneSilenceSeconds
+        self.microphoneSawAudio = microphoneSawAudio
     }
 
     public static let fileName = "meeting.json"

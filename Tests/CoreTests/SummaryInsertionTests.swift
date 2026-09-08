@@ -51,6 +51,29 @@ private let decisions = [
     #expect(result.contains("app: \"Яндекс Телемост\""))
 }
 
+// Строка про микрофон — единственное, что через год объясняет файл без реплик «Я», и конспект
+// приходит поверх неё вторым проходом, иногда дважды. Шапка ищется по закрывающему `---`, а
+// значение экранировано и переносов не содержит, так что ключ проходит насквозь — но проверяется
+// это здесь, а не рассуждением: `replace` уже однажды снесло `---` у файла без шапки.
+@Test func theMicrophoneLineSurvivesInsertionAndReplacement() throws {
+    let withMicrophone = file.replacingOccurrences(
+        of: "app: \"Яндекс Телемост\"",
+        with: "app: \"Яндекс Телемост\"\nmicrophone: \"молчал всю запись — дорожка пустая\""
+    )
+    let inserted = try SummaryInsertion.apply(
+        summary: summary, decisions: decisions, tasks: [], to: withMicrophone,
+        named: "тест.md", mode: .insert
+    )
+    #expect(inserted.contains(#"microphone: "молчал всю запись — дорожка пустая""#))
+
+    let replaced = try SummaryInsertion.apply(
+        summary: summary, decisions: decisions, tasks: [], to: inserted,
+        named: "тест.md", mode: .replace
+    )
+    #expect(replaced.contains(#"microphone: "молчал всю запись — дорожка пустая""#))
+    #expect(replaced.contains("## Транскрипт"))
+}
+
 @Test func noDecisionsMeansNoDecisionsSection() throws {
     let result = try SummaryInsertion.apply(
         summary: summary, decisions: [], tasks: [], to: file, named: "тест.md", mode: .insert

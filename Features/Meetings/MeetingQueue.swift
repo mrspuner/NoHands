@@ -286,11 +286,24 @@ public actor MeetingQueue {
         // already in the archive and the raw audio is still on disk.
         try fileManager.createDirectory(at: archive, withIntermediateDirectories: true)
         let transcript = archive.appendingPathComponent(folder.lastPathComponent + ".md")
+        // The threshold is applied here rather than in the renderer because it is the panel's own
+        // — the same ten seconds that decide whether the owner is warned while the meeting runs,
+        // so the archive and the panel never disagree about whether a track was silent. Below it
+        // the archive says nothing: a gap that short is a gap between buffers.
+        let silence = metadata.trailingMicrophoneSilenceSeconds
         let markdown = MeetingMarkdown.render(
             transcript: merged,
             startedAt: metadata.startedAt,
             durationSeconds: duration,
-            appName: metadata.app?.name
+            appName: metadata.app?.name,
+            trailingMicrophoneSilenceSeconds:
+                (silence ?? 0) >= MeetingCoordinator.microphoneSilenceThreshold ? silence : nil,
+            // Passed through untouched: the number above decides whether the archive says
+            // anything about the microphone at all, and this decides which of the two things it
+            // says. No threshold of its own, and no default — `nil`, a folder recorded before
+            // this was measured, is a third answer the renderer needs to see rather than a
+            // missing value to fill in here.
+            microphoneSawAudio: metadata.microphoneSawAudio
         )
         try Data(markdown.utf8).write(to: transcript)
 

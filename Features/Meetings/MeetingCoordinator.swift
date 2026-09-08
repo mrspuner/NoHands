@@ -31,6 +31,18 @@ public final class MeetingCoordinator {
     /// and said once: repeating it every second would bury the panel in the same sentence.
     static let monitorFailureLimit = 10
 
+    /// How long the microphone track must be exactly zero before it is called silent. Long
+    /// enough to outlast any gap between buffers, short enough that the owner can still fix it.
+    ///
+    /// `nonisolated` because `MeetingQueue` reads it too, from its own actor: the archive decides
+    /// whether a track was silent by the same number the panel uses while the meeting is running,
+    /// so the file and the warning can never disagree.
+    nonisolated static let microphoneSilenceThreshold: TimeInterval = 10
+
+    /// Not more often than this, and not more than `rebindLimit` times per recording.
+    static let rebindCooldown: TimeInterval = 10
+    static let rebindLimit = 3
+
     /// The folder name of a recording started by hand while nothing recognisable was holding the
     /// audio devices.
     private static let manualSlug = "manual"
@@ -43,6 +55,12 @@ public final class MeetingCoordinator {
     /// fine. A fact rather than a sentence, exactly as `DictationCoordinator` reports it: the
     /// wording belongs to the `App` target.
     private let onNarrowbandInput: (Double?) -> Void
+    /// Whether the microphone track is delivering nothing but digital zeroes right now.
+    ///
+    /// Separate from `onNarrowbandInput` rather than folded into it: a narrow band is a warning
+    /// about quality and a silent track is a warning about loss, and the two are true at
+    /// different times — AirPods produce the first without the second.
+    private let onMicrophoneSilent: (Bool) -> Void
     private let onDictationBlocked: (Bool) -> Void
     private let isDictating: () -> Bool
     private let readInputDevice: () -> AudioInputDevice?
@@ -60,9 +78,21 @@ public final class MeetingCoordinator {
     /// `start` would tear down a stream that does not exist yet and leave the one still being
     /// built with nobody to close it. `DictationCoordinator` documents the same hazard.
     private var captureTask: Task<Void, Never>?
+    /// What closing a capture leaves for whoever decides the folder's fate. Two fields rather
+    /// than one string: a failure is an `Error` and stays English, while a silent track is a
+    /// sentence for a person — the same split `MeetingNotice` already makes.
+    private struct Closed {
+        var failure: String?
+        var microphoneSilentSeconds: TimeInterval
+        /// Whether the microphone track ever carried anything. Only meaningful alongside the
+        /// number above — see `keepDraft`, which needs both to choose between "empty" and
+        /// "incomplete".
+        var microphoneSawAudio: Bool
+    }
+
     /// The task that closes the capture and writes the final metadata, returning whatever went
     /// wrong. The hand-off waits for it and is what shows the failure — see `keepDraft`.
-    private var closing: Task<String?, Never>?
+    private var closing: Task<Closed, Never>?
     /// The task that renames or removes the folder once `closing` has finished.
     private var housekeeping: Task<Void, Never>?
 
@@ -79,6 +109,16 @@ public final class MeetingCoordinator {
     /// two apart; `stopCapture` documents the same hazard about metadata.
     private var liveCaptureID: Int?
     private var capturesStarted = 0
+
+    /// The task asking the capture how quiet the microphone is. One at a time: the poll fires
+    /// once a second and the question crosses an actor boundary, so a second one would queue
+    /// behind the first and answer about a moment that has passed.
+    private var microphoneCheck: Task<Void, Never>?
+    private var microphoneSilent = false
+    /// How many rebinds have been tried this recording, and when the last one was — both reset
+    /// in `stopCapture` so the next meeting starts with a full budget.
+    private var rebindAttempts = 0
+    private var lastRebindAt: Date?
 
     /// Drafts found on disk at startup, oldest first, waiting for the owner to say keep or
     /// delete. Emptied one at a time: each answer resolves the first and offers the next.
@@ -132,6 +172,7 @@ public final class MeetingCoordinator {
         showPanel: @escaping (MeetingPanelState) -> Void,
         hidePanel: @escaping (TimeInterval) -> Void,
         onNarrowbandInput: @escaping (Double?) -> Void,
+        onMicrophoneSilent: @escaping (Bool) -> Void,
         onDictationBlocked: @escaping (Bool) -> Void,
         isDictating: @escaping () -> Bool,
         readInputDevice: @escaping () -> AudioInputDevice? = AudioInputDevice.current,
@@ -146,6 +187,7 @@ public final class MeetingCoordinator {
         self.showPanel = showPanel
         self.hidePanel = hidePanel
         self.onNarrowbandInput = onNarrowbandInput
+        self.onMicrophoneSilent = onMicrophoneSilent
         self.onDictationBlocked = onDictationBlocked
         self.isDictating = isDictating
         self.readInputDevice = readInputDevice
@@ -277,8 +319,76 @@ public final class MeetingCoordinator {
         for match in matches {
             apply(.streamsChanged(app: match.app, input: match.input, output: match.output, at: now))
         }
+        checkMicrophone(now: now)
         apply(.tick(now))
         refreshOrphanPrompt(now: now)
+    }
+
+    private func checkMicrophone(now: Date) {
+        guard let capture, liveCaptureID != nil, microphoneCheck == nil else { return }
+        let device = readInputDevice()
+        microphoneCheck = Task { @MainActor [weak self] in
+            let silent = await capture.microphoneSilentSeconds() >= Self.microphoneSilenceThreshold
+            guard let self else { return }
+            // Cancellation here is cooperative: `stopCapture` cancelling this task does not stop
+            // the `await` above from resolving, only asks it to. A stale answer that resumes
+            // after the meeting it was asked about has already ended belongs to nothing — acting
+            // on it would report about a meeting that is over, and unconditionally nilling
+            // `microphoneCheck` below would erase the handle the *next* meeting's check just
+            // took, since a single tick is enough to start one — see `stopCapture`'s own comment.
+            guard !Task.isCancelled else { return }
+            // A rebind restarts the silence counter, which is right for the counter — it is about
+            // the binding that exists now — and wrong for the warning. For one cooldown after a
+            // rebind the counter reads zero whether or not any audio arrived, so taking the
+            // warning down on it is a false all-clear: the red line went out, came back ten
+            // seconds later, and did it up to three times over a track that never spoke and never
+            // would. Only silence is allowed to be said inside that window; the counter means
+            // something again once the cooldown is out, by which point it has either been reset
+            // by real audio or climbed back over the threshold.
+            if silent != microphoneSilent, silent || !withinRebindCooldown(now: now) {
+                microphoneSilent = silent
+                onMicrophoneSilent(silent)
+            }
+            // An empty uid is a device CoreAudio would not name — `AudioInputDevice.current`
+            // reports it rather than pretending there is no microphone, because that requirement
+            // belongs to this rebind alone and dictation must not be stopped by it. There is
+            // nothing to bind to, so the attempt is skipped rather than spent.
+            if silent, let device, !device.uid.isEmpty, mayRebind(now: now) {
+                rebindAttempts += 1
+                lastRebindAt = now
+                // A rebind that throws is not reported: `updateConfiguration` can fail for its
+                // own reasons — a stream that has already died, a device uid it refuses to bind
+                // to — and either way the panel is already saying the track is silent; a second
+                // complaint would replace the message that matters.
+                try? await capture.rebindMicrophone(to: device.uid)
+                // The tail stopped being synchronous the moment this await was added: the guard
+                // above only covered everything after it back when nothing between it and
+                // `microphoneCheck = nil` could suspend. `stopCapture` can now cancel this task
+                // while it sits inside the rebind, having already cleared `microphoneCheck` and
+                // let the next meeting install its own. Falling through to the unconditional nil
+                // below would erase that meeting's handle, so re-check before touching anything
+                // that belongs to whichever meeting is live now.
+                guard !Task.isCancelled else { return }
+            }
+            microphoneCheck = nil
+        }
+    }
+
+    /// Whether a rebind attempt is still affordable this recording: under the limit, and either
+    /// the first try or at least `rebindCooldown` since the last one — a fresh binding needs a
+    /// moment to hand back its first buffer, or the silence it has not cleared yet would read as
+    /// a second failure and spend the budget faster than the device could ever answer.
+    private func mayRebind(now: Date) -> Bool {
+        guard rebindAttempts < Self.rebindLimit else { return false }
+        return !withinRebindCooldown(now: now)
+    }
+
+    /// Whether a rebind is recent enough that the counter it reset cannot be evidence of anything
+    /// yet. Two things read this: whether another attempt is affordable, and whether the panel's
+    /// warning may be taken down — see `checkMicrophone` for why the second one needs it.
+    private func withinRebindCooldown(now: Date) -> Bool {
+        guard let lastRebindAt else { return false }
+        return now.timeIntervalSince(lastRebindAt) < Self.rebindCooldown
     }
 
     private func noteMonitorFailure() {
@@ -347,7 +457,9 @@ public final class MeetingCoordinator {
                 excludedApps: config.excludedApps,
                 gaps: [],
                 systemStartedAt: nil,
-                microphoneStartedAt: nil
+                microphoneStartedAt: nil,
+                trailingMicrophoneSilenceSeconds: nil,
+                microphoneSawAudio: nil
             )
             // Written now and rewritten at the end, rather than only at the end: a draft left
             // behind by a crash is otherwise two nameless wav files, with no record of when the
@@ -412,6 +524,14 @@ public final class MeetingCoordinator {
         self.capture = nil
         // From here on this capture speaks about a meeting that is over.
         liveCaptureID = nil
+        // The warning goes with the recording it described, exactly as the narrowband one does:
+        // the next meeting asks its own capture and says its own.
+        microphoneCheck?.cancel()
+        microphoneCheck = nil
+        microphoneSilent = false
+        onMicrophoneSilent(false)
+        rebindAttempts = 0
+        lastRebindAt = nil
         let pendingStart = captureTask
         captureTask = nil
         let metadataURL = folder.appendingPathComponent(MeetingMetadata.fileName)
@@ -423,11 +543,26 @@ public final class MeetingCoordinator {
             await pendingStart?.value
             var record = finished
             var failure: String?
+            // No outcome when `stop()` itself throws, and therefore no number to report — 0
+            // rather than a guess, same as a recording that never went silent at all. The flag
+            // beside it is then never read: the sentence in `keepDraft` is gated on the number.
+            var silentSeconds: TimeInterval = 0
+            var sawAudio = false
             do {
                 let outcome = try await capture.stop()
                 record?.systemStartedAt = outcome.systemStartedAt
                 record?.microphoneStartedAt = outcome.microphoneStartedAt
+                record?.trailingMicrophoneSilenceSeconds = outcome.microphoneSilentSeconds
+                // Written beside the number and from the same outcome the panel sentence below is
+                // built from, so the archive cannot end up telling a different story than the
+                // notice did: `MeetingQueue` reads both keys to pick which sentence goes into the
+                // file, and with only the number it can pick just one — the wrong one, on exactly
+                // the recording this was fixed for. Left `nil` when `stop()` throws: there is no
+                // outcome then, and `false` would be a claim nobody measured.
+                record?.microphoneSawAudio = outcome.microphoneSawAudio
                 failure = outcome.failure
+                silentSeconds = outcome.microphoneSilentSeconds
+                sawAudio = outcome.microphoneSawAudio
             } catch {
                 failure = Self.describe(error)
             }
@@ -437,7 +572,11 @@ public final class MeetingCoordinator {
                 failure = failure ?? "Cannot write \(MeetingMetadata.fileName): " +
                     "\(error.localizedDescription)"
             }
-            return failure
+            return Closed(
+                failure: failure,
+                microphoneSilentSeconds: silentSeconds,
+                microphoneSawAudio: sawAudio
+            )
         }
     }
 
@@ -452,7 +591,33 @@ public final class MeetingCoordinator {
             // that closes the capture and rewrites the metadata is the whole guarantee; a sleep
             // in its place would only make the race rarer and harder to see.
             var failures: [String] = []
-            if let stopFailure = await closing?.value ?? nil { failures.append(stopFailure) }
+            if let closed = await closing?.value {
+                if let failure = closed.failure { failures.append(failure) }
+                // Interface text, so Russian — the rule `MeetingNotice` follows. Said only when
+                // the silence outlasted the threshold: a recording that lost its last ten
+                // seconds of microphone lost nothing worth a red line.
+                //
+                // Two sentences, because the number alone cannot tell the two cases apart. It is
+                // trailing silence by construction — any non-zero sample restarts it — so calling
+                // it "the track is empty" is false in the ordinary case: the stop prompt goes up
+                // the moment a call ends and the recording runs on for two more minutes, in which
+                // AirPods going into their case, or a hardware mute switch, produce exact digital
+                // zero. Ten seconds of that would have reported a whole good meeting as empty.
+                //
+                // `MeetingNotice.length` and not a bare `ElapsedTime.minutes(...) мин`: the gate
+                // above is ten seconds, but rounding to the nearest minute takes anything under
+                // thirty down to zero, and "0 мин" would claim no silence and a lost track in the
+                // same sentence.
+                if closed.microphoneSilentSeconds >= Self.microphoneSilenceThreshold {
+                    failures.append(
+                        closed.microphoneSawAudio
+                            ? "Микрофон замолчал в конце — "
+                                + MeetingNotice.length(ElapsedTime.minutes(closed.microphoneSilentSeconds))
+                                + " тишины, ваша дорожка неполная"
+                            : "Микрофон молчал всю запись — ваша дорожка пустая"
+                    )
+                }
+            }
             do {
                 let ready = try MeetingFolder.promote(folder)
                 self?.onFolderReady(ready)
@@ -479,6 +644,20 @@ public final class MeetingCoordinator {
         capture = nil
         captureTask = nil
         liveCaptureID = nil
+        // The same teardown `stopCapture` does, and needed for the same reason: the poll that
+        // created this capture also installed a microphone check for it, one poll being enough
+        // for both. Left standing, that check outlives the draft it belongs to, holds the single
+        // check slot, and the next meeting never gets one of its own.
+        //
+        // Without the panel withdrawal `stopCapture` pairs with these, deliberately. Every door
+        // into here either ran `stopCapture` first — which already took the warning down — or is
+        // the failed start above, where no buffer ever reached a track and the warning cannot be
+        // standing.
+        microphoneCheck?.cancel()
+        microphoneCheck = nil
+        microphoneSilent = false
+        rebindAttempts = 0
+        lastRebindAt = nil
         let closing = self.closing
         self.closing = nil
         housekeeping = Task { @MainActor [weak self] in
@@ -657,5 +836,6 @@ public final class MeetingCoordinator {
         await captureTask?.value
         _ = await closing?.value
         await housekeeping?.value
+        await microphoneCheck?.value
     }
 }

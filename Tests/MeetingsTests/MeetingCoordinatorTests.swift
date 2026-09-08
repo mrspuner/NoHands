@@ -58,6 +58,39 @@ private final class FakeCapture: MeetingCapture {
     private(set) var queueWhenStopped: [String] = []
     /// What the real recorder hands its stream delegate.
     private let onFailureWhileRecording: @Sendable (String) -> Void
+    /// What the next `microphoneSilentSeconds()` answers. The tests set it directly: this fake
+    /// has no audio to be silent about.
+    var silentSeconds: TimeInterval = 0
+    /// What the next `stop()` reports as `Outcome.microphoneSilentSeconds` — the number
+    /// `keepDraft` turns into a sentence on the panel. Separate from `silentSeconds`, which
+    /// answers the polling question asked while the meeting is still live.
+    var silentAtStop: TimeInterval = 0
+    /// What the next `stop()` reports as `Outcome.microphoneSawAudio`. Defaults to the ordinary
+    /// case — a track that heard something — so that the tests which care about an empty track
+    /// have to say so, rather than getting the harsher sentence by omission.
+    var sawAudioAtStop = true
+    /// Set to make `microphoneSilentSeconds()` suspend instead of answering at once, holding the
+    /// continuation in `pendingSilenceCheck` until `resumeMicrophoneCheck()` releases it. Models
+    /// the real gap between a poll asking the question and the answer arriving — the gap in
+    /// which a meeting can end before the answer does, which is what the coordinator's
+    /// stale-check guard exists for.
+    var suspendMicrophoneCheck = false
+    private var pendingSilenceCheck: CheckedContinuation<TimeInterval, Never>?
+    /// How many times `microphoneSilentSeconds()` was called, suspended or not. A second check
+    /// running concurrently with a first shows up here as 2 — the direct measurement of the
+    /// reentrancy guard holding, which nothing else in this fake can prove.
+    private(set) var microphoneSilentSecondsCallCount = 0
+    /// Every uid the coordinator asked to rebind to, in order.
+    private(set) var rebinds: [String] = []
+    /// Set to make a rebind fail the way a stream that died would.
+    var rebindError: Error?
+    /// Set to make `rebindMicrophone(to:)` suspend instead of returning at once, holding the
+    /// continuation in `pendingRebind` until `resumeRebind()` releases it. Models the real gap
+    /// inside `updateConfiguration` — the same kind of gap `suspendMicrophoneCheck` models on the
+    /// read side, but here on the write side, where a stale check can still be sitting when the
+    /// meeting it was asked about ends.
+    var suspendRebind = false
+    private var pendingRebind: CheckedContinuation<Void, Never>?
 
     init(folder: URL, excluded: [String], onFailureWhileRecording: @escaping @Sendable (String) -> Void) {
         self.folder = folder
@@ -99,8 +132,42 @@ private final class FakeCapture: MeetingCapture {
             microphoneURL: folder.appendingPathComponent(MeetingAudioRecorder.microphoneFileName),
             systemStartedAt: 0.25,
             microphoneStartedAt: 0.5,
-            failure: failure
+            failure: failure,
+            microphoneSilentSeconds: silentAtStop,
+            microphoneSawAudio: sawAudioAtStop
         )
+    }
+
+    func microphoneSilentSeconds() async -> TimeInterval {
+        microphoneSilentSecondsCallCount += 1
+        guard suspendMicrophoneCheck else { return silentSeconds }
+        return await withCheckedContinuation { pendingSilenceCheck = $0 }
+    }
+
+    /// Releases a `microphoneSilentSeconds()` call suspended by `suspendMicrophoneCheck`, with
+    /// whatever `silentSeconds` holds at the moment of release rather than at the moment of the
+    /// call — the answer arrives late, and a late answer reflects the microphone at the time it
+    /// was finally read, not at the time it was asked.
+    func resumeMicrophoneCheck() {
+        pendingSilenceCheck?.resume(returning: silentSeconds)
+        pendingSilenceCheck = nil
+    }
+
+    func rebindMicrophone(to deviceUID: String) async throws {
+        if suspendRebind {
+            await withCheckedContinuation { pendingRebind = $0 }
+        }
+        if let rebindError { throw rebindError }
+        rebinds.append(deviceUID)
+        // The real recorder restarts the count from the new binding; a fake that did not would
+        // let one test's rebind look like three.
+        silentSeconds = 0
+    }
+
+    /// Releases a `rebindMicrophone(to:)` call suspended by `suspendRebind`.
+    func resumeRebind() {
+        pendingRebind?.resume()
+        pendingRebind = nil
     }
 }
 
@@ -115,6 +182,10 @@ private final class Harness {
     /// The input's sample rate when it is narrowband, nil when the band is fine — one entry per
     /// time the coordinator said so.
     private(set) var narrowband: [Double?] = []
+    /// Одна запись на каждый раз, когда координатор сказал про немой микрофон. Массив, а не
+    /// флаг, по той же причине, что и `narrowband`: проверяется не только что он сказал, но и
+    /// сколько раз — надпись не должна мигать раз в секунду весь час.
+    private(set) var microphoneSilent: [Bool] = []
     private(set) var captures: [FakeCapture] = []
     /// What the coordinator reads instead of the machine's real default input. A seam for the
     /// same reason as `processes`: the warning and `meeting.json` both come from this, and the
@@ -148,6 +219,7 @@ private final class Harness {
             showPanel: { [weak self] in self?.shown.append($0) },
             hidePanel: { [weak self] in self?.hidden.append($0) },
             onNarrowbandInput: { [weak self] in self?.narrowband.append($0) },
+            onMicrophoneSilent: { [weak self] in self?.microphoneSilent.append($0) },
             onDictationBlocked: { [weak self] in self?.blocked.append($0) },
             isDictating: { [weak self] in self?.dictating ?? false },
             readInputDevice: { [weak self] in self?.inputDevice },
@@ -234,7 +306,9 @@ private func orphanDraft(in queue: URL, startedAt: Date = noon, broken: Bool = f
         excludedApps: [],
         gaps: [],
         systemStartedAt: nil,
-        microphoneStartedAt: nil
+        microphoneStartedAt: nil,
+        trailingMicrophoneSilenceSeconds: nil,
+        microphoneSawAudio: nil
     ).write(to: draft.appendingPathComponent(MeetingMetadata.fileName))
     if broken {
         for name in [MeetingAudioRecorder.systemFileName, MeetingAudioRecorder.microphoneFileName] {
@@ -553,7 +627,7 @@ private func isFailure(_ state: MeetingPanelState?) -> Bool {
 // only one who can swap the microphone while it still matters.
 @Test @MainActor func aNarrowbandMicrophoneIsNamedWhenTheMeetingStarts() async throws {
     let harness = try Harness()
-    harness.inputDevice = AudioInputDevice(name: "AirPods", sampleRate: 16000, channelCount: 1)
+    harness.inputDevice = AudioInputDevice(name: "AirPods", uid: "test-airpods", sampleRate: 16000, channelCount: 1)
     harness.processes = [telemost]
 
     harness.coordinator.poll(now: noon)
@@ -565,7 +639,7 @@ private func isFailure(_ state: MeetingPanelState?) -> Bool {
 
 @Test @MainActor func aFullBandMicrophoneIsNothingToWarnAbout() async throws {
     let harness = try Harness()
-    harness.inputDevice = AudioInputDevice(name: "USB", sampleRate: 48000, channelCount: 1)
+    harness.inputDevice = AudioInputDevice(name: "USB", uid: "test-usb", sampleRate: 48000, channelCount: 1)
     harness.processes = [telemost]
 
     harness.coordinator.poll(now: noon)
@@ -577,7 +651,7 @@ private func isFailure(_ state: MeetingPanelState?) -> Bool {
 // Once, at the start, exactly as dictation reports it — not once a second for an hour.
 @Test @MainActor func theWarningIsSaidAtTheStartAndNotRepeated() async throws {
     let harness = try Harness()
-    harness.inputDevice = AudioInputDevice(name: "AirPods", sampleRate: 16000, channelCount: 1)
+    harness.inputDevice = AudioInputDevice(name: "AirPods", uid: "test-airpods", sampleRate: 16000, channelCount: 1)
     harness.processes = [telemost]
 
     harness.coordinator.poll(now: noon)
@@ -586,6 +660,352 @@ private func isFailure(_ state: MeetingPanelState?) -> Bool {
     await harness.coordinator.settle()
 
     #expect(harness.narrowband == [16000])
+}
+
+// MARK: - A microphone track that is exactly zero
+
+// Приложение знало о немой дорожке на первой секунде и молчало полтора часа — ровно то, что
+// стоило владельцу его собственного голоса на встрече 7 сентября.
+@Test @MainActor func aSilentMicrophoneIsNamedWhileTheMeetingIsStillRecording() async throws {
+    let harness = try Harness()
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+    #expect(harness.microphoneSilent == [])
+
+    harness.captures[0].silentSeconds = 10
+    harness.coordinator.poll(now: noon.addingTimeInterval(1))
+    await harness.coordinator.settle()
+
+    #expect(harness.microphoneSilent == [true])
+}
+
+@Test @MainActor func aMicrophoneThatStartsSpeakingClearsTheWarning() async throws {
+    let harness = try Harness()
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+    harness.captures[0].silentSeconds = 10
+    harness.coordinator.poll(now: noon.addingTimeInterval(1))
+    await harness.coordinator.settle()
+
+    harness.captures[0].silentSeconds = 0
+    harness.coordinator.poll(now: noon.addingTimeInterval(2))
+    await harness.coordinator.settle()
+
+    #expect(harness.microphoneSilent == [true, false])
+}
+
+// Девять секунд — это не немота, а пауза между буферами плюс запас.
+@Test @MainActor func aShortGapIsNotCalledSilence() async throws {
+    let harness = try Harness()
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+
+    harness.captures[0].silentSeconds = 9
+    harness.coordinator.poll(now: noon.addingTimeInterval(1))
+    await harness.coordinator.settle()
+
+    #expect(harness.microphoneSilent == [])
+}
+
+// The direct analogue of `theWarningIsSaidAtTheStartAndNotRepeated` above: this is the property
+// that keeps the panel from rewriting itself once a second for the length of the recording.
+@Test @MainActor func theMicrophoneWarningIsNotRepeatedWhileItStaysSilent() async throws {
+    let harness = try Harness()
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+
+    harness.captures[0].silentSeconds = 10
+    harness.coordinator.poll(now: noon.addingTimeInterval(1))
+    await harness.coordinator.settle()
+    harness.coordinator.poll(now: noon.addingTimeInterval(2))
+    await harness.coordinator.settle()
+    harness.coordinator.poll(now: noon.addingTimeInterval(3))
+    await harness.coordinator.settle()
+
+    #expect(harness.microphoneSilent == [true])
+}
+
+// Cancelling `microphoneCheck` in `stopCapture` is cooperative — the task's own `await` still
+// resolves once the fake finally answers, well after the meeting it was asked about is over.
+// That stale answer must not be acted on, and must not stand in for whatever the next meeting's
+// own check is doing with the coordinator's single `microphoneCheck` slot.
+@Test @MainActor func aStaleMicrophoneAnswerAfterTheMeetingEndedIsDiscarded() async throws {
+    let harness = try Harness()
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    harness.coordinator.answer(.confirm, at: noon.addingTimeInterval(1))
+    await harness.coordinator.settle()
+
+    harness.captures[0].suspendMicrophoneCheck = true
+    harness.coordinator.poll(now: noon.addingTimeInterval(2))
+    // `settle()` cannot be used here — it would wait forever for a check that is deliberately
+    // not answering yet. Yielding instead lets the check reach its suspension inside the fake,
+    // the same pattern `FakeCapture.stop()` uses to let a race run first.
+    for _ in 0..<8 { await Task.yield() }
+
+    harness.coordinator.stopPressed(at: noon.addingTimeInterval(3))
+    await harness.coordinator.settle()
+    // The withdrawal `stopCapture` itself fires when the meeting ends — one entry, before the
+    // stale check has answered anything at all.
+    #expect(harness.microphoneSilent == [false])
+
+    harness.captures[0].silentSeconds = 10
+    harness.captures[0].resumeMicrophoneCheck()
+    for _ in 0..<8 { await Task.yield() }
+    // The stale answer, about a meeting that is already over, added nothing.
+    #expect(harness.microphoneSilent == [false])
+
+    // The next meeting's own check still works — proof the stale completion did not clobber
+    // `microphoneCheck` or leave the guard against a second check in flight stuck.
+    harness.processes = [telemostIdle]
+    harness.coordinator.poll(now: noon.addingTimeInterval(4))
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon.addingTimeInterval(5))
+    await harness.coordinator.settle()
+
+    harness.captures[1].silentSeconds = 10
+    harness.coordinator.poll(now: noon.addingTimeInterval(6))
+    await harness.coordinator.settle()
+
+    #expect(harness.microphoneSilent == [false, true])
+}
+
+// MARK: - Rebinding a microphone that appeared mid-meeting
+
+private let airpods = AudioInputDevice(
+    name: "AirPods", uid: "F0-D3:input", sampleRate: 24000, channelCount: 1
+)
+
+// ScreenCaptureKit привязывает микрофон один раз, на старте потока: устройство, подключённое
+// посреди встречи, он сам не подхватывает — измерено, проба 3 из спеки.
+@Test @MainActor func aDeviceThatAppearsMidMeetingIsBoundExplicitly() async throws {
+    let harness = try Harness()
+    harness.inputDevice = nil
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+
+    harness.captures[0].silentSeconds = 10
+    harness.inputDevice = airpods
+    harness.coordinator.poll(now: noon.addingTimeInterval(11))
+    await harness.coordinator.settle()
+
+    #expect(harness.captures[0].rebinds == ["F0-D3:input"])
+}
+
+// uid нужен одной только перепривязке — встречам, не диктовке. Устройство без читаемого uid
+// поэтому остаётся устройством: `current()` отдаёт его с пустой строкой, а не `nil`, иначе
+// требование фазы 2а решало бы за диктовку, что микрофона нет вовсе. Перепривязываться по пустой
+// строке не на что, и попытка тратится впустую.
+@Test @MainActor func silenceWithADeviceThatHasNoUidDoesNotRebind() async throws {
+    let harness = try Harness()
+    harness.inputDevice = AudioInputDevice(
+        name: "Микрофон без uid", uid: "", sampleRate: 48000, channelCount: 1
+    )
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+
+    harness.captures[0].silentSeconds = 10
+    harness.coordinator.poll(now: noon.addingTimeInterval(11))
+    await harness.coordinator.settle()
+
+    #expect(harness.captures[0].rebinds.isEmpty)
+    // Надпись при этом стоит: дорожка немая, чинить её просто нечем.
+    #expect(harness.microphoneSilent == [true])
+}
+
+// Немая дорожка без устройства — перепривязывать не на что.
+@Test @MainActor func silenceWithNoDeviceDoesNotRebind() async throws {
+    let harness = try Harness()
+    harness.inputDevice = nil
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+
+    harness.captures[0].silentSeconds = 10
+    harness.coordinator.poll(now: noon.addingTimeInterval(11))
+    await harness.coordinator.settle()
+
+    #expect(harness.captures[0].rebinds.isEmpty)
+}
+
+// Устройство может молчать по своей причине — выключенный в железе микрофон, эксклюзивно
+// занятое приложение. Тогда попытки не помогают, а updateConfiguration дёргает поток, которым
+// пишется единственная уцелевшая дорожка собеседников.
+@Test @MainActor func rebindingGivesUpAfterThreeAttempts() async throws {
+    let harness = try Harness()
+    harness.inputDevice = airpods
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+
+    for attempt in 1...8 {
+        harness.captures[0].silentSeconds = 10
+        harness.coordinator.poll(now: noon.addingTimeInterval(TimeInterval(attempt) * 11))
+        await harness.coordinator.settle()
+    }
+
+    #expect(harness.captures[0].rebinds.count == 3)
+}
+
+// Опрос идёт раз в секунду, но перепривязка — нет: новой привязке нужно время, чтобы отдать
+// первый буфер, иначе тишина последней секунды прочтётся как отказ и вызовет вторую попытку.
+@Test @MainActor func rebindingWaitsBetweenAttempts() async throws {
+    let harness = try Harness()
+    harness.inputDevice = airpods
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+
+    for second in 1...5 {
+        harness.captures[0].silentSeconds = 10
+        harness.coordinator.poll(now: noon.addingTimeInterval(TimeInterval(second)))
+        await harness.coordinator.settle()
+    }
+
+    #expect(harness.captures[0].rebinds.count == 1)
+}
+
+// Перепривязка обнуляет счётчик тишины, и это верно для счётчика: он про новую привязку. Но для
+// надписи это ложное «всё в порядке» — следующий опрос читает ноль независимо от того, пошёл ли
+// звук. Красная строка гасла, через десять секунд возвращалась, и так до трёх раз, при том что
+// звука не было и не будет. Счётчик снова что-то значит только после полной выдержки: к этому
+// моменту его либо обнулил настоящий звук, либо он перевалил порог обратно.
+@Test @MainActor func aRebindDoesNotWithdrawTheWarningWhileItsCooldownRuns() async throws {
+    let harness = try Harness()
+    harness.inputDevice = airpods
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+
+    harness.captures[0].silentSeconds = 10
+    harness.coordinator.poll(now: noon.addingTimeInterval(11))
+    await harness.coordinator.settle()
+    #expect(harness.microphoneSilent == [true])
+    #expect(harness.captures[0].rebinds.count == 1)
+
+    // The fake resets its own counter inside the rebind, exactly as the real writer does. This
+    // poll therefore reads a fresh zero — which is not evidence of anything.
+    harness.coordinator.poll(now: noon.addingTimeInterval(12))
+    await harness.coordinator.settle()
+    #expect(harness.microphoneSilent == [true])
+
+    // Ten seconds on, still nothing: the counter has climbed back past the threshold, and the
+    // warning was never taken down and put back up in between.
+    harness.captures[0].silentSeconds = 10
+    harness.coordinator.poll(now: noon.addingTimeInterval(22))
+    await harness.coordinator.settle()
+    #expect(harness.microphoneSilent == [true])
+}
+
+// The other side of the same rule: once the cooldown is out, a counter reading zero really is
+// audio arriving, and the warning goes away.
+@Test @MainActor func aRebindThatWorkedClearsTheWarningOnceTheCooldownIsOut() async throws {
+    let harness = try Harness()
+    harness.inputDevice = airpods
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+
+    harness.captures[0].silentSeconds = 10
+    harness.coordinator.poll(now: noon.addingTimeInterval(11))
+    await harness.coordinator.settle()
+    #expect(harness.microphoneSilent == [true])
+
+    harness.coordinator.poll(now: noon.addingTimeInterval(21))
+    await harness.coordinator.settle()
+
+    #expect(harness.microphoneSilent == [true, false])
+}
+
+// `rebindMicrophone` really suspends — the real one awaits `stream.updateConfiguration` — so the
+// cancellation guard at the top of `checkMicrophone`'s task no longer covers everything after it:
+// a rebind still in flight when `stopCapture` cancels this task resumes later, after the next
+// meeting has already installed its own check. Without a second guard right before the
+// unconditional `microphoneCheck = nil`, that resumption erases the next meeting's handle, the
+// one-at-a-time guard in `checkMicrophone` stops holding, and a poll that lands in the gap starts
+// a second, concurrent check for the same live meeting.
+@Test @MainActor func aRebindStillInFlightWhenTheMeetingEndsDoesNotEraseTheNextMeetingsCheck() async throws {
+    let harness = try Harness()
+    harness.inputDevice = airpods
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    // Confirmed the way `aStaleMicrophoneAnswerAfterTheMeetingEndedIsDiscarded` confirms it:
+    // `stopPressed` below needs a recording it is answering *for*, not a still-unconfirmed draft.
+    harness.coordinator.answer(.confirm, at: noon.addingTimeInterval(0.5))
+    await harness.coordinator.settle()
+
+    // Meeting A's check reaches the rebind and sits there, suspended, the way a real
+    // `updateConfiguration` call would while `stopCapture` below runs.
+    harness.captures[0].silentSeconds = 10
+    harness.captures[0].suspendRebind = true
+    harness.coordinator.poll(now: noon.addingTimeInterval(1))
+    for _ in 0..<8 { await Task.yield() }
+
+    harness.coordinator.stopPressed(at: noon.addingTimeInterval(2))
+    await harness.coordinator.settle()
+
+    // Meeting B starts and its own poll schedules its own check — but that check has not run a
+    // single line yet, so suspending it here still takes effect before it ever answers.
+    harness.processes = [telemostIdle]
+    harness.coordinator.poll(now: noon.addingTimeInterval(3))
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon.addingTimeInterval(4))
+    harness.captures[1].suspendMicrophoneCheck = true
+
+    // Release meeting A's stale rebind. With the guard in place it finds itself cancelled and
+    // returns without touching `microphoneCheck`; without it, it would nil out meeting B's live
+    // handle while meeting B's own check is still sitting mid-flight, suspended above.
+    harness.captures[0].resumeRebind()
+    for _ in 0..<8 { await Task.yield() }
+
+    // A poll that lands in this gap must see meeting B's check still installed and decline to
+    // start a second one — the direct measurement of the one-at-a-time guard still holding.
+    harness.coordinator.poll(now: noon.addingTimeInterval(5))
+    for _ in 0..<8 { await Task.yield() }
+
+    #expect(harness.captures[1].microphoneSilentSecondsCallCount == 1)
+
+    // Meeting B's own check still resolves normally once released — proof this is about the
+    // stale rebind's aftermath, not about meeting B's check being broken outright.
+    harness.captures[1].silentSeconds = 10
+    harness.captures[1].resumeMicrophoneCheck()
+    await harness.coordinator.settle()
+
+    #expect(harness.captures[1].rebinds == ["F0-D3:input"])
+}
+
+// `discardDraft` — единственная дверь, в которую входят без `stopCapture` перед ней: отказ
+// старта. Проверка микрофона к этому моменту уже заведена — тот же опрос, что создал захват,
+// её и установил, — и отменить её больше некому. Она переживает выброшенный черновик, держит
+// единственный слот проверки, и следующая встреча остаётся без своей.
+@Test @MainActor func aCaptureThatFailedAtStartLeavesNoMicrophoneCheckBehind() async throws {
+    let harness = try Harness()
+    harness.startError = MeetingCaptureError.streamFailed("no display")
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    // Suspended after the poll for the same reason the rebind test does it: the fake does not
+    // exist until the poll that creates it, and its check has not run a line yet.
+    harness.captures[0].suspendMicrophoneCheck = true
+    for _ in 0..<8 { await Task.yield() }
+
+    harness.startError = nil
+    harness.coordinator.poll(now: noon.addingTimeInterval(1))
+    for _ in 0..<8 { await Task.yield() }
+
+    #expect(harness.captures.count == 2)
+    #expect(harness.captures[1].microphoneSilentSecondsCallCount == 1)
+
+    // Released so the fake's continuation is not left dangling. The stale check finds itself
+    // cancelled and touches nothing that belongs to the meeting recording now.
+    harness.captures[0].resumeMicrophoneCheck()
+    for _ in 0..<8 { await Task.yield() }
+    #expect(harness.microphoneSilent == [])
 }
 
 // MARK: - A dictation already under way
@@ -846,6 +1266,101 @@ private let zoom = AudioProcessMonitor.State(
 
     #expect(harness.handedOver.count == 1)
     #expect(harness.shown.contains(.failure("no audio arrived on the system track")))
+}
+
+// Английская строка про формат буфера была последним, что владелец узнал о потере своей
+// дорожки. Панель говорит по-русски и говорит, что именно потеряно.
+@Test @MainActor func aRecordingWhoseMicrophoneStayedSilentSaysSoWhenItIsKept() async throws {
+    let harness = try Harness()
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+    harness.captures[0].silentAtStop = 600
+    harness.captures[0].sawAudioAtStop = false
+
+    harness.coordinator.answer(.confirm, at: noon.addingTimeInterval(1))
+    harness.coordinator.stopPressed(at: noon.addingTimeInterval(2))
+    await harness.coordinator.settle()
+
+    #expect(harness.shown.contains { state in
+        if case .failure(let text) = state {
+            return text.contains("Микрофон молчал всю запись — ваша дорожка пустая")
+        }
+        return false
+    })
+}
+
+// Панель называет пустую дорожку и гаснет через пять секунд. Единственное, что остаётся, —
+// файлы, и признак обязан доехать до `meeting.json`: из одного числа очередь не отличит пустую
+// дорожку от неполной и напишет в архив «замолчал в конце» про запись, где микрофона не было.
+@Test @MainActor func theMetadataSaysWhetherTheMicrophoneEverCarriedAnything() async throws {
+    let harness = try Harness()
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+    harness.captures[0].silentAtStop = 600
+    harness.captures[0].sawAudioAtStop = false
+
+    harness.coordinator.answer(.confirm, at: noon.addingTimeInterval(1))
+    harness.coordinator.stopPressed(at: noon.addingTimeInterval(2))
+    await harness.coordinator.settle()
+
+    let metadata = try harness.metadata(of: try #require(harness.handedOver.first))
+    #expect(metadata.trailingMicrophoneSilenceSeconds == 600)
+    #expect(metadata.microphoneSawAudio == false)
+}
+
+// `silentSeconds` по построению меряет непрерывный ноль **в конце** дорожки: любой ненулевой
+// сэмпл обнуляет счётчик. Выдавать его за всю запись — ложь в самом обычном случае. Порог
+// тишины ноль, автостоп две минуты: подсказка остановки поднимается в момент конца встречи, а
+// запись идёт ещё две минуты, и AirPods, убранные в кейс, дают ровно цифровой ноль. Десяти
+// секунд такого хватало, чтобы объявить пустой полностью записанную часовую дорожку.
+@Test @MainActor func aTrackThatSpokeAndThenWentQuietIsCalledIncompleteNotEmpty() async throws {
+    let harness = try Harness()
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+    harness.captures[0].silentAtStop = 600
+    harness.captures[0].sawAudioAtStop = true
+
+    harness.coordinator.answer(.confirm, at: noon.addingTimeInterval(1))
+    harness.coordinator.stopPressed(at: noon.addingTimeInterval(2))
+    await harness.coordinator.settle()
+
+    let said = harness.shown.compactMap { state -> String? in
+        if case .failure(let text) = state { return text }
+        return nil
+    }
+    #expect(said.contains { $0.contains("Микрофон замолчал в конце") && $0.contains("10 мин") })
+    #expect(!said.contains { $0.contains("пустая") })
+}
+
+// The gate is ten seconds, but `ElapsedTime.minutes` rounds anything under thirty down to
+// zero — a fifteen-second dropout clears the gate and still rounds to "0 мин" if nothing
+// corrects for it. That sentence would claim no silence and an empty track in the same
+// breath, for a dropout ordinary enough that the review this fixed was asked to check it.
+@Test @MainActor func aBriefMicrophoneDropoutIsNeverReportedAsZeroMinutes() async throws {
+    let harness = try Harness()
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+    harness.captures[0].silentAtStop = 15
+    harness.captures[0].sawAudioAtStop = true
+
+    harness.coordinator.answer(.confirm, at: noon.addingTimeInterval(1))
+    harness.coordinator.stopPressed(at: noon.addingTimeInterval(2))
+    await harness.coordinator.settle()
+
+    #expect(harness.shown.contains { state in
+        if case .failure(let text) = state {
+            return text.contains("Микрофон замолчал в конце") && text.contains("меньше минуты")
+        }
+        return false
+    })
+    #expect(!harness.shown.contains { state in
+        if case .failure(let text) = state { return text.contains("0 мин") }
+        return false
+    })
 }
 
 // A failure shown while the save prompt is up would replace it, and the owner would be left with

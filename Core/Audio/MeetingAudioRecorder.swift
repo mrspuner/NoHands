@@ -53,18 +53,39 @@ public actor MeetingAudioRecorder {
         /// What went wrong, named, or `nil` when nothing did.
         public let failure: String?
 
+        /// How long the microphone track had been delivering nothing but digital zeroes when the
+        /// recording was handed over. Zero while it was delivering audio.
+        ///
+        /// Trailing silence, by construction: any sample that is not exactly zero restarts the
+        /// count. It says how the track *ended*, never how much of it was empty.
+        public let microphoneSilentSeconds: TimeInterval
+
+        /// Whether the microphone track ever carried a sample that was not exactly zero.
+        ///
+        /// The one thing `microphoneSilentSeconds` cannot answer, and the difference between two
+        /// very different sentences: a track that was never recorded into at all, and a full
+        /// track whose last minutes are quiet. The second is ordinary — the stop prompt goes up
+        /// the moment a call ends and the recording runs on for two more minutes, in which
+        /// AirPods go back in their case — and calling a good ninety-minute track empty because
+        /// of it would be the same kind of lie this recorder was fixed for.
+        public let microphoneSawAudio: Bool
+
         public init(
             systemURL: URL,
             microphoneURL: URL,
             systemStartedAt: Double?,
             microphoneStartedAt: Double?,
-            failure: String?
+            failure: String?,
+            microphoneSilentSeconds: TimeInterval,
+            microphoneSawAudio: Bool
         ) {
             self.systemURL = systemURL
             self.microphoneURL = microphoneURL
             self.systemStartedAt = systemStartedAt
             self.microphoneStartedAt = microphoneStartedAt
             self.failure = failure
+            self.microphoneSilentSeconds = microphoneSilentSeconds
+            self.microphoneSawAudio = microphoneSawAudio
         }
     }
 
@@ -146,18 +167,7 @@ public actor MeetingAudioRecorder {
             display: display, excludingApplications: excluded, exceptingWindows: []
         )
 
-        let configuration = SCStreamConfiguration()
-        configuration.capturesAudio = true
-        // Our own sounds — the dictation chimes — must not end up in the meeting.
-        configuration.excludesCurrentProcessAudio = true
-        configuration.captureMicrophone = true
-        configuration.sampleRate = 48000
-        configuration.channelCount = 2
-        // Only the two audio outputs are attached below, so no video frame is ever delivered.
-        // These keep the capture from building full-display frames for an hour anyway.
-        configuration.width = 2
-        configuration.height = 2
-        configuration.minimumFrameInterval = CMTime(value: 1, timescale: 1)
+        let configuration = Self.makeConfiguration(microphoneDeviceUID: nil)
 
         let writer = try TrackWriter(
             systemURL: folder.appendingPathComponent(Self.systemFileName),
@@ -179,6 +189,40 @@ public actor MeetingAudioRecorder {
         }
         self.stream = stream
         self.writer = writer
+    }
+
+    /// The whole capture setup, built from scratch every time it is asked for.
+    ///
+    /// Every field the stream needs lives here rather than at the one call site that starts it,
+    /// because a rebind has to hand `updateConfiguration` the same setup with one field changed —
+    /// a configuration carrying only the device uid would silently reset the sample rate, the
+    /// exclusion of our own sounds and the frame interval to their defaults.
+    ///
+    /// A new object every time, never the one the stream already has. `SCStreamConfiguration` is
+    /// an `NSObject` with no documented `NSCopying`, so whether a running stream holds the object
+    /// or a snapshot of it is undocumented; if it holds the object, mutating the stored instance
+    /// changes the binding *before* `updateConfiguration` is called and the call may find nothing
+    /// to do. That failure is silent and looks exactly like a microphone that never rebound. The
+    /// probe that measured rebinding working built a fresh configuration each time, and this is
+    /// that shape.
+    ///
+    /// Deliberately not set at start: three meetings recorded correctly with the uid left `nil`,
+    /// and changing a working path for symmetry is risk without gain — see §5 of the spec.
+    static func makeConfiguration(microphoneDeviceUID: String?) -> SCStreamConfiguration {
+        let configuration = SCStreamConfiguration()
+        configuration.capturesAudio = true
+        // Our own sounds — the dictation chimes — must not end up in the meeting.
+        configuration.excludesCurrentProcessAudio = true
+        configuration.captureMicrophone = true
+        configuration.microphoneCaptureDeviceID = microphoneDeviceUID
+        configuration.sampleRate = 48000
+        configuration.channelCount = 2
+        // Only the two audio outputs are ever attached, so no video frame is delivered. These
+        // keep the capture from building full-display frames for an hour anyway.
+        configuration.width = 2
+        configuration.height = 2
+        configuration.minimumFrameInterval = CMTime(value: 1, timescale: 1)
+        return configuration
     }
 
     /// Stops the capture and closes both files.
@@ -207,6 +251,25 @@ public actor MeetingAudioRecorder {
         try? await stream.stopCapture()
         return writer.finish()
     }
+
+    public func microphoneSilentSeconds() -> TimeInterval {
+        writer?.microphoneSilentSeconds() ?? 0
+    }
+
+    /// - Throws: when there is no capture to rebind. That is a programmer error rather than a
+    ///   circumstance, and a silent success would tell the coordinator the microphone was picked
+    ///   up when nothing happened at all.
+    public func rebindMicrophone(to deviceUID: String) async throws {
+        guard let stream else {
+            throw MeetingCaptureError.streamFailed("rebind called with no capture running")
+        }
+        try await stream.updateConfiguration(
+            Self.makeConfiguration(microphoneDeviceUID: deviceUID)
+        )
+        // The next ten seconds are measured from here: the counter is about the binding that
+        // exists now, and leaving the old total behind would ask for a second rebind at once.
+        writer?.resetMicrophoneSilence()
+    }
 }
 
 /// Averages every channel of a buffer into one.
@@ -219,16 +282,18 @@ public actor MeetingAudioRecorder {
 /// nothing about the resulting file would look wrong.
 enum AudioDownmix {
     /// - Returns: the buffer itself when it is already mono, a new 32-bit float mono buffer at
-    ///   the same sample rate otherwise, and `nil` when the samples are laid out in a way this
-    ///   cannot read — which the caller has to report rather than quietly drop channels.
+    ///   the same sample rate otherwise, and `nil` when the format is not 32-bit float —
+    ///   which the caller has to report rather than quietly drop channels.
     static func mono(from buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
         let channels = Int(buffer.format.channelCount)
         guard channels > 1 else { return buffer }
-        // ScreenCaptureKit delivers 32-bit float, one plane per channel. Anything else is
-        // unexpected enough to be worth a named failure instead of a guess.
-        guard !buffer.format.isInterleaved, let planes = buffer.floatChannelData else {
-            return nil
-        }
+        // ScreenCaptureKit delivers 32-bit float on both tracks and lays them out differently:
+        // the system mix arrives deinterleaved, one plane per channel, and the microphone
+        // arrives interleaved, every channel in one plane. Both are readable — what differs is
+        // the stride from one frame to the next, not whether the samples can be found — so both
+        // are averaged here. Refusing the interleaved one cost a whole meeting's own track: see
+        // the decision of 2026-09-08.
+        guard let planes = buffer.floatChannelData else { return nil }
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: buffer.format.sampleRate,
@@ -241,10 +306,11 @@ enum AudioDownmix {
         }
         mixed.frameLength = buffer.frameLength
         let scale = 1 / Float(channels)
+        let interleaved = buffer.format.isInterleaved
         for frame in 0..<Int(buffer.frameLength) {
             var sum: Float = 0
             for channel in 0..<channels {
-                sum += planes[channel][frame]
+                sum += interleaved ? planes[0][frame * channels + channel] : planes[channel][frame]
             }
             output[0][frame] = sum * scale
         }
@@ -271,6 +337,28 @@ final class CaptureTrack {
     /// back, but the content still starts at this buffer.
     private(set) var startedAt: Double?
 
+    /// Frames of unbroken digital silence — samples that are exactly zero — at the end of what
+    /// this track has been handed.
+    ///
+    /// Exactly zero, not "quiet": with no input device ScreenCaptureKit hands over a full-rate
+    /// stream of zeroes, while a real microphone in an empty room still delivers −46…−57 dBFS.
+    /// A loudness threshold here would cut off the owner's own quiet speech; this one only ever
+    /// fires on a track nobody is recording into.
+    private var silentFrames: AVAudioFrameCount = 0
+    private var silentRate: Double = MeetingAudioRecorder.sampleRate
+
+    /// Whether this track was ever handed a sample that was not exactly zero.
+    ///
+    /// About the whole recording, and therefore never reset — not by a rebind, which is only
+    /// about the binding that exists now. `silentFrames` measures the end of the track and this
+    /// measures whether there was ever anything in it; only the two together tell an empty track
+    /// apart from a full one that went quiet. Found in the same scan, so it costs nothing.
+    private(set) var sawAudio = false
+
+    var silentSeconds: TimeInterval {
+        silentRate > 0 ? TimeInterval(silentFrames) / silentRate : 0
+    }
+
     init(name: String, url: URL, format: AVAudioFormat) {
         self.name = name
         self.url = url
@@ -292,6 +380,7 @@ final class CaptureTrack {
             fail("cannot down-mix the \(name) track from \(source.format)")
             return
         }
+        note(silenceOf: mono)
         guard let converted = resampled(mono), converted.frameLength > 0 else { return }
         do {
             // Created on the first buffer rather than at start, so a capture that never
@@ -304,6 +393,42 @@ final class CaptureTrack {
         } catch {
             fail("cannot write \(url.lastPathComponent): \(error.localizedDescription)")
         }
+    }
+
+    /// Internal rather than private so the tests can drive the counter without a stream: the
+    /// buffer this measures is the down-mixed one, and building it by hand is the whole test.
+    func note(silenceOf buffer: AVAudioPCMBuffer) {
+        // Frames counted at the old rate cannot be divided by the new one: that rescales an
+        // already-measured stretch of time by the ratio between the two, so ten seconds of
+        // silence reads as three or as thirty. A Bluetooth device dropping into narrowband is
+        // exactly this, and this owner records on AirPods. The count restarts instead.
+        if buffer.format.sampleRate != silentRate { silentFrames = 0 }
+        silentRate = buffer.format.sampleRate
+        // A format this cannot read is not judged: reporting it as silence would raise a warning
+        // about a track that may well be recording.
+        guard let planes = buffer.floatChannelData else {
+            silentFrames = 0
+            return
+        }
+        let channels = Int(buffer.format.channelCount)
+        let interleaved = buffer.format.isInterleaved
+        for frame in 0..<Int(buffer.frameLength) {
+            for channel in 0..<channels {
+                let sample = interleaved
+                    ? planes[0][frame * channels + channel]
+                    : planes[channel][frame]
+                if sample != 0 {
+                    sawAudio = true
+                    silentFrames = 0
+                    return
+                }
+            }
+        }
+        silentFrames += buffer.frameLength
+    }
+
+    func resetSilence() {
+        silentFrames = 0
     }
 
     /// Copies the samples out of the sample buffer into a buffer of their own format.
@@ -514,6 +639,14 @@ final class TrackWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked 
         queue.sync { closeOnQueue() }
     }
 
+    func microphoneSilentSeconds() -> TimeInterval {
+        queue.sync { microphone.silentSeconds }
+    }
+
+    func resetMicrophoneSilence() {
+        queue.sync { microphone.resetSilence() }
+    }
+
     func finish() -> MeetingAudioRecorder.Outcome {
         queue.sync {
             closeOnQueue()
@@ -522,7 +655,9 @@ final class TrackWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked 
                 microphoneURL: microphone.url,
                 systemStartedAt: system.startedAt,
                 microphoneStartedAt: microphone.startedAt,
-                failure: firstFailure()
+                failure: firstFailure(),
+                microphoneSilentSeconds: microphone.silentSeconds,
+                microphoneSawAudio: microphone.sawAudio
             )
         }
     }
