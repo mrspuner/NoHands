@@ -15,11 +15,15 @@ private func buffer(rate: Double, frames: AVAudioFrameCount, value: Float) -> AV
     return buffer
 }
 
+// Частота источника здесь — 48000, реальная частота системного микса, а не целевых 16 кГц.
+// Это не случайное число: `note(silenceOf:)` обязан делить на частоту буфера, который ему дали,
+// а не на константу цели. Возьми она 16000 — совпадающую с `MeetingAudioRecorder.sampleRate` —
+// реализация, молча делящая на константу вместо частоты буфера, прошла бы тест не хуже верной.
 @Test func silenceAccumulatesAcrossBuffers() {
     let track = CaptureTrack(name: "microphone", url: URL(fileURLWithPath: "/dev/null"), format: outputFormat())
-    track.note(silenceOf: buffer(rate: 16000, frames: 8000, value: 0))
+    track.note(silenceOf: buffer(rate: 48000, frames: 24000, value: 0))
     #expect(abs(track.silentSeconds - 0.5) < 0.001)
-    track.note(silenceOf: buffer(rate: 16000, frames: 8000, value: 0))
+    track.note(silenceOf: buffer(rate: 48000, frames: 24000, value: 0))
     #expect(abs(track.silentSeconds - 1.0) < 0.001)
 }
 
