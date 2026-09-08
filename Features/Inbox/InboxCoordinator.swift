@@ -73,11 +73,25 @@ public final class InboxCoordinator {
     }
 
     private func perform() async {
-        let source = readSource()
-        let at = now()
         var createdFolder: URL?
         do {
+            // Capture before asking who is frontmost — not the other way round. `readSource()`
+            // may ask a browser for its address over AppleScript, and the very first such ask
+            // raises the macOS automation consent dialog. That dialog blocks the main actor until
+            // it is answered, and answering it moves focus: a Cmd+C sent afterwards would land on
+            // whatever ended up frontmost, not on what the owner was looking at when fn+C was
+            // pressed. Capturing first keeps the dialog off the one step that has to hit the
+            // right window. Do not reorder this back — it looks tidier the other way and it is
+            // the reason the first capture from a browser used to be silently wrong.
+            //
+            // This does not make a wedged browser harmless: `readSource()` below can still block
+            // the main actor for as long as the dialog, or an unresponsive AppleScript target,
+            // takes to answer — only now after the text is already safe. The known remedy is
+            // running `osascript` as a subprocess with a timeout, the way `MLXSummaryRunner` runs
+            // its model subprocess; that is separate work, out of scope here.
             let text = try await capture()
+            let at = now()
+            let source = readSource()
 
             // Cancellation is cooperative: `Task.cancel()` alone does not stop work already in
             // flight, and `InboxCapture.selection()`'s own wait loop swallows the resulting

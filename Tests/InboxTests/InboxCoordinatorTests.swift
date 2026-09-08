@@ -30,6 +30,9 @@ private final class Harness {
     private(set) var shown: [InboxPanelState] = []
     private(set) var hidden: [TimeInterval] = []
     private(set) var sounds: [InboxCoordinator.Sound] = []
+    /// Records "capture" and "source" in the order the coordinator actually calls them, so a
+    /// test can pin that order down without reaching into private state.
+    private(set) var callOrder: [String] = []
     /// Implicitly unwrapped so the closures below may capture `self`: every other stored
     /// property has a default, so `self` is fully initialised by the time they are built.
     var coordinator: InboxCoordinator!
@@ -40,6 +43,7 @@ private final class Harness {
             root: root,
             capture: { [weak self] in
                 guard let self else { throw InboxCapture.Failure.nothingCopied }
+                self.callOrder.append("capture")
                 if self.captureDelay > .zero {
                     try? await Task.sleep(for: self.captureDelay)
                 }
@@ -49,7 +53,8 @@ private final class Harness {
                 return try self.text.get()
             },
             readSource: { [weak self] in
-                self?.source ?? InboxSource(appName: nil, bundleID: nil, url: nil)
+                self?.callOrder.append("source")
+                return self?.source ?? InboxSource(appName: nil, bundleID: nil, url: nil)
             },
             now: { noon },
             dropWindow: dropWindow,
@@ -88,6 +93,21 @@ private final class Harness {
     #expect(contents.hasSuffix("> Натали:\nтекст\n"))
     #expect(harness.shown == [.captured(app: "Telegram", lines: 2, attachments: 0)])
     #expect(harness.sounds == [.done])
+}
+
+// The source is read after the text is captured, never before: `FrontmostSource.read()` can
+// raise the macOS automation consent dialog on a browser's first ask, and answering that dialog
+// moves focus away from whatever the Cmd+C was meant to reach. Pinned here so a future "tidy
+// this up" cannot swap the two calls back without a test noticing.
+@MainActor
+@Test func theSourceIsReadAfterTheCaptureNotBefore() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let harness = Harness(root: root)
+
+    await harness.capture()
+
+    #expect(harness.callOrder == ["capture", "source"])
 }
 
 // An empty folder looks exactly like a capture that happened. This one did not.
