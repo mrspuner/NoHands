@@ -31,6 +31,10 @@ public final class MeetingCoordinator {
     /// and said once: repeating it every second would bury the panel in the same sentence.
     static let monitorFailureLimit = 10
 
+    /// How long the microphone track must be exactly zero before it is called silent. Long
+    /// enough to outlast any gap between buffers, short enough that the owner can still fix it.
+    static let microphoneSilenceThreshold: TimeInterval = 10
+
     /// The folder name of a recording started by hand while nothing recognisable was holding the
     /// audio devices.
     private static let manualSlug = "manual"
@@ -43,6 +47,12 @@ public final class MeetingCoordinator {
     /// fine. A fact rather than a sentence, exactly as `DictationCoordinator` reports it: the
     /// wording belongs to the `App` target.
     private let onNarrowbandInput: (Double?) -> Void
+    /// Whether the microphone track is delivering nothing but digital zeroes right now.
+    ///
+    /// Separate from `onNarrowbandInput` rather than folded into it: a narrow band is a warning
+    /// about quality and a silent track is a warning about loss, and the two are true at
+    /// different times — AirPods produce the first without the second.
+    private let onMicrophoneSilent: (Bool) -> Void
     private let onDictationBlocked: (Bool) -> Void
     private let isDictating: () -> Bool
     private let readInputDevice: () -> AudioInputDevice?
@@ -79,6 +89,12 @@ public final class MeetingCoordinator {
     /// two apart; `stopCapture` documents the same hazard about metadata.
     private var liveCaptureID: Int?
     private var capturesStarted = 0
+
+    /// The task asking the capture how quiet the microphone is. One at a time: the poll fires
+    /// once a second and the question crosses an actor boundary, so a second one would queue
+    /// behind the first and answer about a moment that has passed.
+    private var microphoneCheck: Task<Void, Never>?
+    private var microphoneSilent = false
 
     /// Drafts found on disk at startup, oldest first, waiting for the owner to say keep or
     /// delete. Emptied one at a time: each answer resolves the first and offers the next.
@@ -132,6 +148,7 @@ public final class MeetingCoordinator {
         showPanel: @escaping (MeetingPanelState) -> Void,
         hidePanel: @escaping (TimeInterval) -> Void,
         onNarrowbandInput: @escaping (Double?) -> Void,
+        onMicrophoneSilent: @escaping (Bool) -> Void,
         onDictationBlocked: @escaping (Bool) -> Void,
         isDictating: @escaping () -> Bool,
         readInputDevice: @escaping () -> AudioInputDevice? = AudioInputDevice.current,
@@ -146,6 +163,7 @@ public final class MeetingCoordinator {
         self.showPanel = showPanel
         self.hidePanel = hidePanel
         self.onNarrowbandInput = onNarrowbandInput
+        self.onMicrophoneSilent = onMicrophoneSilent
         self.onDictationBlocked = onDictationBlocked
         self.isDictating = isDictating
         self.readInputDevice = readInputDevice
@@ -277,8 +295,22 @@ public final class MeetingCoordinator {
         for match in matches {
             apply(.streamsChanged(app: match.app, input: match.input, output: match.output, at: now))
         }
+        checkMicrophone()
         apply(.tick(now))
         refreshOrphanPrompt(now: now)
+    }
+
+    private func checkMicrophone() {
+        guard let capture, liveCaptureID != nil, microphoneCheck == nil else { return }
+        microphoneCheck = Task { @MainActor [weak self] in
+            let silent = await capture.microphoneSilentSeconds() >= Self.microphoneSilenceThreshold
+            guard let self else { return }
+            if silent != microphoneSilent {
+                microphoneSilent = silent
+                onMicrophoneSilent(silent)
+            }
+            microphoneCheck = nil
+        }
     }
 
     private func noteMonitorFailure() {
@@ -412,6 +444,12 @@ public final class MeetingCoordinator {
         self.capture = nil
         // From here on this capture speaks about a meeting that is over.
         liveCaptureID = nil
+        // The warning goes with the recording it described, exactly as the narrowband one does:
+        // the next meeting asks its own capture and says its own.
+        microphoneCheck?.cancel()
+        microphoneCheck = nil
+        microphoneSilent = false
+        onMicrophoneSilent(false)
         let pendingStart = captureTask
         captureTask = nil
         let metadataURL = folder.appendingPathComponent(MeetingMetadata.fileName)
@@ -657,5 +695,6 @@ public final class MeetingCoordinator {
         await captureTask?.value
         _ = await closing?.value
         await housekeeping?.value
+        await microphoneCheck?.value
     }
 }

@@ -204,6 +204,7 @@ private struct MeetingContent: View {
                 .frame(width: 7, height: 7)
             Elapsed(since: since)
             narrowband
+            microphoneSilent
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -224,6 +225,18 @@ private struct MeetingContent: View {
         }
     }
 
+    /// Louder than the narrow-band warning, and deliberately: a narrow band costs quality, a
+    /// silent track costs the recording. It stays up for the length of the recording — the owner
+    /// is the only one who can plug a microphone in while that still saves something.
+    @ViewBuilder private var microphoneSilent: some View {
+        if model.meetingMicrophoneSilent {
+            Text("микрофон молчит")
+                .font(.system(size: 11))
+                .foregroundStyle(.red)
+                .lineLimit(1)
+        }
+    }
+
     private func prompt(
         _ text: String,
         yes: (String, MeetingCoordinator.Answer),
@@ -239,6 +252,7 @@ private struct MeetingContent: View {
                 .lineLimit(2)
             if warnAboutTheBand {
                 narrowband
+                microphoneSilent
             }
             PromptButton(title: yes.0, prominent: true) { model.onMeetingAnswer?(yes.1) }
             PromptButton(title: no.0, prominent: false) { model.onMeetingAnswer?(no.1) }

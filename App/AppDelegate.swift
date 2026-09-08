@@ -186,6 +186,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showPanel: { [panel] state in panel.show(meeting: state) },
             hidePanel: { [panel] delay in panel.hideMeeting(after: delay) },
             onNarrowbandInput: { [panel] hz in panel.setMeetingInputWarning(hz: hz) },
+            onMicrophoneSilent: { [panel] silent in panel.setMeetingMicrophoneSilent(silent) },
             // The one thing dictation must not run alongside: both want the microphone, and the
             // dictated speech would land in the meeting's own track.
             onDictationBlocked: { [weak self] blocked in self?.coordinator?.isBlocked = blocked },

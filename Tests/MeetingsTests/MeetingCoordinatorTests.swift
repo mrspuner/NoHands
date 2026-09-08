@@ -133,6 +133,10 @@ private final class Harness {
     /// The input's sample rate when it is narrowband, nil when the band is fine — one entry per
     /// time the coordinator said so.
     private(set) var narrowband: [Double?] = []
+    /// Одна запись на каждый раз, когда координатор сказал про немой микрофон. Массив, а не
+    /// флаг, по той же причине, что и `narrowband`: проверяется не только что он сказал, но и
+    /// сколько раз — надпись не должна мигать раз в секунду весь час.
+    private(set) var microphoneSilent: [Bool] = []
     private(set) var captures: [FakeCapture] = []
     /// What the coordinator reads instead of the machine's real default input. A seam for the
     /// same reason as `processes`: the warning and `meeting.json` both come from this, and the
@@ -166,6 +170,7 @@ private final class Harness {
             showPanel: { [weak self] in self?.shown.append($0) },
             hidePanel: { [weak self] in self?.hidden.append($0) },
             onNarrowbandInput: { [weak self] in self?.narrowband.append($0) },
+            onMicrophoneSilent: { [weak self] in self?.microphoneSilent.append($0) },
             onDictationBlocked: { [weak self] in self?.blocked.append($0) },
             isDictating: { [weak self] in self?.dictating ?? false },
             readInputDevice: { [weak self] in self?.inputDevice },
@@ -604,6 +609,54 @@ private func isFailure(_ state: MeetingPanelState?) -> Bool {
     await harness.coordinator.settle()
 
     #expect(harness.narrowband == [16000])
+}
+
+// MARK: - A microphone track that is exactly zero
+
+// Приложение знало о немой дорожке на первой секунде и молчало полтора часа — ровно то, что
+// стоило владельцу его собственного голоса на встрече 7 сентября.
+@Test @MainActor func aSilentMicrophoneIsNamedWhileTheMeetingIsStillRecording() async throws {
+    let harness = try Harness()
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+    #expect(harness.microphoneSilent == [])
+
+    harness.captures[0].silentSeconds = 10
+    harness.coordinator.poll(now: noon.addingTimeInterval(1))
+    await harness.coordinator.settle()
+
+    #expect(harness.microphoneSilent == [true])
+}
+
+@Test @MainActor func aMicrophoneThatStartsSpeakingClearsTheWarning() async throws {
+    let harness = try Harness()
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+    harness.captures[0].silentSeconds = 10
+    harness.coordinator.poll(now: noon.addingTimeInterval(1))
+    await harness.coordinator.settle()
+
+    harness.captures[0].silentSeconds = 0
+    harness.coordinator.poll(now: noon.addingTimeInterval(2))
+    await harness.coordinator.settle()
+
+    #expect(harness.microphoneSilent == [true, false])
+}
+
+// Девять секунд — это не немота, а пауза между буферами плюс запас.
+@Test @MainActor func aShortGapIsNotCalledSilence() async throws {
+    let harness = try Harness()
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+
+    harness.captures[0].silentSeconds = 9
+    harness.coordinator.poll(now: noon.addingTimeInterval(1))
+    await harness.coordinator.settle()
+
+    #expect(harness.microphoneSilent == [])
 }
 
 // MARK: - A dictation already under way

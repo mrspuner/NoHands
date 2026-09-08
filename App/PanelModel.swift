@@ -30,6 +30,10 @@ final class PanelModel: ObservableObject {
     /// same reason `meeting` is kept apart from `state`: the two live on different clocks, and a
     /// dictation collapsing would otherwise wipe the warning off an hour-long recording.
     @Published var meetingNarrowbandHz: Double?
+    /// The microphone track of the meeting being recorded is delivering nothing but zeroes.
+    /// Kept apart from `meetingNarrowbandHz` for the same reason the coordinator keeps the two
+    /// callbacks apart: they are different warnings and they are true at different times.
+    @Published var meetingMicrophoneSilent = false
     /// The transcription notice, kept apart from `state` and `meeting` rather than merged into
     /// either. A finished transcript lands seconds after a meeting ends — exactly when dictation
     /// has just been unblocked and may well be in use — so it must not take the row a dictation

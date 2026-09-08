@@ -114,6 +114,7 @@ final class PanelWindow {
             // Goes with the recording it described, exactly as the dictation warning goes with
             // its dictation: the next meeting reads the input device again and says its own.
             self?.model.meetingNarrowbandHz = nil
+            self?.model.meetingMicrophoneSilent = false
             self?.panel.invalidateShadow()
             self?.updateAcceptsClicks()
             // See `show(_:)` above: the same click-accepting state decides whether a notice may grow.
@@ -179,6 +180,10 @@ final class PanelWindow {
 
     func setMeetingInputWarning(hz: Double?) {
         model.meetingNarrowbandHz = hz
+    }
+
+    func setMeetingMicrophoneSilent(_ silent: Bool) {
+        model.meetingMicrophoneSilent = silent
     }
 
     /// The window is only as tall as it needs to be, and that matters more than it looks.
