@@ -35,14 +35,18 @@ public struct AudioInputDevice: Sendable {
     public static func current() -> AudioInputDevice? {
         guard let deviceID = defaultInputDeviceID(),
               let name = deviceName(deviceID),
-              let uid = deviceUID(deviceID),
               let format = streamFormat(deviceID)
         else {
             return nil
         }
+        // Empty rather than fatal, unlike the three above. The uid is wanted by one caller — the
+        // meeting rebind — and `MicrophoneRecorder` turns a `nil` from here into
+        // `RecordingError.noInputDevice` and refuses to record. A device CoreAudio declines to
+        // name is still a microphone, and dictation must not stop because of a property it never
+        // asked for. `MeetingCoordinator.checkMicrophone` skips the rebind on an empty one.
         return AudioInputDevice(
             name: name,
-            uid: uid,
+            uid: deviceUID(deviceID) ?? "",
             sampleRate: format.mSampleRate,
             channelCount: format.mChannelsPerFrame
         )

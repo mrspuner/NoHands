@@ -349,7 +349,11 @@ public final class MeetingCoordinator {
                 microphoneSilent = silent
                 onMicrophoneSilent(silent)
             }
-            if silent, let device, mayRebind(now: now) {
+            // An empty uid is a device CoreAudio would not name — `AudioInputDevice.current`
+            // reports it rather than pretending there is no microphone, because that requirement
+            // belongs to this rebind alone and dictation must not be stopped by it. There is
+            // nothing to bind to, so the attempt is skipped rather than spent.
+            if silent, let device, !device.uid.isEmpty, mayRebind(now: now) {
                 rebindAttempts += 1
                 lastRebindAt = now
                 // A rebind that throws is not reported: `updateConfiguration` can fail for its

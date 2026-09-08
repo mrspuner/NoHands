@@ -796,6 +796,28 @@ private let airpods = AudioInputDevice(
     #expect(harness.captures[0].rebinds == ["F0-D3:input"])
 }
 
+// uid нужен одной только перепривязке — встречам, не диктовке. Устройство без читаемого uid
+// поэтому остаётся устройством: `current()` отдаёт его с пустой строкой, а не `nil`, иначе
+// требование фазы 2а решало бы за диктовку, что микрофона нет вовсе. Перепривязываться по пустой
+// строке не на что, и попытка тратится впустую.
+@Test @MainActor func silenceWithADeviceThatHasNoUidDoesNotRebind() async throws {
+    let harness = try Harness()
+    harness.inputDevice = AudioInputDevice(
+        name: "Микрофон без uid", uid: "", sampleRate: 48000, channelCount: 1
+    )
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+
+    harness.captures[0].silentSeconds = 10
+    harness.coordinator.poll(now: noon.addingTimeInterval(11))
+    await harness.coordinator.settle()
+
+    #expect(harness.captures[0].rebinds.isEmpty)
+    // Надпись при этом стоит: дорожка немая, чинить её просто нечем.
+    #expect(harness.microphoneSilent == [true])
+}
+
 // Немая дорожка без устройства — перепривязывать не на что.
 @Test @MainActor func silenceWithNoDeviceDoesNotRebind() async throws {
     let harness = try Harness()
