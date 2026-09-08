@@ -24,7 +24,7 @@ public enum MeetingMarkdown {
         lines.append("date: \(format(startedAt, as: "yyyy-MM-dd"))")
         lines.append("started: \(format(startedAt, as: "HH:mm"))")
         lines.append("duration: \(minutes(durationSeconds))m")
-        if let appName { lines.append("app: \(quoted(appName))") }
+        if let appName { lines.append("app: \(Frontmatter.quoted(appName))") }
         lines.append("---")
         lines.append("")
         lines.append(TranscriptIndex.heading)
@@ -34,27 +34,6 @@ public enum MeetingMarkdown {
         }
         lines.append("")
         return lines.joined(separator: "\n")
-    }
-
-    /// The one value in the front matter that comes from outside this code: the display name of
-    /// whatever process was holding the audio devices, straight from `NSRunningApplication`.
-    /// A colon or a newline in it would break the `---` block for Obsidian and for phase 2г,
-    /// which re-reads this file to pick up edited speaker names. Quoted and escaped rather than
-    /// trusted — the archive outlives every assumption about what applications are called.
-    static func quoted(_ value: String) -> String {
-        var cleaned = ""
-        for scalar in value.unicodeScalars {
-            if CharacterSet.controlCharacters.contains(scalar) {
-                // Skip control characters entirely
-                continue
-            } else {
-                cleaned.append(Character(scalar))
-            }
-        }
-        let escaped = cleaned
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-        return "\"\(escaped)\""
     }
 
     /// Same rule as `MeetingContent.length` in `PanelView` and `MeetingNotice.length`: a meeting
