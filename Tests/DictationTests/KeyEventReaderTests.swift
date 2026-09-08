@@ -63,3 +63,25 @@ import Testing
     #expect(!KeyEventReader.shouldSwallow(.fnDown, flags: .maskSecondaryFn, space: true, escape: true))
     #expect(!KeyEventReader.shouldSwallow(.fnUp, flags: [], space: true, escape: true))
 }
+
+@Test func fnPlusCIsRecognized() {
+    #expect(KeyEventReader.kind(type: .keyDown, keyCode: 8, flags: .maskSecondaryFn) == .captureDown)
+}
+
+// The flag is part of what the key *is* here, not a separate condition checked later: without
+// it this type would hand the machine every letter C typed on the machine.
+@Test func aPlainCIsNotACapture() {
+    #expect(KeyEventReader.kind(type: .keyDown, keyCode: 8, flags: []) == nil)
+    #expect(KeyEventReader.kind(type: .keyDown, keyCode: 8, flags: .maskCommand) == nil)
+}
+
+@Test func cIsRecognizedOnlyOnKeyDown() {
+    #expect(KeyEventReader.kind(type: .keyUp, keyCode: 8, flags: .maskSecondaryFn) == nil)
+    #expect(KeyEventReader.kind(type: .flagsChanged, keyCode: 8, flags: .maskSecondaryFn) == nil)
+}
+
+// Always: the only way this kind is produced at all is with fn held, and letting the letter
+// through would type a "c" into whatever the owner was reading.
+@Test func captureIsAlwaysSwallowed() {
+    #expect(KeyEventReader.shouldSwallow(.captureDown, flags: .maskSecondaryFn, space: false, escape: false))
+}

@@ -21,6 +21,10 @@ public final class DictationCoordinator {
     /// is fine. Reported once, at the start of each recording. A fact rather than a sentence:
     /// interface wording belongs to the `App` target.
     private let onNarrowbandInput: (Double?) -> Void
+    /// fn+C. A closure rather than a dependency, for the same reason the panel is one: dictation
+    /// knows nothing about folders, and a protocol with one implementation would only hide which
+    /// way the dependency runs.
+    private let onCapture: () -> Void
 
     private var machine: DictationMachine
     private var monitor: FnKeyMonitor?
@@ -65,7 +69,8 @@ public final class DictationCoordinator {
         showPanel: @escaping (PanelState) -> Void,
         hidePanel: @escaping (TimeInterval) -> Void,
         onLevel: @escaping @Sendable (Float) -> Void,
-        onNarrowbandInput: @escaping (Double?) -> Void
+        onNarrowbandInput: @escaping (Double?) -> Void,
+        onCapture: @escaping () -> Void
     ) {
         self.recorder = recorder
         self.transcriber = transcriber
@@ -77,6 +82,7 @@ public final class DictationCoordinator {
         self.hidePanel = hidePanel
         self.onLevel = onLevel
         self.onNarrowbandInput = onNarrowbandInput
+        self.onCapture = onCapture
         self.machine = DictationMachine(limits: DictationMachine.Limits(config: config))
     }
 
@@ -142,6 +148,8 @@ public final class DictationCoordinator {
             apply(.spaceDown)
         case .escapeDown:
             apply(.escapeDown)
+        case .captureDown:
+            apply(.captureDown)
         }
     }
 
@@ -232,6 +240,9 @@ public final class DictationCoordinator {
             let audio = audioURL
             audioURL = nil
             recent.remember(raw: raw, cleaned: cleaned, audio: audio)
+
+        case .capture:
+            onCapture()
         }
     }
 

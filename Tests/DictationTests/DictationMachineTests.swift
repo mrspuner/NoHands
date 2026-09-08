@@ -326,3 +326,76 @@ private func cleaning() -> DictationMachine {
     subject.isBlocked = false
     #expect(subject.handle(.fnDown(at: start)) == [.startRecording, .swallow(space: true, escape: true)])
 }
+
+@Test func fnPlusCFromRestJustCaptures() {
+    var subject = machine()
+    #expect(subject.handle(.captureDown) == [.capture])
+    #expect(subject.state == .idle)
+}
+
+// The refusal to dictate over a meeting leaves the machine idle, and capture never touches the
+// microphone — so the rule that blocks dictation does not reach it. In practice the owner hears
+// the refusal sound first and then gets the capture, and that is the accepted price of the key
+// not falling away for fifteen hours of calls a week.
+@Test func captureWorksWhileAMeetingIsBeingRecorded() {
+    var subject = machine()
+    subject.isBlocked = true
+    _ = subject.handle(.fnDown(at: start))
+    #expect(subject.handle(.captureDown) == [.capture])
+}
+
+// fn was held long enough to start recording before C arrived. The recording is an artefact of
+// the gesture, not something the owner asked for.
+@Test func fnPlusCDuringARecordingDropsItAndCapturesAnyway() {
+    var subject = recording()
+    let effects = subject.handle(.captureDown)
+    #expect(effects == [
+        .discardRecording,
+        .hidePanel(after: 0),
+        .swallow(space: false, escape: false),
+        .capture,
+    ])
+    #expect(subject.state == .idle)
+}
+
+// The same from inside the hold threshold, where nothing has been announced yet: a rule that
+// depended on whether the owner pressed the second key within 300 ms would be irreproducible.
+@Test func fnPlusCInsideTheHoldThresholdBehavesTheSame() {
+    var subject = machine()
+    _ = subject.handle(.fnDown(at: start))
+    #expect(subject.handle(.captureDown).contains(.capture))
+    #expect(subject.state == .idle)
+}
+
+// A dictation past the recording stage owns the clipboard: `.inserting` borrows it and puts it
+// back, and a capture borrowing it at the same moment leaves the owner's clipboard holding the
+// dictated text for good. Named refusal rather than a race nobody could reproduce.
+@Test func captureIsRefusedWhileADictationIsInFlight() {
+    for state in ["stopping", "transcribing", "cleaning", "inserting"] {
+        var subject = recording()
+        _ = subject.handle(.fnUp(at: start.addingTimeInterval(1)))
+        if state != "stopping" {
+            _ = subject.handle(.recordingStopped(URL(fileURLWithPath: "/tmp/a.wav")))
+        }
+        if state == "cleaning" || state == "inserting" {
+            _ = subject.handle(.transcribed("сырой текст"))
+        }
+        if state == "inserting" {
+            _ = subject.handle(.cleaned("чистый текст"))
+        }
+        let effects = subject.handle(.captureDown)
+        #expect(effects == [.play(.error), .show(.captureRefused), .hidePanel(after: 3)],
+                "состояние \(state)")
+        #expect(!effects.contains(.capture), "состояние \(state)")
+    }
+}
+
+// The refusal changes nothing about the dictation it refused: it goes on to insert its text.
+@Test func aRefusedCaptureDoesNotDisturbTheDictation() {
+    var subject = recording()
+    _ = subject.handle(.fnUp(at: start.addingTimeInterval(1)))
+    _ = subject.handle(.recordingStopped(URL(fileURLWithPath: "/tmp/a.wav")))
+    _ = subject.handle(.captureDown)
+    #expect(subject.state == .transcribing)
+    #expect(subject.handle(.transcribed("текст")) == [.show(.cleaning), .clean("текст")])
+}

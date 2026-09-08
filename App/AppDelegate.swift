@@ -302,7 +302,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         panel.setLevel(level)
                     }
                 },
-                onNarrowbandInput: { [panel] hz in panel.setInputWarning(hz: hz) }
+                onNarrowbandInput: { [panel] hz in panel.setInputWarning(hz: hz) },
+                onCapture: { [weak self] in self?.inbox?.captureRequested() }
             )
             try coordinator.start()
             // This coordinator is new; the meeting it must not run alongside can be older than

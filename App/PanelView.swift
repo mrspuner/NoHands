@@ -103,7 +103,7 @@ struct PanelView: View {
     /// new state has to be thought about here rather than quietly getting an icon that lies.
     private var endsWithoutText: Bool {
         switch model.state {
-        case .failure, .blocked: true
+        case .failure, .blocked, .captureRefused: true
         case .recording, .transcribing, .cleaning, .inserting, nil: false
         }
     }
@@ -122,6 +122,7 @@ struct PanelView: View {
             return "вставляю без чистки: \(skipped)"
         case .failure(let message): return message
         case .blocked: return "идёт запись созвона"
+        case .captureRefused: return "диктовка ещё идёт"
         case .recording, nil: return ""
         }
     }
