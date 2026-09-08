@@ -35,6 +35,10 @@ public final class MeetingCoordinator {
     /// enough to outlast any gap between buffers, short enough that the owner can still fix it.
     static let microphoneSilenceThreshold: TimeInterval = 10
 
+    /// Not more often than this, and not more than `rebindLimit` times per recording.
+    static let rebindCooldown: TimeInterval = 10
+    static let rebindLimit = 3
+
     /// The folder name of a recording started by hand while nothing recognisable was holding the
     /// audio devices.
     private static let manualSlug = "manual"
@@ -95,6 +99,10 @@ public final class MeetingCoordinator {
     /// behind the first and answer about a moment that has passed.
     private var microphoneCheck: Task<Void, Never>?
     private var microphoneSilent = false
+    /// How many rebinds have been tried this recording, and when the last one was — both reset
+    /// in `stopCapture` so the next meeting starts with a full budget.
+    private var rebindAttempts = 0
+    private var lastRebindAt: Date?
 
     /// Drafts found on disk at startup, oldest first, waiting for the owner to say keep or
     /// delete. Emptied one at a time: each answer resolves the first and offers the next.
@@ -295,13 +303,14 @@ public final class MeetingCoordinator {
         for match in matches {
             apply(.streamsChanged(app: match.app, input: match.input, output: match.output, at: now))
         }
-        checkMicrophone()
+        checkMicrophone(now: now)
         apply(.tick(now))
         refreshOrphanPrompt(now: now)
     }
 
-    private func checkMicrophone() {
+    private func checkMicrophone(now: Date) {
         guard let capture, liveCaptureID != nil, microphoneCheck == nil else { return }
+        let device = readInputDevice()
         microphoneCheck = Task { @MainActor [weak self] in
             let silent = await capture.microphoneSilentSeconds() >= Self.microphoneSilenceThreshold
             guard let self else { return }
@@ -316,8 +325,25 @@ public final class MeetingCoordinator {
                 microphoneSilent = silent
                 onMicrophoneSilent(silent)
             }
+            if silent, let device, mayRebind(now: now) {
+                rebindAttempts += 1
+                lastRebindAt = now
+                // A rebind that throws is not reported: the stream dying has its own channel,
+                // and the track is already known to be silent — the panel is saying so.
+                try? await capture.rebindMicrophone(to: device.uid)
+            }
             microphoneCheck = nil
         }
+    }
+
+    /// Whether a rebind attempt is still affordable this recording: under the limit, and either
+    /// the first try or at least `rebindCooldown` since the last one — a fresh binding needs a
+    /// moment to hand back its first buffer, or the silence it has not cleared yet would read as
+    /// a second failure and spend the budget faster than the device could ever answer.
+    private func mayRebind(now: Date) -> Bool {
+        guard rebindAttempts < Self.rebindLimit else { return false }
+        guard let lastRebindAt else { return true }
+        return now.timeIntervalSince(lastRebindAt) >= Self.rebindCooldown
     }
 
     private func noteMonitorFailure() {
@@ -457,6 +483,8 @@ public final class MeetingCoordinator {
         microphoneCheck = nil
         microphoneSilent = false
         onMicrophoneSilent(false)
+        rebindAttempts = 0
+        lastRebindAt = nil
         let pendingStart = captureTask
         captureTask = nil
         let metadataURL = folder.appendingPathComponent(MeetingMetadata.fileName)

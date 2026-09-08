@@ -742,6 +742,81 @@ private func isFailure(_ state: MeetingPanelState?) -> Bool {
     #expect(harness.microphoneSilent == [false, true])
 }
 
+// MARK: - Rebinding a microphone that appeared mid-meeting
+
+private let airpods = AudioInputDevice(
+    name: "AirPods", uid: "F0-D3:input", sampleRate: 24000, channelCount: 1
+)
+
+// ScreenCaptureKit привязывает микрофон один раз, на старте потока: устройство, подключённое
+// посреди встречи, он сам не подхватывает — измерено, проба 3 из спеки.
+@Test @MainActor func aDeviceThatAppearsMidMeetingIsBoundExplicitly() async throws {
+    let harness = try Harness()
+    harness.inputDevice = nil
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+
+    harness.captures[0].silentSeconds = 10
+    harness.inputDevice = airpods
+    harness.coordinator.poll(now: noon.addingTimeInterval(11))
+    await harness.coordinator.settle()
+
+    #expect(harness.captures[0].rebinds == ["F0-D3:input"])
+}
+
+// Немая дорожка без устройства — перепривязывать не на что.
+@Test @MainActor func silenceWithNoDeviceDoesNotRebind() async throws {
+    let harness = try Harness()
+    harness.inputDevice = nil
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+
+    harness.captures[0].silentSeconds = 10
+    harness.coordinator.poll(now: noon.addingTimeInterval(11))
+    await harness.coordinator.settle()
+
+    #expect(harness.captures[0].rebinds.isEmpty)
+}
+
+// Устройство может молчать по своей причине — выключенный в железе микрофон, эксклюзивно
+// занятое приложение. Тогда попытки не помогают, а updateConfiguration дёргает поток, которым
+// пишется единственная уцелевшая дорожка собеседников.
+@Test @MainActor func rebindingGivesUpAfterThreeAttempts() async throws {
+    let harness = try Harness()
+    harness.inputDevice = airpods
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+
+    for attempt in 1...8 {
+        harness.captures[0].silentSeconds = 10
+        harness.coordinator.poll(now: noon.addingTimeInterval(TimeInterval(attempt) * 11))
+        await harness.coordinator.settle()
+    }
+
+    #expect(harness.captures[0].rebinds.count == 3)
+}
+
+// Опрос идёт раз в секунду, но перепривязка — нет: новой привязке нужно время, чтобы отдать
+// первый буфер, иначе тишина последней секунды прочтётся как отказ и вызовет вторую попытку.
+@Test @MainActor func rebindingWaitsBetweenAttempts() async throws {
+    let harness = try Harness()
+    harness.inputDevice = airpods
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+
+    for second in 1...5 {
+        harness.captures[0].silentSeconds = 10
+        harness.coordinator.poll(now: noon.addingTimeInterval(TimeInterval(second)))
+        await harness.coordinator.settle()
+    }
+
+    #expect(harness.captures[0].rebinds.count == 1)
+}
+
 // MARK: - A dictation already under way
 
 // Spec §6: a meeting starting while a dictation is in flight waits for it — the draft begins a
