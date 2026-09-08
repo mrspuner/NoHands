@@ -1179,6 +1179,31 @@ private let zoom = AudioProcessMonitor.State(
     })
 }
 
+// The gate is ten seconds, but `ElapsedTime.minutes` rounds anything under thirty down to
+// zero — a fifteen-second dropout clears the gate and still rounds to "0 мин" if nothing
+// corrects for it. That sentence would claim no silence and an empty track in the same
+// breath, for a dropout ordinary enough that the review this fixed was asked to check it.
+@Test @MainActor func aBriefMicrophoneDropoutIsNeverReportedAsZeroMinutes() async throws {
+    let harness = try Harness()
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+    harness.captures[0].silentAtStop = 15
+
+    harness.coordinator.answer(.confirm, at: noon.addingTimeInterval(1))
+    harness.coordinator.stopPressed(at: noon.addingTimeInterval(2))
+    await harness.coordinator.settle()
+
+    #expect(harness.shown.contains { state in
+        if case .failure(let text) = state { return text.contains("Микрофон молчал меньше минуты") }
+        return false
+    })
+    #expect(!harness.shown.contains { state in
+        if case .failure(let text) = state { return text.contains("0 мин") }
+        return false
+    })
+}
+
 // A failure shown while the save prompt is up would replace it, and the owner would be left with
 // a draft they can no longer answer for — the panel takes one state at a time. The reason waits
 // until the answer decides what the folder is for.

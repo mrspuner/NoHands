@@ -557,9 +557,15 @@ public final class MeetingCoordinator {
                 // Interface text, so Russian — the rule `MeetingNotice` follows. Said only when
                 // the silence outlasted the threshold: a recording that lost its last ten
                 // seconds of microphone lost nothing worth a red line.
+                //
+                // `MeetingNotice.length` and not a bare `ElapsedTime.minutes(...) мин`: the gate
+                // above is ten seconds, but rounding to the nearest minute takes anything under
+                // thirty down to zero, and "Микрофон молчал 0 мин" would claim no silence and an
+                // empty track in the same sentence.
                 if closed.microphoneSilentSeconds >= Self.microphoneSilenceThreshold {
                     failures.append(
-                        "Микрофон молчал \(ElapsedTime.minutes(closed.microphoneSilentSeconds)) мин"
+                        "Микрофон молчал "
+                            + MeetingNotice.length(ElapsedTime.minutes(closed.microphoneSilentSeconds))
                             + " — ваша дорожка пустая"
                     )
                 }

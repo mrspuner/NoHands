@@ -33,9 +33,14 @@ public struct MeetingNotice: Equatable, Sendable {
 
     /// Same rule as `MeetingContent.length` in `PanelView`, restated here because `App` depends
     /// on `Meetings` and not the other way round: a meeting that was in fact processed must never
-    /// read as zero minutes. `outcome.minutes` is already rounded to the nearest whole minute, so
-    /// `0` here means under thirty seconds, not nothing.
-    private static func length(_ minutes: Int) -> String {
+    /// read as zero minutes. The minutes passed in are already rounded to the nearest whole
+    /// minute, so `0` here means under thirty seconds, not nothing.
+    ///
+    /// Not `private`: `MeetingCoordinator`'s silence sentence needs the exact same rule — a
+    /// microphone dropout that really happened must not round to "0 мин" either — and it lives
+    /// in this module, so it shares this implementation instead of carrying a third copy of the
+    /// same ternary.
+    static func length(_ minutes: Int) -> String {
         minutes < 1 ? "меньше минуты" : "\(minutes) мин"
     }
 
