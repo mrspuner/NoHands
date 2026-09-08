@@ -63,32 +63,29 @@ public struct AudioInputDevice: Sendable {
         return deviceID
     }
 
-    private static func deviceName(_ deviceID: AudioDeviceID) -> String? {
-        var name: CFString = "" as CFString
+    private static func readCFStringProperty(
+        _ deviceID: AudioDeviceID, selector: AudioObjectPropertySelector
+    ) -> String? {
+        var value: CFString = "" as CFString
         var size = UInt32(MemoryLayout<CFString>.size)
         var address = AudioObjectPropertyAddress(
-            mSelector: kAudioObjectPropertyName,
+            mSelector: selector,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &name)
+        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &value)
         guard status == noErr else { return nil }
-        return name as String
+        return value as String
+    }
+
+    private static func deviceName(_ deviceID: AudioDeviceID) -> String? {
+        readCFStringProperty(deviceID, selector: kAudioObjectPropertyName)
     }
 
     /// What ScreenCaptureKit binds a microphone to — `kAudioDevicePropertyDeviceUID`, the same
     /// string `SCStreamConfiguration.microphoneCaptureDeviceID` takes.
     private static func deviceUID(_ deviceID: AudioDeviceID) -> String? {
-        var uid: CFString = "" as CFString
-        var size = UInt32(MemoryLayout<CFString>.size)
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyDeviceUID,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &uid)
-        guard status == noErr else { return nil }
-        return uid as String
+        readCFStringProperty(deviceID, selector: kAudioDevicePropertyDeviceUID)
     }
 
     private static func streamFormat(_ deviceID: AudioDeviceID) -> AudioStreamBasicDescription? {
