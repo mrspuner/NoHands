@@ -61,6 +61,13 @@ private final class FakeCapture: MeetingCapture {
     /// What the next `microphoneSilentSeconds()` answers. The tests set it directly: this fake
     /// has no audio to be silent about.
     var silentSeconds: TimeInterval = 0
+    /// Set to make `microphoneSilentSeconds()` suspend instead of answering at once, holding the
+    /// continuation in `pendingSilenceCheck` until `resumeMicrophoneCheck()` releases it. Models
+    /// the real gap between a poll asking the question and the answer arriving — the gap in
+    /// which a meeting can end before the answer does, which is what the coordinator's
+    /// stale-check guard exists for.
+    var suspendMicrophoneCheck = false
+    private var pendingSilenceCheck: CheckedContinuation<TimeInterval, Never>?
     /// Every uid the coordinator asked to rebind to, in order.
     private(set) var rebinds: [String] = []
     /// Set to make a rebind fail the way a stream that died would.
@@ -111,7 +118,19 @@ private final class FakeCapture: MeetingCapture {
         )
     }
 
-    func microphoneSilentSeconds() async -> TimeInterval { silentSeconds }
+    func microphoneSilentSeconds() async -> TimeInterval {
+        guard suspendMicrophoneCheck else { return silentSeconds }
+        return await withCheckedContinuation { pendingSilenceCheck = $0 }
+    }
+
+    /// Releases a `microphoneSilentSeconds()` call suspended by `suspendMicrophoneCheck`, with
+    /// whatever `silentSeconds` holds at the moment of release rather than at the moment of the
+    /// call — the answer arrives late, and a late answer reflects the microphone at the time it
+    /// was finally read, not at the time it was asked.
+    func resumeMicrophoneCheck() {
+        pendingSilenceCheck?.resume(returning: silentSeconds)
+        pendingSilenceCheck = nil
+    }
 
     func rebindMicrophone(to deviceUID: String) async throws {
         if let rebindError { throw rebindError }
@@ -657,6 +676,70 @@ private func isFailure(_ state: MeetingPanelState?) -> Bool {
     await harness.coordinator.settle()
 
     #expect(harness.microphoneSilent == [])
+}
+
+// The direct analogue of `theWarningIsSaidAtTheStartAndNotRepeated` above: this is the property
+// that keeps the panel from rewriting itself once a second for the length of the recording.
+@Test @MainActor func theMicrophoneWarningIsNotRepeatedWhileItStaysSilent() async throws {
+    let harness = try Harness()
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+
+    harness.captures[0].silentSeconds = 10
+    harness.coordinator.poll(now: noon.addingTimeInterval(1))
+    await harness.coordinator.settle()
+    harness.coordinator.poll(now: noon.addingTimeInterval(2))
+    await harness.coordinator.settle()
+    harness.coordinator.poll(now: noon.addingTimeInterval(3))
+    await harness.coordinator.settle()
+
+    #expect(harness.microphoneSilent == [true])
+}
+
+// Cancelling `microphoneCheck` in `stopCapture` is cooperative — the task's own `await` still
+// resolves once the fake finally answers, well after the meeting it was asked about is over.
+// That stale answer must not be acted on, and must not stand in for whatever the next meeting's
+// own check is doing with the coordinator's single `microphoneCheck` slot.
+@Test @MainActor func aStaleMicrophoneAnswerAfterTheMeetingEndedIsDiscarded() async throws {
+    let harness = try Harness()
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    harness.coordinator.answer(.confirm, at: noon.addingTimeInterval(1))
+    await harness.coordinator.settle()
+
+    harness.captures[0].suspendMicrophoneCheck = true
+    harness.coordinator.poll(now: noon.addingTimeInterval(2))
+    // `settle()` cannot be used here — it would wait forever for a check that is deliberately
+    // not answering yet. Yielding instead lets the check reach its suspension inside the fake,
+    // the same pattern `FakeCapture.stop()` uses to let a race run first.
+    for _ in 0..<8 { await Task.yield() }
+
+    harness.coordinator.stopPressed(at: noon.addingTimeInterval(3))
+    await harness.coordinator.settle()
+    // The withdrawal `stopCapture` itself fires when the meeting ends — one entry, before the
+    // stale check has answered anything at all.
+    #expect(harness.microphoneSilent == [false])
+
+    harness.captures[0].silentSeconds = 10
+    harness.captures[0].resumeMicrophoneCheck()
+    for _ in 0..<8 { await Task.yield() }
+    // The stale answer, about a meeting that is already over, added nothing.
+    #expect(harness.microphoneSilent == [false])
+
+    // The next meeting's own check still works — proof the stale completion did not clobber
+    // `microphoneCheck` or leave the guard against a second check in flight stuck.
+    harness.processes = [telemostIdle]
+    harness.coordinator.poll(now: noon.addingTimeInterval(4))
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon.addingTimeInterval(5))
+    await harness.coordinator.settle()
+
+    harness.captures[1].silentSeconds = 10
+    harness.coordinator.poll(now: noon.addingTimeInterval(6))
+    await harness.coordinator.settle()
+
+    #expect(harness.microphoneSilent == [false, true])
 }
 
 // MARK: - A dictation already under way

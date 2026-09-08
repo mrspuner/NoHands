@@ -305,6 +305,13 @@ public final class MeetingCoordinator {
         microphoneCheck = Task { @MainActor [weak self] in
             let silent = await capture.microphoneSilentSeconds() >= Self.microphoneSilenceThreshold
             guard let self else { return }
+            // Cancellation here is cooperative: `stopCapture` cancelling this task does not stop
+            // the `await` above from resolving, only asks it to. A stale answer that resumes
+            // after the meeting it was asked about has already ended belongs to nothing — acting
+            // on it would report about a meeting that is over, and unconditionally nilling
+            // `microphoneCheck` below would erase the handle the *next* meeting's check just
+            // took, since a single tick is enough to start one — see `stopCapture`'s own comment.
+            guard !Task.isCancelled else { return }
             if silent != microphoneSilent {
                 microphoneSilent = silent
                 onMicrophoneSilent(silent)
