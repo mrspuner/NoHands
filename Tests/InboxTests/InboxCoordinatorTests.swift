@@ -219,8 +219,13 @@ private final class Harness {
 //
 // Margins are wide (a 500 ms window, not the 50 ms other tests use) because this one, unlike
 // `aDropAfterTheTargetClosedIsRefused`, has to land the second drop inside a narrow band — past
-// the original window's expiry, short of the re-armed one — rather than merely after both. Under
-// the full suite's parallel load a tighter margin was observed to flake.
+// the original window's expiry, short of the re-armed one — rather than merely after both. The
+// first drop sits near the end of the original window (400 of 500 ms) rather than in its middle,
+// so the band the second drop must land in is (500, 900) around a 650 ms target: 150 ms of margin
+// below, 250 ms above. Only the upper margin is fragile — a `Task.sleep` overshoot under load
+// pushes the second drop past the re-armed expiry — so that is the number that may not shrink;
+// the lower bound is self-correcting, since a late first sleep delays the re-arm by the same
+// amount it delays the first drop.
 @MainActor
 @Test func aSuccessfulDropRearmsTheTargetsOwnExpiry() async throws {
     let root = try temporaryRoot()
@@ -231,14 +236,14 @@ private final class Harness {
     let elsewhere = try temporaryRoot()
     defer { try? FileManager.default.removeItem(at: elsewhere) }
 
-    try await Task.sleep(for: .milliseconds(200))
+    try await Task.sleep(for: .milliseconds(400))
     let first = elsewhere.appendingPathComponent("первый.txt")
     try "данные".write(to: first, atomically: true, encoding: .utf8)
     #expect(harness.coordinator.drop([first]))
 
-    // Cumulative 600 ms: past the original 500 ms window, but the drop above re-armed it for
-    // another 500 ms starting from its own moment (200 + 500 = 700 ms).
-    try await Task.sleep(for: .milliseconds(400))
+    // Cumulative 650 ms: past the original 500 ms window, but the drop above re-armed it for
+    // another 500 ms starting from its own moment (400 + 500 = 900 ms).
+    try await Task.sleep(for: .milliseconds(250))
     let second = elsewhere.appendingPathComponent("второй.txt")
     try "данные".write(to: second, atomically: true, encoding: .utf8)
     #expect(harness.coordinator.drop([second]))
