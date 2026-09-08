@@ -21,7 +21,7 @@ public enum KeyMonitorError: Error, Equatable, LocalizedError {
 /// Watches for fn, space and escape, and swallows the last two while dictation owns them.
 ///
 /// An active tap on `keyDown` sees every keystroke on the machine. This one compares the key
-/// code against three numbers and hands the event straight back: nothing is accumulated,
+/// code against four numbers and hands the event straight back: nothing is accumulated,
 /// written or sent anywhere. That is the whole cost of latching on space and cancelling on
 /// escape, and it is written down in the decisions log.
 public final class FnKeyMonitor: @unchecked Sendable {
