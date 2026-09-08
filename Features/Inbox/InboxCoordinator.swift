@@ -113,9 +113,17 @@ public final class InboxCoordinator {
             // — `target` is not set until after the write succeeds, so no dropped file can have
             // landed inside it yet, which is what makes the removal safe. An empty folder would
             // look exactly like a capture that happened.
+            //
+            // Cleanup stays unconditional — it is about the disk, and this attempt owns whatever
+            // it left there regardless of who won the race. Reporting is about the panel, and
+            // belongs only to the attempt that is still current: a cancelled first capture whose
+            // `capture()` throws (`nothingCopied` is the ordinary case — two quick fn+C presses,
+            // the first with nothing selected) must not flash `.failure` over a second capture
+            // that has already shown `.captured` and armed its own dwell.
             if let createdFolder {
                 try? FileManager.default.removeItem(at: createdFolder)
             }
+            guard !Task.isCancelled else { return }
             reportFailure(error)
         }
     }

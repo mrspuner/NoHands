@@ -17,6 +17,11 @@ private let noon = Date(timeIntervalSince1970: 1_788_000_000)
 private final class Harness {
     let root: URL
     var text: Result<String, Error> = .success("> Натали:\nтекст")
+    /// Answers for the earliest outstanding calls to `capture`, consumed in call order; once
+    /// exhausted, `text` answers every call after. Empty by default, so every existing test's
+    /// single `text` keeps answering every call unchanged — this only matters to a test that
+    /// needs the first and second capture of a pair to behave differently.
+    var textQueue: [Result<String, Error>] = []
     var source = InboxSource(appName: "Telegram", bundleID: "ru.keepcoder.Telegram", url: nil)
     /// How long the `capture` closure suspends before answering. Zero by default, so every
     /// existing test's closure returns without ever yielding. Set to simulate a capture still in
@@ -37,6 +42,9 @@ private final class Harness {
                 guard let self else { throw InboxCapture.Failure.nothingCopied }
                 if self.captureDelay > .zero {
                     try? await Task.sleep(for: self.captureDelay)
+                }
+                if !self.textQueue.isEmpty {
+                    return try self.textQueue.removeFirst().get()
                 }
                 return try self.text.get()
             },
@@ -180,6 +188,30 @@ private final class Harness {
         Issue.record("ожидался единственный .captured от второго захвата: \(harness.shown)")
     }
     #expect(harness.sounds == [.done])
+}
+
+// The guard after `try await capture()` only covers the path where it returns. If it throws
+// instead — `nothingCopied` is the ordinary case, two quick fn+C presses where the first had
+// nothing selected — the failure must still be silenced for a superseded attempt, or it flashes
+// `.failure` over a second capture that has already shown `.captured`.
+@MainActor
+@Test func aSupersededCaptureThatFailsSaysNothing() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let harness = Harness(root: root)
+    harness.captureDelay = .milliseconds(50)
+    harness.textQueue = [.failure(InboxCapture.Failure.nothingCopied)]
+
+    harness.coordinator.captureRequested()
+    harness.coordinator.captureRequested()
+    await harness.coordinator.settle()
+    // The orphaned first task is never awaited directly — give it time to finish on its own.
+    try await Task.sleep(for: .milliseconds(100))
+
+    #expect(!harness.shown.contains { if case .failure = $0 { true } else { false } })
+    #expect(!harness.sounds.contains(.error))
+    let capturedCount = harness.shown.filter { if case .captured = $0 { true } else { false } }.count
+    #expect(capturedCount == 1)
 }
 
 // A drop is a promise of more time, not just of a copied file: the design lets a file dropped at
