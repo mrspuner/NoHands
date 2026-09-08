@@ -1443,299 +1443,7 @@ git commit -m "Координатор лотка: захват, папка, ми
 ```
 
 ---
-
-### Task 9: `KeyEventReader` учится различать fn+C
-
-**Files:**
-- Modify: `Features/Dictation/KeyEventReader.swift`
-- Modify: `Tests/DictationTests/KeyEventReaderTests.swift`
-
-**Interfaces:**
-- Consumes: ничего.
-- Produces: `KeyEventKind.captureDown`, `KeyEventReader.cKeyCode: Int64 = 8`.
-
-- [ ] **Step 1: Написать падающий тест**
-
-Дописать в конец `Tests/DictationTests/KeyEventReaderTests.swift`:
-
-```swift
-@Test func fnPlusCIsRecognized() {
-    #expect(KeyEventReader.kind(type: .keyDown, keyCode: 8, flags: .maskSecondaryFn) == .captureDown)
-}
-
-// The flag is part of what the key *is* here, not a separate condition checked later: without
-// it this type would hand the machine every letter C typed on the machine.
-@Test func aPlainCIsNotACapture() {
-    #expect(KeyEventReader.kind(type: .keyDown, keyCode: 8, flags: []) == nil)
-    #expect(KeyEventReader.kind(type: .keyDown, keyCode: 8, flags: .maskCommand) == nil)
-}
-
-@Test func cIsRecognizedOnlyOnKeyDown() {
-    #expect(KeyEventReader.kind(type: .keyUp, keyCode: 8, flags: .maskSecondaryFn) == nil)
-    #expect(KeyEventReader.kind(type: .flagsChanged, keyCode: 8, flags: .maskSecondaryFn) == nil)
-}
-
-// Always: the only way this kind is produced at all is with fn held, and letting the letter
-// through would type a "c" into whatever the owner was reading.
-@Test func captureIsAlwaysSwallowed() {
-    #expect(KeyEventReader.shouldSwallow(.captureDown, flags: .maskSecondaryFn, space: false, escape: false))
-}
-```
-
-- [ ] **Step 2: Прогнать и убедиться, что падает**
-
-Run: `swift test --filter KeyEventReaderTests`
-Expected: сборка не проходит — `type 'KeyEventKind' has no member 'captureDown'`.
-
-- [ ] **Step 3: Написать реализацию**
-
-В `Features/Dictation/KeyEventReader.swift`:
-
-добавить пятый вид события в `KeyEventKind`:
-
-```swift
-public enum KeyEventKind: Equatable, Sendable {
-    case fnDown
-    case fnUp
-    case spaceDown
-    case escapeDown
-    /// fn+C — the inbox hotkey. Not a dictation event at all: it is here because this is where
-    /// the application's one keyboard tap lives.
-    case captureDown
-}
-```
-
-добавить код клавиши рядом с остальными:
-
-```swift
-    /// `kVK_ANSI_C`
-    public static let cKeyCode: Int64 = 8
-```
-
-добавить ветку в `kind(type:keyCode:flags:)`, после ветки escape:
-
-```swift
-        // The fn flag is part of the identity of this event rather than a condition checked
-        // afterwards. Without it every letter C typed on the machine would reach the state
-        // machine — and the aliasing this type exists to filter out (arrows, the F row, Home,
-        // End, both Page keys) sets the flag on those keys' own events, never on C's.
-        case .keyDown where keyCode == cKeyCode && flags.contains(.maskSecondaryFn):
-            return .captureDown
-```
-
-и ветку в `shouldSwallow`:
-
-```swift
-        case .captureDown:
-            // Unconditional, because the kind cannot be produced without fn: passing the letter
-            // through would type a "c" into whatever the owner is reading.
-            return true
-```
-
-- [ ] **Step 4: Прогнать все тесты**
-
-Run: `swift test`
-Expected: PASS, 531 тест.
-
-- [ ] **Step 5: Коммит**
-
-```bash
-git add Features/Dictation/KeyEventReader.swift Tests/DictationTests/KeyEventReaderTests.swift
-git commit -m "KeyEventReader различает fn+C"
-```
-
----
-
-### Task 10: Автомат диктовки получает `.captureDown`
-
-Три правила, и все три уже приняты в спеке и журнале: из покоя — просто захват; из записи — захват вместо записи, потому что fn открыл микрофон только из-за самого жеста; из состояний после записи — названный отказ, потому что вставка держит буфер обмена.
-
-**Files:**
-- Modify: `Features/Dictation/DictationMachine.swift`
-- Modify: `Features/Dictation/PanelState.swift`
-- Modify: `App/PanelView.swift` (два исчерпывающих `switch` по `PanelState` компилятор заставит дополнить)
-- Modify: `Tests/DictationTests/DictationMachineTests.swift`
-
-**Interfaces:**
-- Consumes: `KeyEventKind.captureDown` из задачи 9.
-- Produces: `DictationMachine.Event.captureDown`, `DictationMachine.Effect.capture`, `PanelState.captureRefused`.
-
-- [ ] **Step 1: Написать падающий тест**
-
-Дописать в конец `Tests/DictationTests/DictationMachineTests.swift`:
-
-```swift
-@Test func fnPlusCFromRestJustCaptures() {
-    var subject = machine()
-    #expect(subject.handle(.captureDown) == [.capture])
-    #expect(subject.state == .idle)
-}
-
-// The refusal to dictate over a meeting leaves the machine idle, and capture never touches the
-// microphone — so the rule that blocks dictation does not reach it. In practice the owner hears
-// the refusal sound first and then gets the capture, and that is the accepted price of the key
-// not falling away for fifteen hours of calls a week.
-@Test func captureWorksWhileAMeetingIsBeingRecorded() {
-    var subject = machine()
-    subject.isBlocked = true
-    _ = subject.handle(.fnDown(at: start))
-    #expect(subject.handle(.captureDown) == [.capture])
-}
-
-// fn was held long enough to start recording before C arrived. The recording is an artefact of
-// the gesture, not something the owner asked for.
-@Test func fnPlusCDuringARecordingDropsItAndCapturesAnyway() {
-    var subject = recording()
-    let effects = subject.handle(.captureDown)
-    #expect(effects == [
-        .discardRecording,
-        .hidePanel(after: 0),
-        .swallow(space: false, escape: false),
-        .capture,
-    ])
-    #expect(subject.state == .idle)
-}
-
-// The same from inside the hold threshold, where nothing has been announced yet: a rule that
-// depended on whether the owner pressed the second key within 300 ms would be irreproducible.
-@Test func fnPlusCInsideTheHoldThresholdBehavesTheSame() {
-    var subject = machine()
-    _ = subject.handle(.fnDown(at: start))
-    #expect(subject.handle(.captureDown).contains(.capture))
-    #expect(subject.state == .idle)
-}
-
-// A dictation past the recording stage owns the clipboard: `.inserting` borrows it and puts it
-// back, and a capture borrowing it at the same moment leaves the owner's clipboard holding the
-// dictated text for good. Named refusal rather than a race nobody could reproduce.
-@Test func captureIsRefusedWhileADictationIsInFlight() {
-    for state in ["stopping", "transcribing", "cleaning", "inserting"] {
-        var subject = recording()
-        _ = subject.handle(.fnUp(at: start.addingTimeInterval(1)))
-        if state != "stopping" {
-            _ = subject.handle(.recordingStopped(URL(fileURLWithPath: "/tmp/a.wav")))
-        }
-        if state == "cleaning" || state == "inserting" {
-            _ = subject.handle(.transcribed("сырой текст"))
-        }
-        if state == "inserting" {
-            _ = subject.handle(.cleaned("чистый текст"))
-        }
-        let effects = subject.handle(.captureDown)
-        #expect(effects == [.play(.error), .show(.captureRefused), .hidePanel(after: 3)],
-                "состояние \(state)")
-        #expect(!effects.contains(.capture), "состояние \(state)")
-    }
-}
-
-// The refusal changes nothing about the dictation it refused: it goes on to insert its text.
-@Test func aRefusedCaptureDoesNotDisturbTheDictation() {
-    var subject = recording()
-    _ = subject.handle(.fnUp(at: start.addingTimeInterval(1)))
-    _ = subject.handle(.recordingStopped(URL(fileURLWithPath: "/tmp/a.wav")))
-    _ = subject.handle(.captureDown)
-    #expect(subject.state == .transcribing)
-    #expect(subject.handle(.transcribed("текст")) == [.show(.cleaning), .clean("текст")])
-}
-```
-
-- [ ] **Step 2: Прогнать и убедиться, что падает**
-
-Run: `swift test --filter DictationMachineTests`
-Expected: сборка не проходит — `type 'DictationMachine.Event' has no member 'captureDown'`.
-
-- [ ] **Step 3: Написать реализацию**
-
-В `Features/Dictation/PanelState.swift` добавить состояние в конец перечисления:
-
-```swift
-    /// fn+C arrived while a dictation was past the recording stage. Refused rather than raced:
-    /// insertion borrows the clipboard and a capture borrowing it at the same time would lose
-    /// what was on it.
-    case captureRefused
-```
-
-В `Features/Dictation/DictationMachine.swift`:
-
-в `Event` добавить
-
-```swift
-        /// fn+C. Not a dictation event: it rides this machine because the application has one
-        /// keyboard tap and one place where key events turn into decisions.
-        case captureDown
-```
-
-в `Effect` добавить
-
-```swift
-        /// Read the selection and file it in the inbox. Performed by whoever the coordinator was
-        /// given, which is not this feature — dictation knows nothing about folders.
-        case capture
-```
-
-в `handle(_:)`, сразу после ветки `case (.idle, .fnDown(let at)):`, добавить три ветки:
-
-```swift
-        // Capture never touches the microphone, so the rule that refuses dictation over a
-        // meeting does not reach it: the refusal leaves the machine idle, and this is what idle
-        // answers. In practice fn plays the refusal sound and then C files the item — the price
-        // of the key not falling away for the fifteen hours of calls in a week.
-        case (.idle, .captureDown):
-            return [.capture]
-
-        // fn was held past the threshold and a recording is running. It is an artefact of the
-        // gesture rather than something the owner asked for, so it goes exactly the way Escape
-        // sends it, and the capture happens regardless of how long the key was down — a rule
-        // that turned on 300 milliseconds would be irreproducible.
-        case (.recording, .captureDown):
-            state = .idle
-            return [
-                .discardRecording,
-                .hidePanel(after: 0),
-                .swallow(space: false, escape: false),
-                .capture,
-            ]
-
-        // A dictation past the recording stage owns the clipboard: `.inserting` borrows it and
-        // gives it back, and a capture borrowing it at the same moment would leave the owner's
-        // clipboard holding the dictated text for good. Two or three seconds of named refusal
-        // instead of a race that could only be seen by its consequences.
-        case (.stopping, .captureDown), (.transcribing, .captureDown),
-             (.cleaning, .captureDown), (.inserting, .captureDown):
-            return [.play(.error), .show(.captureRefused), .hidePanel(after: limits.failureDwell)]
-```
-
-- [ ] **Step 4: Дополнить панель, куда укажет компилятор**
-
-`App/PanelView.swift` перестанет собираться в двух местах — оба исчерпывающие `switch` по `PanelState`.
-
-В `endsWithoutText` (строка 102) новый случай идёт к тем, после которых никакой текст никуда не вставляется:
-
-```swift
-        case .failure, .blocked, .captureRefused: true
-```
-
-В `caption` (строка 120) добавить строку рядом с `.blocked`:
-
-```swift
-        case .captureRefused: return "диктовка ещё идёт"
-```
-
-- [ ] **Step 5: Прогнать все тесты**
-
-Run: `swift test`
-Expected: PASS, 537 тестов.
-
-- [ ] **Step 6: Коммит**
-
-```bash
-git add Features/Dictation/DictationMachine.swift Features/Dictation/PanelState.swift App/PanelView.swift Tests/DictationTests/DictationMachineTests.swift
-git commit -m "Автомат диктовки: событие captureDown и эффект capture"
-```
-
----
-
-### Task 11: Панель рисует строку лотка и принимает файлы
+### Task 9: Панель рисует строку лотка и принимает файлы
 
 **Files:**
 - Modify: `App/PanelModel.swift`
@@ -1904,7 +1612,7 @@ private struct InboxContent: View {
 - [ ] **Step 4: Собрать и прогнать всё**
 
 Run: `swift build && swift test`
-Expected: сборка проходит, PASS, 537 тестов (у таргета `App` нет своего тест-таргета — за него отвечает сборка и живая проверка задачи 14).
+Expected: сборка проходит, PASS, 527 тестов (у таргета `App` нет своего тест-таргета — за него отвечают сборка и живая проверка задачи 13).
 
 - [ ] **Step 5: Коммит**
 
@@ -1915,68 +1623,25 @@ git commit -m "Панель: строка лотка и мишень для вл
 
 ---
 
-### Task 12: Клавиша доходит до лотка
+### Task 10: Приложение собирает лоток и мишень
 
-Последнее звено: координатор диктовки исполняет `.capture`, а `AppDelegate` собирает `InboxCoordinator` и связывает всё вместе. После этой задачи fn+C работает в собранном приложении.
+Координатор лотка и панель встречаются в `AppDelegate`. Клавиши на этом шаге ещё нет: fn+C появится следующей задачей, потому что она ломает и чинит исчерпывающие `switch` в трёх файлах разом и обязана быть одним коммитом.
 
 **Files:**
-- Modify: `Features/Dictation/DictationCoordinator.swift`
 - Modify: `App/AppDelegate.swift`
 
 **Interfaces:**
-- Consumes: `DictationMachine.Effect.capture` (задача 10), `InboxCoordinator` (задача 8), `PanelWindow.show(inbox:)`/`hideInbox(after:)`/`setInboxDrop(_:)` (задача 11).
-- Produces: `DictationCoordinator.init(..., onCapture: @escaping () -> Void)`.
+- Consumes: `InboxCoordinator` из задачи 8, `PanelWindow.show(inbox:)`, `hideInbox(after:)`, `setInboxDrop(_:)` из задачи 9.
+- Produces: свойства `AppDelegate.inbox: InboxCoordinator?` и `AppDelegate.sounds: SoundPlayer?`, которыми задача 11 свяжет клавишу с лотком.
 
-- [ ] **Step 1: Провести эффект через координатор диктовки**
+- [ ] **Step 1: Завести два свойства**
 
-В `Features/Dictation/DictationCoordinator.swift`:
-
-добавить свойство рядом с остальными закрытиями:
-
-```swift
-    /// fn+C. A closure rather than a dependency, for the same reason the panel is one: dictation
-    /// knows nothing about folders, and a protocol with one implementation would only hide which
-    /// way the dependency runs.
-    private let onCapture: () -> Void
-```
-
-добавить параметр **последним** в `init` — после `onNarrowbandInput`, потому что порядок
-аргументов на месте вызова обязан совпадать с порядком объявления, — и присвоение:
-
-```swift
-        onCapture: @escaping () -> Void
-```
-
-```swift
-        self.onCapture = onCapture
-```
-
-добавить ветку в `received(_:)`:
-
-```swift
-        case .captureDown:
-            apply(.captureDown)
-```
-
-и ветку в `perform(_:)`:
-
-```swift
-        case .capture:
-            onCapture()
-```
-
-- [ ] **Step 2: Собрать лоток в приложении**
-
-В `App/AppDelegate.swift`:
-
-добавить `import Inbox`;
-
-добавить два свойства:
+В `App/AppDelegate.swift` добавить `import Inbox` и, рядом с остальными свойствами:
 
 ```swift
     /// Built once at launch and never rebuilt: it holds the folder of the last capture for two
-    /// minutes, and a config reload happening in that window must not throw an open drop target
-    /// away. Nothing in it is configurable anyway.
+    /// minutes, and a config reload happening inside that window must not throw an open drop
+    /// target away. Nothing in it is configurable anyway.
     private var inbox: InboxCoordinator?
     /// The sound player of the current dictation coordinator, kept here so the inbox can use the
     /// same three system sounds without a second copy of the config. Nil until the first build
@@ -1984,9 +1649,14 @@ git commit -m "Панель: строка лотка и мишень для вл
     private var sounds: SoundPlayer?
 ```
 
-в `applicationDidFinishLaunching`, сразу после `panel.setMeetingAnswer { ... }`, собрать координатор и мишень:
+- [ ] **Step 2: Собрать координатор и мишень при запуске**
+
+В `applicationDidFinishLaunching`, сразу после `panel.setMeetingAnswer { ... }`:
 
 ```swift
+        // Built before any coordinator, exactly like the meeting answer above: the drop target
+        // has to answer a drag from the moment the panel is on screen, and the closure looks the
+        // coordinator up when the drop happens rather than capturing one that may be gone.
         let inbox = InboxCoordinator(
             showPanel: { [panel] state in panel.show(inbox: state) },
             hidePanel: { [panel] delay in panel.hideInbox(after: delay) },
@@ -1998,39 +1668,347 @@ git commit -m "Панель: строка лотка и мишень для вл
         panel.setInboxDrop { [weak inbox] urls in inbox?.drop(urls) ?? false }
 ```
 
-в `buildCoordinator`, там где создаётся `SoundPlayer`, сохранить его:
+- [ ] **Step 3: Сохранить проигрыватель звуков**
+
+В `buildCoordinator`, там где создаётся `SoundPlayer`, вынести его в переменную и запомнить:
 
 ```swift
             let sounds = SoundPlayer(sounds: config.sounds)
             self.sounds = sounds
 ```
 
-и передать его в `DictationCoordinator(... sounds: sounds ...)` вместо `SoundPlayer(sounds: config.sounds)`, плюс добавить последним аргументом:
+и передать `sounds: sounds` в `DictationCoordinator(...)` вместо `SoundPlayer(sounds: config.sounds)`.
+
+- [ ] **Step 4: Собрать и прогнать всё**
+
+Run: `swift build && swift test`
+Expected: сборка проходит, PASS, 527 тестов. Число не меняется: у таргета `App` нет своего тест-таргета, за него отвечают сборка и живая проверка задачи 13.
+
+- [ ] **Step 5: Коммит**
+
+```bash
+git add App/AppDelegate.swift
+git commit -m "Приложение собирает координатор лотка и мишень для файлов"
+```
+
+---
+
+### Task 11: fn+C — клавиша, автомат и вызов лотка
+
+Три файла и одна сборка. Разделить их нельзя, и это стоит понимать до начала: `KeyEventKind` и `DictationMachine.Effect` разбираются в `DictationCoordinator` исчерпывающими `switch` без `default`. Новый вид клавиши ломает `received(_:)` ровно в тот момент, когда его добавили, а новый эффект ломает `perform(_:)`. Значит клавиша, событие, эффект, его исполнение и место вызова обязаны появиться в одном коммите — иначе на любом промежуточном шаге проект не собирается.
+
+Правила все три уже приняты: из покоя — просто захват; из записи — захват вместо записи, потому что fn открыл микрофон только из-за самого жеста; из состояний после записи — названный отказ, потому что вставка держит буфер обмена.
+
+**Files:**
+- Modify: `Features/Dictation/KeyEventReader.swift`
+- Modify: `Features/Dictation/DictationMachine.swift`
+- Modify: `Features/Dictation/PanelState.swift`
+- Modify: `Features/Dictation/DictationCoordinator.swift`
+- Modify: `App/PanelView.swift` (два исчерпывающих `switch` по `PanelState` компилятор заставит дополнить)
+- Modify: `App/AppDelegate.swift`
+- Test: `Tests/DictationTests/KeyEventReaderTests.swift`, `Tests/DictationTests/DictationMachineTests.swift`
+
+**Interfaces:**
+- Consumes: `InboxCoordinator.captureRequested()` из задачи 8, свойство `inbox` в `AppDelegate` из задачи 10.
+- Produces: `KeyEventKind.captureDown`, `KeyEventReader.cKeyCode: Int64 = 8`, `DictationMachine.Event.captureDown`, `DictationMachine.Effect.capture`, `PanelState.captureRefused`, параметр `onCapture` у `DictationCoordinator.init`.
+
+- [ ] **Step 1: Написать падающие тесты клавиши**
+
+Дописать в конец `Tests/DictationTests/KeyEventReaderTests.swift`:
+
+```swift
+@Test func fnPlusCIsRecognized() {
+    #expect(KeyEventReader.kind(type: .keyDown, keyCode: 8, flags: .maskSecondaryFn) == .captureDown)
+}
+
+// The flag is part of what the key *is* here, not a separate condition checked later: without
+// it this type would hand the machine every letter C typed on the machine.
+@Test func aPlainCIsNotACapture() {
+    #expect(KeyEventReader.kind(type: .keyDown, keyCode: 8, flags: []) == nil)
+    #expect(KeyEventReader.kind(type: .keyDown, keyCode: 8, flags: .maskCommand) == nil)
+}
+
+@Test func cIsRecognizedOnlyOnKeyDown() {
+    #expect(KeyEventReader.kind(type: .keyUp, keyCode: 8, flags: .maskSecondaryFn) == nil)
+    #expect(KeyEventReader.kind(type: .flagsChanged, keyCode: 8, flags: .maskSecondaryFn) == nil)
+}
+
+// Always: the only way this kind is produced at all is with fn held, and letting the letter
+// through would type a "c" into whatever the owner was reading.
+@Test func captureIsAlwaysSwallowed() {
+    #expect(KeyEventReader.shouldSwallow(.captureDown, flags: .maskSecondaryFn, space: false, escape: false))
+}
+```
+
+- [ ] **Step 2: Написать падающие тесты автомата**
+
+Дописать в конец `Tests/DictationTests/DictationMachineTests.swift`:
+
+```swift
+@Test func fnPlusCFromRestJustCaptures() {
+    var subject = machine()
+    #expect(subject.handle(.captureDown) == [.capture])
+    #expect(subject.state == .idle)
+}
+
+// The refusal to dictate over a meeting leaves the machine idle, and capture never touches the
+// microphone — so the rule that blocks dictation does not reach it. In practice the owner hears
+// the refusal sound first and then gets the capture, and that is the accepted price of the key
+// not falling away for fifteen hours of calls a week.
+@Test func captureWorksWhileAMeetingIsBeingRecorded() {
+    var subject = machine()
+    subject.isBlocked = true
+    _ = subject.handle(.fnDown(at: start))
+    #expect(subject.handle(.captureDown) == [.capture])
+}
+
+// fn was held long enough to start recording before C arrived. The recording is an artefact of
+// the gesture, not something the owner asked for.
+@Test func fnPlusCDuringARecordingDropsItAndCapturesAnyway() {
+    var subject = recording()
+    let effects = subject.handle(.captureDown)
+    #expect(effects == [
+        .discardRecording,
+        .hidePanel(after: 0),
+        .swallow(space: false, escape: false),
+        .capture,
+    ])
+    #expect(subject.state == .idle)
+}
+
+// The same from inside the hold threshold, where nothing has been announced yet: a rule that
+// depended on whether the owner pressed the second key within 300 ms would be irreproducible.
+@Test func fnPlusCInsideTheHoldThresholdBehavesTheSame() {
+    var subject = machine()
+    _ = subject.handle(.fnDown(at: start))
+    #expect(subject.handle(.captureDown).contains(.capture))
+    #expect(subject.state == .idle)
+}
+
+// A dictation past the recording stage owns the clipboard: `.inserting` borrows it and puts it
+// back, and a capture borrowing it at the same moment leaves the owner's clipboard holding the
+// dictated text for good. Named refusal rather than a race nobody could reproduce.
+@Test func captureIsRefusedWhileADictationIsInFlight() {
+    for state in ["stopping", "transcribing", "cleaning", "inserting"] {
+        var subject = recording()
+        _ = subject.handle(.fnUp(at: start.addingTimeInterval(1)))
+        if state != "stopping" {
+            _ = subject.handle(.recordingStopped(URL(fileURLWithPath: "/tmp/a.wav")))
+        }
+        if state == "cleaning" || state == "inserting" {
+            _ = subject.handle(.transcribed("сырой текст"))
+        }
+        if state == "inserting" {
+            _ = subject.handle(.cleaned("чистый текст"))
+        }
+        let effects = subject.handle(.captureDown)
+        #expect(effects == [.play(.error), .show(.captureRefused), .hidePanel(after: 3)],
+                "состояние \(state)")
+        #expect(!effects.contains(.capture), "состояние \(state)")
+    }
+}
+
+// The refusal changes nothing about the dictation it refused: it goes on to insert its text.
+@Test func aRefusedCaptureDoesNotDisturbTheDictation() {
+    var subject = recording()
+    _ = subject.handle(.fnUp(at: start.addingTimeInterval(1)))
+    _ = subject.handle(.recordingStopped(URL(fileURLWithPath: "/tmp/a.wav")))
+    _ = subject.handle(.captureDown)
+    #expect(subject.state == .transcribing)
+    #expect(subject.handle(.transcribed("текст")) == [.show(.cleaning), .clean("текст")])
+}
+```
+
+- [ ] **Step 3: Прогнать и убедиться, что падает**
+
+Run: `swift test --filter DictationTests`
+Expected: сборка не проходит — `type 'KeyEventKind' has no member 'captureDown'`.
+
+- [ ] **Step 4: Научить `KeyEventReader` различать fn+C**
+
+В `Features/Dictation/KeyEventReader.swift` добавить пятый вид события:
+
+```swift
+public enum KeyEventKind: Equatable, Sendable {
+    case fnDown
+    case fnUp
+    case spaceDown
+    case escapeDown
+    /// fn+C — the inbox hotkey. Not a dictation event at all: it is here because this is where
+    /// the application's one keyboard tap lives.
+    case captureDown
+}
+```
+
+код клавиши рядом с остальными:
+
+```swift
+    /// `kVK_ANSI_C`
+    public static let cKeyCode: Int64 = 8
+```
+
+ветку в `kind(type:keyCode:flags:)`, после ветки escape:
+
+```swift
+        // The fn flag is part of the identity of this event rather than a condition checked
+        // afterwards. Without it every letter C typed on the machine would reach the state
+        // machine — and the aliasing this type exists to filter out (arrows, the F row, Home,
+        // End, both Page keys) sets the flag on those keys' own events, never on C's.
+        case .keyDown where keyCode == cKeyCode && flags.contains(.maskSecondaryFn):
+            return .captureDown
+```
+
+и ветку в `shouldSwallow`:
+
+```swift
+        case .captureDown:
+            // Unconditional, because the kind cannot be produced without fn: passing the letter
+            // through would type a "c" into whatever the owner is reading.
+            return true
+```
+
+- [ ] **Step 5: Добавить событие, эффект и состояние панели**
+
+В `Features/Dictation/PanelState.swift` добавить состояние в конец перечисления:
+
+```swift
+    /// fn+C arrived while a dictation was past the recording stage. Refused rather than raced:
+    /// insertion borrows the clipboard and a capture borrowing it at the same time would lose
+    /// what was on it.
+    case captureRefused
+```
+
+В `Features/Dictation/DictationMachine.swift` — в `Event`:
+
+```swift
+        /// fn+C. Not a dictation event: it rides this machine because the application has one
+        /// keyboard tap and one place where key events turn into decisions.
+        case captureDown
+```
+
+в `Effect`:
+
+```swift
+        /// Read the selection and file it in the inbox. Performed by whoever the coordinator was
+        /// given, which is not this feature — dictation knows nothing about folders.
+        case capture
+```
+
+и в `handle(_:)`, сразу после ветки `case (.idle, .fnDown(let at)):`, три ветки:
+
+```swift
+        // Capture never touches the microphone, so the rule that refuses dictation over a
+        // meeting does not reach it: the refusal leaves the machine idle, and this is what idle
+        // answers. In practice fn plays the refusal sound and then C files the item — the price
+        // of the key not falling away for the fifteen hours of calls in a week.
+        case (.idle, .captureDown):
+            return [.capture]
+
+        // fn was held past the threshold and a recording is running. It is an artefact of the
+        // gesture rather than something the owner asked for, so it goes exactly the way Escape
+        // sends it, and the capture happens regardless of how long the key was down — a rule
+        // that turned on 300 milliseconds would be irreproducible.
+        case (.recording, .captureDown):
+            state = .idle
+            return [
+                .discardRecording,
+                .hidePanel(after: 0),
+                .swallow(space: false, escape: false),
+                .capture,
+            ]
+
+        // A dictation past the recording stage owns the clipboard: `.inserting` borrows it and
+        // gives it back, and a capture borrowing it at the same moment would leave the owner's
+        // clipboard holding the dictated text for good. Two or three seconds of named refusal
+        // instead of a race that could only be seen by its consequences.
+        case (.stopping, .captureDown), (.transcribing, .captureDown),
+             (.cleaning, .captureDown), (.inserting, .captureDown):
+            return [.play(.error), .show(.captureRefused), .hidePanel(after: limits.failureDwell)]
+```
+
+- [ ] **Step 6: Провести клавишу и эффект через координатор диктовки**
+
+В `Features/Dictation/DictationCoordinator.swift` добавить свойство рядом с остальными закрытиями:
+
+```swift
+    /// fn+C. A closure rather than a dependency, for the same reason the panel is one: dictation
+    /// knows nothing about folders, and a protocol with one implementation would only hide which
+    /// way the dependency runs.
+    private let onCapture: () -> Void
+```
+
+добавить параметр **последним** в `init` — после `onNarrowbandInput`, потому что порядок аргументов на месте вызова обязан совпадать с порядком объявления:
+
+```swift
+        onCapture: @escaping () -> Void
+```
+
+присвоение в теле `init`:
+
+```swift
+        self.onCapture = onCapture
+```
+
+ветку в `received(_:)` — без неё `switch` перестаёт быть исчерпывающим и файл не собирается:
+
+```swift
+        case .captureDown:
+            apply(.captureDown)
+```
+
+и ветку в `perform(_:)`, по той же причине:
+
+```swift
+        case .capture:
+            onCapture()
+```
+
+- [ ] **Step 7: Дополнить панель, куда укажет компилятор**
+
+`App/PanelView.swift` перестанет собираться в двух местах — оба исчерпывающие `switch` по `PanelState`.
+
+В `endsWithoutText` новый случай идёт к тем, после которых никакой текст никуда не вставляется:
+
+```swift
+        case .failure, .blocked, .captureRefused: true
+```
+
+В `caption` добавить строку рядом с `.blocked`:
+
+```swift
+        case .captureRefused: return "диктовка ещё идёт"
+```
+
+- [ ] **Step 8: Связать клавишу с лотком в `AppDelegate`**
+
+В `App/AppDelegate.swift`, в вызове `DictationCoordinator(...)`, добавить последним аргументом:
 
 ```swift
                 onCapture: { [weak self] in self?.inbox?.captureRequested() }
 ```
 
-- [ ] **Step 3: Собрать и прогнать всё**
+Свойство `inbox` уже есть — его завела задача 10.
 
-Run: `swift build && swift test`
-Expected: сборка проходит, PASS, 537 тестов.
+- [ ] **Step 9: Прогнать все тесты**
 
-- [ ] **Step 4: Собрать приложение**
+Run: `swift test`
+Expected: PASS, 537 тестов.
+
+- [ ] **Step 10: Собрать приложение**
 
 Run: `Scripts/make-app.sh`
 Expected: `готово: build/NoHands.app`, `codesign --verify` без замечаний.
 
-- [ ] **Step 5: Коммит**
+- [ ] **Step 11: Коммит**
 
 ```bash
-git add Features/Dictation/DictationCoordinator.swift App/AppDelegate.swift
-git commit -m "fn+C доходит до лотка: координатор и сборка в приложении"
+git add Features/Dictation App/PanelView.swift App/AppDelegate.swift Tests/DictationTests
+git commit -m "fn+C: клавиша, событие автомата и вызов лотка"
 ```
 
 ---
 
-### Task 13: Скилл разбора входящих и выгрузка в Todoist
+### Task 12: Скилл разбора входящих и выгрузка в Todoist
 
 Разбор — разговор, а не программа: формат карточки пока не известен, и писать под него автоматику значит писать под догадку. Скилл лежит в репозитории, потому что он часть проекта и версионируется вместе с ним.
 
@@ -2186,7 +2164,9 @@ git commit -m "Скилл разбора входящих и выгрузки в
 
 ---
 
-### Task 14: Живая проверка и запись в журнал
+---
+
+### Task 13: Живая проверка и запись в журнал
 
 Всё, что тестами не ловится. Спека §10 перечисляет это списком; здесь он превращён в порядок действий.
 
@@ -2194,7 +2174,7 @@ git commit -m "Скилл разбора входящих и выгрузки в
 - Modify: `docs/DECISIONS.md`
 
 **Interfaces:**
-- Consumes: собранное приложение из задачи 12 и скилл из задачи 13.
+- Consumes: собранное приложение из задачи 11 и скилл из задачи 12.
 - Produces: запись «Итоги куска: лоток входящих» в журнале.
 
 - [ ] **Step 1: Пересобрать и перезапустить приложение**
