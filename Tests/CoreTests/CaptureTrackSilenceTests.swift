@@ -35,6 +35,22 @@ private func buffer(rate: Double, frames: AVAudioFrameCount, value: Float) -> AV
     #expect(track.silentSeconds == 0)
 }
 
+// Частота источника меняется посреди записи: Bluetooth-устройство, уходящее в узкую полосу,
+// делает ровно это, а владелец пишет встречи на AirPods. Кадры, накопленные на прежней частоте,
+// нельзя делить на новую — это перемасштабирует уже измеренное время, и десять секунд тишины
+// прочтутся как три или как тридцать. Счёт начинается заново.
+@Test func aRateChangeRestartsTheSilenceCountRatherThanRescalingIt() {
+    let track = CaptureTrack(name: "microphone", url: URL(fileURLWithPath: "/dev/null"), format: outputFormat())
+    track.note(silenceOf: buffer(rate: 48000, frames: 48000, value: 0))
+    #expect(abs(track.silentSeconds - 1.0) < 0.001)
+
+    track.note(silenceOf: buffer(rate: 16000, frames: 1600, value: 0))
+
+    // 0,1 секунды на новой частоте, а не 3,1 — что дало бы деление 49 600 накопленных кадров
+    // на 16 000.
+    #expect(abs(track.silentSeconds - 0.1) < 0.001)
+}
+
 // Уровень комнаты — не тишина. Настоящий микрофон в пустой комнате даёт −46…−57 dBFS, и
 // порогом по громкости мы бы отрезали живую речь вместе с фоном.
 @Test func aQuietRoomIsNotSilence() {

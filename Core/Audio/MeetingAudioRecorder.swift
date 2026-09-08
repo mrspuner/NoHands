@@ -357,6 +357,11 @@ final class CaptureTrack {
     /// Internal rather than private so the tests can drive the counter without a stream: the
     /// buffer this measures is the down-mixed one, and building it by hand is the whole test.
     func note(silenceOf buffer: AVAudioPCMBuffer) {
+        // Frames counted at the old rate cannot be divided by the new one: that rescales an
+        // already-measured stretch of time by the ratio between the two, so ten seconds of
+        // silence reads as three or as thirty. A Bluetooth device dropping into narrowband is
+        // exactly this, and this owner records on AirPods. The count restarts instead.
+        if buffer.format.sampleRate != silentRate { silentFrames = 0 }
         silentRate = buffer.format.sampleRate
         // A format this cannot read is not judged: reporting it as silence would raise a warning
         // about a track that may well be recording.
