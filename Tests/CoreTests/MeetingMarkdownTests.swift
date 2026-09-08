@@ -20,7 +20,8 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
         startedAt: started,
         durationSeconds: 254,
         appName: "Телемост",
-        trailingMicrophoneSilenceSeconds: nil
+        trailingMicrophoneSilenceSeconds: nil,
+        microphoneSawAudio: nil
     )
     #expect(rendered.hasPrefix("---\n"))
     #expect(rendered.contains("duration: 4m\n"))
@@ -37,7 +38,8 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
     let rendered = MeetingMarkdown.render(
         transcript: [Utterance(speaker: .me, start: 0, end: 1, text: "раз")],
         startedAt: started, durationSeconds: 60, appName: "Телемост",
-        trailingMicrophoneSilenceSeconds: nil
+        trailingMicrophoneSilenceSeconds: nil,
+        microphoneSawAudio: nil
     )
     #expect(!rendered.contains("participants"))
 }
@@ -49,7 +51,8 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
     let rendered = MeetingMarkdown.render(
         transcript: [Utterance(speaker: .me, start: 0, end: 1, text: "раз")],
         startedAt: started, durationSeconds: 60, appName: "Телемост",
-        trailingMicrophoneSilenceSeconds: nil
+        trailingMicrophoneSilenceSeconds: nil,
+        microphoneSawAudio: nil
     )
     #expect(!rendered.contains("Саммари"))
     #expect(!rendered.contains("Решения"))
@@ -63,9 +66,39 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
     let rendered = MeetingMarkdown.render(
         transcript: [Utterance(speaker: .others, start: 0, end: 1, text: "раз")],
         startedAt: started, durationSeconds: 5580, appName: "Телемост",
-        trailingMicrophoneSilenceSeconds: 600
+        trailingMicrophoneSilenceSeconds: 600,
+        microphoneSawAudio: true
     )
-    #expect(rendered.contains(#"microphone: "замолчал в конце — 10 мин тишины""#))
+    #expect(rendered.contains(#"microphone: "замолчал в конце — 10 мин тишины, дорожка неполная""#))
+}
+
+// Ровно тот случай, ради которого заведена эта ветка: встреча на 93 минуты, 438 чужих реплик и
+// ни одной своей. Панель говорит «молчал всю запись», а файл говорил «замолчал в конце» — то
+// есть утверждал, что микрофон работал, и обещал неполную дорожку там, где её нет вовсе. Из двух
+// артефактов врал тот, который переживает всё остальное.
+@Test func aTrackThatNeverCarriedAudioIsCalledEmptyRatherThanIncomplete() {
+    let rendered = MeetingMarkdown.render(
+        transcript: [Utterance(speaker: .others, start: 0, end: 1, text: "раз")],
+        startedAt: started, durationSeconds: 5580, appName: "Телемост",
+        trailingMicrophoneSilenceSeconds: 5580,
+        microphoneSawAudio: false
+    )
+    #expect(rendered.contains(#"microphone: "молчал всю запись — дорожка пустая""#))
+    #expect(!rendered.contains("неполная"))
+}
+
+// Папка, записанная до того, как признак начали мерить. Известно ровно одно число, и назвать
+// дорожку пустой или неполной значило бы угадать — то есть повторить ту же ошибку в новом месте.
+@Test func anUnknownFlagClaimsNeitherEmptyNorIncomplete() {
+    let rendered = MeetingMarkdown.render(
+        transcript: [Utterance(speaker: .others, start: 0, end: 1, text: "раз")],
+        startedAt: started, durationSeconds: 5580, appName: "Телемост",
+        trailingMicrophoneSilenceSeconds: 600,
+        microphoneSawAudio: nil
+    )
+    #expect(rendered.contains(#"microphone: "тишина — 10 мин, полнота дорожки неизвестна""#))
+    #expect(!rendered.contains("пустая"))
+    #expect(!rendered.contains("неполная"))
 }
 
 // Обычная встреча этой строки не несёт: ключ, стоящий всегда, был бы утверждением о каждой
@@ -74,7 +107,8 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
     let rendered = MeetingMarkdown.render(
         transcript: [Utterance(speaker: .me, start: 0, end: 1, text: "раз")],
         startedAt: started, durationSeconds: 5580, appName: "Телемост",
-        trailingMicrophoneSilenceSeconds: nil
+        trailingMicrophoneSilenceSeconds: nil,
+        microphoneSawAudio: true
     )
     #expect(!rendered.contains("microphone:"))
 }
@@ -86,9 +120,10 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
     let rendered = MeetingMarkdown.render(
         transcript: [Utterance(speaker: .me, start: 0, end: 1, text: "раз")],
         startedAt: started, durationSeconds: 5580, appName: nil,
-        trailingMicrophoneSilenceSeconds: 15
+        trailingMicrophoneSilenceSeconds: 15,
+        microphoneSawAudio: true
     )
-    #expect(rendered.contains(#"microphone: "замолчал в конце — меньше минуты тишины""#))
+    #expect(rendered.contains(#"microphone: "замолчал в конце — меньше минуты тишины, дорожка неполная""#))
     #expect(!rendered.contains("0 мин"))
 }
 
@@ -98,7 +133,8 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
         transcript: [Utterance(speaker: .me, start: 0, end: 1, text: "раз")],
         startedAt: started, durationSeconds: 60,
         appName: "Zoom: \"Meetings\"\nfake: value",
-        trailingMicrophoneSilenceSeconds: nil
+        trailingMicrophoneSilenceSeconds: nil,
+        microphoneSawAudio: nil
     )
     // The injected text survives as data inside the quoted value, and that is fine — what must
     // not happen is it becoming a key of its own, which is exactly what the unescaped newline
@@ -113,7 +149,8 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
     let rendered = MeetingMarkdown.render(
         transcript: [Utterance(speaker: .me, start: 0, end: 1, text: "раз")],
         startedAt: started, durationSeconds: 60, appName: nil,
-        trailingMicrophoneSilenceSeconds: nil
+        trailingMicrophoneSilenceSeconds: nil,
+        microphoneSawAudio: nil
     )
     #expect(!rendered.contains("app:"))
 }
@@ -124,7 +161,8 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
     let rendered = MeetingMarkdown.render(
         transcript: [Utterance(speaker: .me, start: 0, end: 1, text: "раз")],
         startedAt: started, durationSeconds: 20, appName: nil,
-        trailingMicrophoneSilenceSeconds: nil
+        trailingMicrophoneSilenceSeconds: nil,
+        microphoneSawAudio: nil
     )
     #expect(rendered.contains("duration: 1m\n"))
 }
@@ -133,7 +171,8 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
     let rendered = MeetingMarkdown.render(
         transcript: [Utterance(speaker: .me, start: 0, end: 1, text: "раз")],
         startedAt: started, durationSeconds: 4320, appName: nil,
-        trailingMicrophoneSilenceSeconds: nil
+        trailingMicrophoneSilenceSeconds: nil,
+        microphoneSawAudio: nil
     )
     #expect(rendered.contains("duration: 72m\n"))
 }

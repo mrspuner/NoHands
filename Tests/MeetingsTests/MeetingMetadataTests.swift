@@ -21,7 +21,8 @@ private let noon = Date(timeIntervalSince1970: 1_788_000_000)
         gaps: [MeetingMetadata.Gap(track: .microphone, from: noon.addingTimeInterval(60), to: noon.addingTimeInterval(75))],
         systemStartedAt: 0.42,
         microphoneStartedAt: 0.58,
-        trailingMicrophoneSilenceSeconds: 12.5
+        trailingMicrophoneSilenceSeconds: 12.5,
+        microphoneSawAudio: false
     )
 
     let url = directory.appendingPathComponent("meeting.json")
@@ -48,7 +49,8 @@ private let noon = Date(timeIntervalSince1970: 1_788_000_000)
         gaps: [],
         systemStartedAt: nil,
         microphoneStartedAt: nil,
-        trailingMicrophoneSilenceSeconds: nil
+        trailingMicrophoneSilenceSeconds: nil,
+        microphoneSawAudio: nil
     )
 
     let url = directory.appendingPathComponent("meeting.json")
@@ -79,7 +81,8 @@ private let noon = Date(timeIntervalSince1970: 1_788_000_000)
         gaps: [],
         systemStartedAt: nil,
         microphoneStartedAt: nil,
-        trailingMicrophoneSilenceSeconds: nil
+        trailingMicrophoneSilenceSeconds: nil,
+        microphoneSawAudio: nil
     )
     try metadata.write(to: url)
     let raw = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
@@ -107,7 +110,8 @@ private let noon = Date(timeIntervalSince1970: 1_788_000_000)
         gaps: [],
         systemStartedAt: nil,
         microphoneStartedAt: nil,
-        trailingMicrophoneSilenceSeconds: nil
+        trailingMicrophoneSilenceSeconds: nil,
+        microphoneSawAudio: nil
     )
     metadata.trailingMicrophoneSilenceSeconds = 5598.8
     try metadata.write(to: url)
@@ -138,7 +142,8 @@ private let noon = Date(timeIntervalSince1970: 1_788_000_000)
         gaps: [],
         systemStartedAt: nil,
         microphoneStartedAt: nil,
-        trailingMicrophoneSilenceSeconds: nil
+        trailingMicrophoneSilenceSeconds: nil,
+        microphoneSawAudio: nil
     )
     try metadata.write(to: url)
     var raw = try #require(
@@ -151,4 +156,7 @@ private let noon = Date(timeIntervalSince1970: 1_788_000_000)
 
     #expect(read.startedAt == noon)
     #expect(read.trailingMicrophoneSilenceSeconds == nil)
+    // Тот же вывод для признака: ключа в старом файле нет, и «нет» здесь значит «неизвестно», а
+    // не «дорожка пустая». Разницу читает фронтматтер архива.
+    #expect(read.microphoneSawAudio == nil)
 }

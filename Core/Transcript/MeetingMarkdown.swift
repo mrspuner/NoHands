@@ -27,12 +27,25 @@ public enum MeetingMarkdown {
     ///
     ///   Only when there was silence: a key on every ordinary meeting would be a claim about
     ///   every ordinary meeting, and this file is meant to hold only what is known.
+    ///
+    /// - Parameter microphoneSawAudio: whether that track ever carried a sample that was not
+    ///   exactly zero, or `nil` for a folder recorded before this was measured. It decides which
+    ///   of two opposite sentences the number above belongs to, and the number alone cannot: ten
+    ///   minutes of trailing zeroes look the same whether they ended a good track or were the
+    ///   whole of an empty one. Saying "замолчал в конце" for the second case is the defect this
+    ///   parameter exists to close — it asserts a microphone that worked, permanently, in the
+    ///   file that outlives the five-second panel notice which said the true thing.
+    ///
+    ///   `nil` gets a third sentence rather than a guess. Naming the silence and stopping there
+    ///   is the whole of what such a folder knows; picking either of the other two would be the
+    ///   same lie in a new place.
     public static func render(
         transcript: [Utterance],
         startedAt: Date,
         durationSeconds: TimeInterval,
         appName: String?,
-        trailingMicrophoneSilenceSeconds: TimeInterval?
+        trailingMicrophoneSilenceSeconds: TimeInterval?,
+        microphoneSawAudio: Bool?
     ) -> String {
         var lines: [String] = ["---"]
         lines.append("date: \(format(startedAt, as: "yyyy-MM-dd"))")
@@ -43,7 +56,7 @@ public enum MeetingMarkdown {
             // Quoted and escaped like `app`, though nothing here comes from outside: the value is
             // a Russian sentence with a colon's worth of punctuation in it, and the front matter
             // has one rule for values rather than one per key.
-            lines.append("microphone: \(quoted("замолчал в конце — \(silenceLength(silence)) тишины"))")
+            lines.append("microphone: \(quoted(microphone(silence, sawAudio: microphoneSawAudio)))")
         }
         lines.append("---")
         lines.append("")
@@ -87,6 +100,27 @@ public enum MeetingMarkdown {
     private static func minutes(_ durationSeconds: TimeInterval) -> Int {
         guard durationSeconds > 0 else { return 0 }
         return max(1, Int((durationSeconds / 60).rounded()))
+    }
+
+    /// The sentence the front matter puts after `microphone:`, chosen by what is known.
+    ///
+    /// Deliberately the same three claims the panel makes when the recording is kept — see
+    /// `MeetingCoordinator.keepDraft` — because the two artefacts answer one question and the
+    /// panel's answer is gone in five seconds. Not word for word: the panel says "ваша дорожка"
+    /// to somebody standing in front of it, while the key here already names the microphone, and
+    /// no `Meetings` type is visible from this module to share the strings with. What must hold
+    /// is that this never says something the panel would not.
+    private static func microphone(_ silence: TimeInterval, sawAudio: Bool?) -> String {
+        switch sawAudio {
+        case .some(true):
+            return "замолчал в конце — \(silenceLength(silence)) тишины, дорожка неполная"
+        case .some(false):
+            // No number: the silence is the whole recording, `duration` already says how long
+            // that was, and the panel does not quote one either.
+            return "молчал всю запись — дорожка пустая"
+        case .none:
+            return "тишина — \(silenceLength(silence)), полнота дорожки неизвестна"
+        }
     }
 
     /// The same rule as `MeetingNotice.length`, which says this sentence on the panel while the

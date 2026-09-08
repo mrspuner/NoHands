@@ -297,7 +297,13 @@ public actor MeetingQueue {
             durationSeconds: duration,
             appName: metadata.app?.name,
             trailingMicrophoneSilenceSeconds:
-                (silence ?? 0) >= MeetingCoordinator.microphoneSilenceThreshold ? silence : nil
+                (silence ?? 0) >= MeetingCoordinator.microphoneSilenceThreshold ? silence : nil,
+            // Passed through untouched: the number above decides whether the archive says
+            // anything about the microphone at all, and this decides which of the two things it
+            // says. No threshold of its own, and no default — `nil`, a folder recorded before
+            // this was measured, is a third answer the renderer needs to see rather than a
+            // missing value to fill in here.
+            microphoneSawAudio: metadata.microphoneSawAudio
         )
         try Data(markdown.utf8).write(to: transcript)
 

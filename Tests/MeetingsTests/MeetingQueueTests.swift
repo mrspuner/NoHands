@@ -27,7 +27,8 @@ private struct Fixture {
 /// than being told it, so there is nothing to fake.
 private func makeMeetingFolder(
     name: String = "2026-09-04-1053-telemost",
-    trailingMicrophoneSilenceSeconds: TimeInterval? = nil
+    trailingMicrophoneSilenceSeconds: TimeInterval? = nil,
+    microphoneSawAudio: Bool? = nil
 ) throws -> Fixture {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("mq-\(UUID().uuidString)")
     let archive = root
@@ -58,7 +59,8 @@ private func makeMeetingFolder(
         app: MeetingMetadata.App(bundleID: "ru.yandex.desktop.telemost", name: "Телемост", slug: "telemost"),
         sampleRate: 16000, channelCount: 1, inputDevice: nil, stopReason: .manual,
         excludedApps: [], gaps: [], systemStartedAt: 100, microphoneStartedAt: 100,
-        trailingMicrophoneSilenceSeconds: trailingMicrophoneSilenceSeconds
+        trailingMicrophoneSilenceSeconds: trailingMicrophoneSilenceSeconds,
+        microphoneSawAudio: microphoneSawAudio
     )
     try metadata.write(to: folder.appendingPathComponent(MeetingMetadata.fileName))
     return Fixture(queue: queue, archive: archive, folder: folder)
@@ -113,7 +115,9 @@ private func makeQueue(
 // Число из `meeting.json` обязано доехать до архива: `sweep` сносит папку очереди целиком через
 // `audioRetentionDays`, а вопрос «почему в файле нет «Я»» задают позже.
 @Test func aSilentMicrophoneTrackIsExplainedInTheArchivedFile() async throws {
-    let fixture = try makeMeetingFolder(trailingMicrophoneSilenceSeconds: 600)
+    let fixture = try makeMeetingFolder(
+        trailingMicrophoneSilenceSeconds: 600, microphoneSawAudio: true
+    )
     defer { try? FileManager.default.removeItem(at: fixture.archive) }
     let transcriber = StubTranscriber(words: ["system.wav": [word("привет", 3)]])
     let queue = makeQueue(fixture, transcriber: transcriber) { _ in }
@@ -124,7 +128,27 @@ private func makeQueue(
         contentsOf: fixture.archive.appendingPathComponent("2026-09-04-1053-telemost.md"),
         encoding: .utf8
     )
-    #expect(text.contains(#"microphone: "замолчал в конце — 10 мин тишины""#))
+    #expect(text.contains(#"microphone: "замолчал в конце — 10 мин тишины, дорожка неполная""#))
+}
+
+// Второй признак из `meeting.json` обязан доехать до архива вместе с числом: без него очередь
+// выбирает формулировку из одного числа, а одного числа хватает ровно на ту ложь, ради которой
+// заведена ветка, — «замолчал в конце» о дорожке, которой не было вовсе.
+@Test func aTrackThatNeverCarriedAudioIsCalledEmptyInTheArchivedFile() async throws {
+    let fixture = try makeMeetingFolder(
+        trailingMicrophoneSilenceSeconds: 5580, microphoneSawAudio: false
+    )
+    defer { try? FileManager.default.removeItem(at: fixture.archive) }
+    let transcriber = StubTranscriber(words: ["system.wav": [word("привет", 3)]])
+    let queue = makeQueue(fixture, transcriber: transcriber) { _ in }
+
+    await queue.enqueue(fixture.folder)
+
+    let text = try String(
+        contentsOf: fixture.archive.appendingPathComponent("2026-09-04-1053-telemost.md"),
+        encoding: .utf8
+    )
+    #expect(text.contains(#"microphone: "молчал всю запись — дорожка пустая""#))
 }
 
 // Тот же порог, что у панели: разрыв короче — это разрыв между буферами, и утверждать о нём в

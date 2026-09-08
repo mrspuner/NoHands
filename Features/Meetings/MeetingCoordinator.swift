@@ -458,7 +458,8 @@ public final class MeetingCoordinator {
                 gaps: [],
                 systemStartedAt: nil,
                 microphoneStartedAt: nil,
-                trailingMicrophoneSilenceSeconds: nil
+                trailingMicrophoneSilenceSeconds: nil,
+                microphoneSawAudio: nil
             )
             // Written now and rewritten at the end, rather than only at the end: a draft left
             // behind by a crash is otherwise two nameless wav files, with no record of when the
@@ -552,6 +553,13 @@ public final class MeetingCoordinator {
                 record?.systemStartedAt = outcome.systemStartedAt
                 record?.microphoneStartedAt = outcome.microphoneStartedAt
                 record?.trailingMicrophoneSilenceSeconds = outcome.microphoneSilentSeconds
+                // Written beside the number and from the same outcome the panel sentence below is
+                // built from, so the archive cannot end up telling a different story than the
+                // notice did: `MeetingQueue` reads both keys to pick which sentence goes into the
+                // file, and with only the number it can pick just one — the wrong one, on exactly
+                // the recording this was fixed for. Left `nil` when `stop()` throws: there is no
+                // outcome then, and `false` would be a claim nobody measured.
+                record?.microphoneSawAudio = outcome.microphoneSawAudio
                 failure = outcome.failure
                 silentSeconds = outcome.microphoneSilentSeconds
                 sawAudio = outcome.microphoneSawAudio

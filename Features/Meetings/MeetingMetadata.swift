@@ -96,6 +96,21 @@ public struct MeetingMetadata: Equatable, Sendable, Codable {
     /// answers the question a year later.
     public var trailingMicrophoneSilenceSeconds: TimeInterval?
 
+    /// Whether the microphone track ever carried a sample that was not exactly zero, or `nil` for
+    /// a recording that ended before this was measured.
+    ///
+    /// The other half of a sentence `trailingMicrophoneSilenceSeconds` cannot finish on its own.
+    /// That number says how long the track was quiet at the end; this says whether it ever
+    /// carried anything at all, and only the two together decide which is true — a track that was
+    /// never recorded into ("пустая"), or a good track whose last minutes are quiet
+    /// ("неполная"). Ten minutes of trailing zeroes look identical in both cases and mean
+    /// opposite things, so the archive's own front matter reads both keys and says neither when
+    /// this one is missing.
+    ///
+    /// Missing rather than `false` on an old folder, deliberately: `false` is the claim "the
+    /// track is empty", and it is exactly the claim nobody made when that folder was written.
+    public var microphoneSawAudio: Bool?
+
     public init(
         startedAt: Date,
         stoppedAt: Date?,
@@ -108,7 +123,8 @@ public struct MeetingMetadata: Equatable, Sendable, Codable {
         gaps: [Gap],
         systemStartedAt: Double?,
         microphoneStartedAt: Double?,
-        trailingMicrophoneSilenceSeconds: TimeInterval?
+        trailingMicrophoneSilenceSeconds: TimeInterval?,
+        microphoneSawAudio: Bool?
     ) {
         self.startedAt = startedAt
         self.stoppedAt = stoppedAt
@@ -122,6 +138,7 @@ public struct MeetingMetadata: Equatable, Sendable, Codable {
         self.systemStartedAt = systemStartedAt
         self.microphoneStartedAt = microphoneStartedAt
         self.trailingMicrophoneSilenceSeconds = trailingMicrophoneSilenceSeconds
+        self.microphoneSawAudio = microphoneSawAudio
     }
 
     public static let fileName = "meeting.json"

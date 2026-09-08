@@ -307,7 +307,8 @@ private func orphanDraft(in queue: URL, startedAt: Date = noon, broken: Bool = f
         gaps: [],
         systemStartedAt: nil,
         microphoneStartedAt: nil,
-        trailingMicrophoneSilenceSeconds: nil
+        trailingMicrophoneSilenceSeconds: nil,
+        microphoneSawAudio: nil
     ).write(to: draft.appendingPathComponent(MeetingMetadata.fileName))
     if broken {
         for name in [MeetingAudioRecorder.systemFileName, MeetingAudioRecorder.microphoneFileName] {
@@ -1287,6 +1288,26 @@ private let zoom = AudioProcessMonitor.State(
         }
         return false
     })
+}
+
+// Панель называет пустую дорожку и гаснет через пять секунд. Единственное, что остаётся, —
+// файлы, и признак обязан доехать до `meeting.json`: из одного числа очередь не отличит пустую
+// дорожку от неполной и напишет в архив «замолчал в конце» про запись, где микрофона не было.
+@Test @MainActor func theMetadataSaysWhetherTheMicrophoneEverCarriedAnything() async throws {
+    let harness = try Harness()
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+    harness.captures[0].silentAtStop = 600
+    harness.captures[0].sawAudioAtStop = false
+
+    harness.coordinator.answer(.confirm, at: noon.addingTimeInterval(1))
+    harness.coordinator.stopPressed(at: noon.addingTimeInterval(2))
+    await harness.coordinator.settle()
+
+    let metadata = try harness.metadata(of: try #require(harness.handedOver.first))
+    #expect(metadata.trailingMicrophoneSilenceSeconds == 600)
+    #expect(metadata.microphoneSawAudio == false)
 }
 
 // `silentSeconds` по построению меряет непрерывный ноль **в конце** дорожки: любой ненулевой
