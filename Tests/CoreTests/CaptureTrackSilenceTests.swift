@@ -48,3 +48,29 @@ private func outputFormat() -> AVAudioFormat {
         commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: false
     )!
 }
+
+// Перепривязка без запущенного потока — ошибка программиста, а не обстоятельство: перепривязывать
+// нечего, и молчаливый успех тут соврал бы координатору, что микрофон подхвачен.
+@Test func rebindingWithNoStreamRunningThrows() async {
+    let folder = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString)
+    try! FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let recorder = MeetingAudioRecorder(
+        folder: folder, excludedBundleIDs: [], onFailureWhileRecording: { _ in }
+    )
+    await #expect(throws: MeetingCaptureError.self) {
+        try await recorder.rebindMicrophone(to: "any-uid")
+    }
+}
+
+@Test func silenceOfACaptureThatNeverStartedIsZero() async {
+    let folder = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString)
+    try! FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let recorder = MeetingAudioRecorder(
+        folder: folder, excludedBundleIDs: [], onFailureWhileRecording: { _ in }
+    )
+    #expect(await recorder.microphoneSilentSeconds() == 0)
+}

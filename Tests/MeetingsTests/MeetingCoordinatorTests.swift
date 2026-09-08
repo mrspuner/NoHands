@@ -58,6 +58,13 @@ private final class FakeCapture: MeetingCapture {
     private(set) var queueWhenStopped: [String] = []
     /// What the real recorder hands its stream delegate.
     private let onFailureWhileRecording: @Sendable (String) -> Void
+    /// What the next `microphoneSilentSeconds()` answers. The tests set it directly: this fake
+    /// has no audio to be silent about.
+    var silentSeconds: TimeInterval = 0
+    /// Every uid the coordinator asked to rebind to, in order.
+    private(set) var rebinds: [String] = []
+    /// Set to make a rebind fail the way a stream that died would.
+    var rebindError: Error?
 
     init(folder: URL, excluded: [String], onFailureWhileRecording: @escaping @Sendable (String) -> Void) {
         self.folder = folder
@@ -102,6 +109,16 @@ private final class FakeCapture: MeetingCapture {
             failure: failure,
             microphoneSilentSeconds: 0
         )
+    }
+
+    func microphoneSilentSeconds() async -> TimeInterval { silentSeconds }
+
+    func rebindMicrophone(to deviceUID: String) async throws {
+        if let rebindError { throw rebindError }
+        rebinds.append(deviceUID)
+        // The real recorder restarts the count from the new binding; a fake that did not would
+        // let one test's rebind look like three.
+        silentSeconds = 0
     }
 }
 

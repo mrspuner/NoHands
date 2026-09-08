@@ -17,6 +17,20 @@ import Foundation
 public protocol MeetingCapture: Sendable {
     func start() async throws
     func stop() async throws -> MeetingAudioRecorder.Outcome
+
+    /// How long the microphone track has been delivering nothing but digital zeroes.
+    ///
+    /// Asked once a second while a meeting records. Zero means audio is arriving — including
+    /// audio nobody would call loud, which is the point: a real microphone in an empty room is
+    /// never exactly zero, and only a track bound to nothing ever is.
+    func microphoneSilentSeconds() async -> TimeInterval
+
+    /// Points the microphone output at a device by its CoreAudio UID, on the running stream.
+    ///
+    /// ScreenCaptureKit binds the microphone once, when the stream starts, and does not follow a
+    /// device that appears later — measured, see the decision of 2026-09-08. Without this the
+    /// warning on the panel would be sympathy rather than a repair.
+    func rebindMicrophone(to deviceUID: String) async throws
 }
 
 extension MeetingAudioRecorder: MeetingCapture {}

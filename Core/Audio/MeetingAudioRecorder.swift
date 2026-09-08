@@ -84,6 +84,10 @@ public actor MeetingAudioRecorder {
     private let onFailureWhileRecording: @Sendable (String) -> Void
     private var stream: SCStream?
     private var writer: TrackWriter?
+    /// The configuration the stream was started with, kept so a rebind can hand `updateConfiguration`
+    /// a whole configuration with one field changed rather than a fresh one that would also
+    /// silently reset the sample rate, the exclusions and the frame interval.
+    private var configuration: SCStreamConfiguration?
 
     /// - Parameter excludedBundleIDs: applications whose audio is cut out of the system track.
     ///
@@ -185,6 +189,7 @@ public actor MeetingAudioRecorder {
         }
         self.stream = stream
         self.writer = writer
+        self.configuration = configuration
     }
 
     /// Stops the capture and closes both files.
@@ -208,10 +213,29 @@ public actor MeetingAudioRecorder {
         }
         self.stream = nil
         self.writer = nil
+        self.configuration = nil
         // `try?`: a stream that already died reports "not running" here, while the reason it
         // died was recorded by the delegate. `finish` is what names it.
         try? await stream.stopCapture()
         return writer.finish()
+    }
+
+    public func microphoneSilentSeconds() -> TimeInterval {
+        writer?.microphoneSilentSeconds() ?? 0
+    }
+
+    /// - Throws: when there is no capture to rebind. That is a programmer error rather than a
+    ///   circumstance, and a silent success would tell the coordinator the microphone was picked
+    ///   up when nothing happened at all.
+    public func rebindMicrophone(to deviceUID: String) async throws {
+        guard let stream, let configuration else {
+            throw MeetingCaptureError.streamFailed("rebind called with no capture running")
+        }
+        configuration.microphoneCaptureDeviceID = deviceUID
+        try await stream.updateConfiguration(configuration)
+        // The next ten seconds are measured from here: the counter is about the binding that
+        // exists now, and leaving the old total behind would ask for a second rebind at once.
+        writer?.resetMicrophoneSilence()
     }
 }
 
@@ -354,6 +378,10 @@ final class CaptureTrack {
             }
         }
         silentFrames += buffer.frameLength
+    }
+
+    func resetSilence() {
+        silentFrames = 0
     }
 
     /// Copies the samples out of the sample buffer into a buffer of their own format.
@@ -566,6 +594,10 @@ final class TrackWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked 
 
     func microphoneSilentSeconds() -> TimeInterval {
         queue.sync { microphone.silentSeconds }
+    }
+
+    func resetMicrophoneSilence() {
+        queue.sync { microphone.resetSilence() }
     }
 
     func finish() -> MeetingAudioRecorder.Outcome {
