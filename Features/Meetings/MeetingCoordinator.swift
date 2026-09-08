@@ -328,9 +328,19 @@ public final class MeetingCoordinator {
             if silent, let device, mayRebind(now: now) {
                 rebindAttempts += 1
                 lastRebindAt = now
-                // A rebind that throws is not reported: the stream dying has its own channel,
-                // and the track is already known to be silent — the panel is saying so.
+                // A rebind that throws is not reported: `updateConfiguration` can fail for its
+                // own reasons — a stream that has already died, a device uid it refuses to bind
+                // to — and either way the panel is already saying the track is silent; a second
+                // complaint would replace the message that matters.
                 try? await capture.rebindMicrophone(to: device.uid)
+                // The tail stopped being synchronous the moment this await was added: the guard
+                // above only covered everything after it back when nothing between it and
+                // `microphoneCheck = nil` could suspend. `stopCapture` can now cancel this task
+                // while it sits inside the rebind, having already cleared `microphoneCheck` and
+                // let the next meeting install its own. Falling through to the unconditional nil
+                // below would erase that meeting's handle, so re-check before touching anything
+                // that belongs to whichever meeting is live now.
+                guard !Task.isCancelled else { return }
             }
             microphoneCheck = nil
         }

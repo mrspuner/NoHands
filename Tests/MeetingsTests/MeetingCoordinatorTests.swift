@@ -68,10 +68,21 @@ private final class FakeCapture: MeetingCapture {
     /// stale-check guard exists for.
     var suspendMicrophoneCheck = false
     private var pendingSilenceCheck: CheckedContinuation<TimeInterval, Never>?
+    /// How many times `microphoneSilentSeconds()` was called, suspended or not. A second check
+    /// running concurrently with a first shows up here as 2 — the direct measurement of the
+    /// reentrancy guard holding, which nothing else in this fake can prove.
+    private(set) var microphoneSilentSecondsCallCount = 0
     /// Every uid the coordinator asked to rebind to, in order.
     private(set) var rebinds: [String] = []
     /// Set to make a rebind fail the way a stream that died would.
     var rebindError: Error?
+    /// Set to make `rebindMicrophone(to:)` suspend instead of returning at once, holding the
+    /// continuation in `pendingRebind` until `resumeRebind()` releases it. Models the real gap
+    /// inside `updateConfiguration` — the same kind of gap `suspendMicrophoneCheck` models on the
+    /// read side, but here on the write side, where a stale check can still be sitting when the
+    /// meeting it was asked about ends.
+    var suspendRebind = false
+    private var pendingRebind: CheckedContinuation<Void, Never>?
 
     init(folder: URL, excluded: [String], onFailureWhileRecording: @escaping @Sendable (String) -> Void) {
         self.folder = folder
@@ -119,6 +130,7 @@ private final class FakeCapture: MeetingCapture {
     }
 
     func microphoneSilentSeconds() async -> TimeInterval {
+        microphoneSilentSecondsCallCount += 1
         guard suspendMicrophoneCheck else { return silentSeconds }
         return await withCheckedContinuation { pendingSilenceCheck = $0 }
     }
@@ -133,11 +145,20 @@ private final class FakeCapture: MeetingCapture {
     }
 
     func rebindMicrophone(to deviceUID: String) async throws {
+        if suspendRebind {
+            await withCheckedContinuation { pendingRebind = $0 }
+        }
         if let rebindError { throw rebindError }
         rebinds.append(deviceUID)
         // The real recorder restarts the count from the new binding; a fake that did not would
         // let one test's rebind look like three.
         silentSeconds = 0
+    }
+
+    /// Releases a `rebindMicrophone(to:)` call suspended by `suspendRebind`.
+    func resumeRebind() {
+        pendingRebind?.resume()
+        pendingRebind = nil
     }
 }
 
@@ -815,6 +836,63 @@ private let airpods = AudioInputDevice(
     }
 
     #expect(harness.captures[0].rebinds.count == 1)
+}
+
+// `rebindMicrophone` really suspends — the real one awaits `stream.updateConfiguration` — so the
+// cancellation guard at the top of `checkMicrophone`'s task no longer covers everything after it:
+// a rebind still in flight when `stopCapture` cancels this task resumes later, after the next
+// meeting has already installed its own check. Without a second guard right before the
+// unconditional `microphoneCheck = nil`, that resumption erases the next meeting's handle, the
+// one-at-a-time guard in `checkMicrophone` stops holding, and a poll that lands in the gap starts
+// a second, concurrent check for the same live meeting.
+@Test @MainActor func aRebindStillInFlightWhenTheMeetingEndsDoesNotEraseTheNextMeetingsCheck() async throws {
+    let harness = try Harness()
+    harness.inputDevice = airpods
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    // Confirmed the way `aStaleMicrophoneAnswerAfterTheMeetingEndedIsDiscarded` confirms it:
+    // `stopPressed` below needs a recording it is answering *for*, not a still-unconfirmed draft.
+    harness.coordinator.answer(.confirm, at: noon.addingTimeInterval(0.5))
+    await harness.coordinator.settle()
+
+    // Meeting A's check reaches the rebind and sits there, suspended, the way a real
+    // `updateConfiguration` call would while `stopCapture` below runs.
+    harness.captures[0].silentSeconds = 10
+    harness.captures[0].suspendRebind = true
+    harness.coordinator.poll(now: noon.addingTimeInterval(1))
+    for _ in 0..<8 { await Task.yield() }
+
+    harness.coordinator.stopPressed(at: noon.addingTimeInterval(2))
+    await harness.coordinator.settle()
+
+    // Meeting B starts and its own poll schedules its own check — but that check has not run a
+    // single line yet, so suspending it here still takes effect before it ever answers.
+    harness.processes = [telemostIdle]
+    harness.coordinator.poll(now: noon.addingTimeInterval(3))
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon.addingTimeInterval(4))
+    harness.captures[1].suspendMicrophoneCheck = true
+
+    // Release meeting A's stale rebind. With the guard in place it finds itself cancelled and
+    // returns without touching `microphoneCheck`; without it, it would nil out meeting B's live
+    // handle while meeting B's own check is still sitting mid-flight, suspended above.
+    harness.captures[0].resumeRebind()
+    for _ in 0..<8 { await Task.yield() }
+
+    // A poll that lands in this gap must see meeting B's check still installed and decline to
+    // start a second one — the direct measurement of the one-at-a-time guard still holding.
+    harness.coordinator.poll(now: noon.addingTimeInterval(5))
+    for _ in 0..<8 { await Task.yield() }
+
+    #expect(harness.captures[1].microphoneSilentSecondsCallCount == 1)
+
+    // Meeting B's own check still resolves normally once released — proof this is about the
+    // stale rebind's aftermath, not about meeting B's check being broken outright.
+    harness.captures[1].silentSeconds = 10
+    harness.captures[1].resumeMicrophoneCheck()
+    await harness.coordinator.settle()
+
+    #expect(harness.captures[1].rebinds == ["F0-D3:input"])
 }
 
 // MARK: - A dictation already under way
