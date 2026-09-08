@@ -450,7 +450,7 @@ public final class MeetingCoordinator {
                 gaps: [],
                 systemStartedAt: nil,
                 microphoneStartedAt: nil,
-                microphoneSilentSeconds: nil
+                trailingMicrophoneSilenceSeconds: nil
             )
             // Written now and rewritten at the end, rather than only at the end: a draft left
             // behind by a crash is otherwise two nameless wav files, with no record of when the
@@ -543,7 +543,7 @@ public final class MeetingCoordinator {
                 let outcome = try await capture.stop()
                 record?.systemStartedAt = outcome.systemStartedAt
                 record?.microphoneStartedAt = outcome.microphoneStartedAt
-                record?.microphoneSilentSeconds = outcome.microphoneSilentSeconds
+                record?.trailingMicrophoneSilenceSeconds = outcome.microphoneSilentSeconds
                 failure = outcome.failure
                 silentSeconds = outcome.microphoneSilentSeconds
                 sawAudio = outcome.microphoneSawAudio

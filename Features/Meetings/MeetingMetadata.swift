@@ -85,10 +85,16 @@ public struct MeetingMetadata: Equatable, Sendable, Codable {
     /// How long the microphone track had been delivering nothing but digital zeroes when the
     /// recording ended, or `nil` for a recording that ended before this was measured.
     ///
+    /// Trailing silence, and the key says so: any sample that is not exactly zero restarts the
+    /// count, so this is how the track *ended* and never how much of it was empty. The Swift
+    /// comment used to be the only place that said it, and this folder is read as JSON.
+    ///
     /// Not the same question as `inputDevice`: with no input device ScreenCaptureKit still hands
     /// over a full-rate stream of zeroes, so a file can carry a perfectly good device and an
-    /// empty track. This is the number that explains a transcript with no "Я" in it.
-    public var microphoneSilentSeconds: TimeInterval?
+    /// empty track. This is the number that explains a transcript with no "Я" in it — while this
+    /// folder lasts, which is `audioRetentionDays`; the archive's own front matter is what still
+    /// answers the question a year later.
+    public var trailingMicrophoneSilenceSeconds: TimeInterval?
 
     public init(
         startedAt: Date,
@@ -102,7 +108,7 @@ public struct MeetingMetadata: Equatable, Sendable, Codable {
         gaps: [Gap],
         systemStartedAt: Double?,
         microphoneStartedAt: Double?,
-        microphoneSilentSeconds: TimeInterval?
+        trailingMicrophoneSilenceSeconds: TimeInterval?
     ) {
         self.startedAt = startedAt
         self.stoppedAt = stoppedAt
@@ -115,7 +121,7 @@ public struct MeetingMetadata: Equatable, Sendable, Codable {
         self.gaps = gaps
         self.systemStartedAt = systemStartedAt
         self.microphoneStartedAt = microphoneStartedAt
-        self.microphoneSilentSeconds = microphoneSilentSeconds
+        self.trailingMicrophoneSilenceSeconds = trailingMicrophoneSilenceSeconds
     }
 
     public static let fileName = "meeting.json"

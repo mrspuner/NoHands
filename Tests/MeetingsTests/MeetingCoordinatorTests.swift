@@ -307,7 +307,7 @@ private func orphanDraft(in queue: URL, startedAt: Date = noon, broken: Bool = f
         gaps: [],
         systemStartedAt: nil,
         microphoneStartedAt: nil,
-        microphoneSilentSeconds: nil
+        trailingMicrophoneSilenceSeconds: nil
     ).write(to: draft.appendingPathComponent(MeetingMetadata.fileName))
     if broken {
         for name in [MeetingAudioRecorder.systemFileName, MeetingAudioRecorder.microphoneFileName] {

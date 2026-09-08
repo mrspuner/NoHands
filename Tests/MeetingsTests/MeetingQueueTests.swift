@@ -55,7 +55,7 @@ private func makeMeetingFolder(name: String = "2026-09-04-1053-telemost") throws
         app: MeetingMetadata.App(bundleID: "ru.yandex.desktop.telemost", name: "Телемост", slug: "telemost"),
         sampleRate: 16000, channelCount: 1, inputDevice: nil, stopReason: .manual,
         excludedApps: [], gaps: [], systemStartedAt: 100, microphoneStartedAt: 100,
-        microphoneSilentSeconds: nil
+        trailingMicrophoneSilenceSeconds: nil
     )
     try metadata.write(to: folder.appendingPathComponent(MeetingMetadata.fileName))
     return Fixture(queue: queue, archive: archive, folder: folder)

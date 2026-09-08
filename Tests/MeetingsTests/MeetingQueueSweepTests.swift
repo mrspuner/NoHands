@@ -16,7 +16,7 @@ private func makeFolder(_ queue: URL, _ name: String, startedAt: Date) throws ->
     let metadata = MeetingMetadata(
         startedAt: startedAt, stoppedAt: nil, app: nil, sampleRate: 16000, channelCount: 1,
         inputDevice: nil, stopReason: .manual, excludedApps: [], gaps: [],
-        systemStartedAt: 0, microphoneStartedAt: 0, microphoneSilentSeconds: nil
+        systemStartedAt: 0, microphoneStartedAt: 0, trailingMicrophoneSilenceSeconds: nil
     )
     try metadata.write(to: folder.appendingPathComponent(MeetingMetadata.fileName))
     return folder

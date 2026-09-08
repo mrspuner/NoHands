@@ -21,7 +21,7 @@ private let noon = Date(timeIntervalSince1970: 1_788_000_000)
         gaps: [MeetingMetadata.Gap(track: .microphone, from: noon.addingTimeInterval(60), to: noon.addingTimeInterval(75))],
         systemStartedAt: 0.42,
         microphoneStartedAt: 0.58,
-        microphoneSilentSeconds: 12.5
+        trailingMicrophoneSilenceSeconds: 12.5
     )
 
     let url = directory.appendingPathComponent("meeting.json")
@@ -48,7 +48,7 @@ private let noon = Date(timeIntervalSince1970: 1_788_000_000)
         gaps: [],
         systemStartedAt: nil,
         microphoneStartedAt: nil,
-        microphoneSilentSeconds: nil
+        trailingMicrophoneSilenceSeconds: nil
     )
 
     let url = directory.appendingPathComponent("meeting.json")
@@ -79,7 +79,7 @@ private let noon = Date(timeIntervalSince1970: 1_788_000_000)
         gaps: [],
         systemStartedAt: nil,
         microphoneStartedAt: nil,
-        microphoneSilentSeconds: nil
+        trailingMicrophoneSilenceSeconds: nil
     )
     try metadata.write(to: url)
     let raw = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
@@ -87,9 +87,11 @@ private let noon = Date(timeIntervalSince1970: 1_788_000_000)
     #expect(raw?["app"] == nil)
 }
 
-// Через полгода в файле встречи не будет ни одной реплики «Я», и единственное, чем это можно
-// объяснить, — запись рядом с дорожками.
-@Test func silenceOfTheMicrophoneTrackSurvivesInTheFile() throws {
+// Немота дорожки записывается рядом с самими дорожками — это то, чем объясняется файл встречи
+// без единой реплики «Я». Ключ называет ровно то, что в нём лежит: тишину **в конце** дорожки,
+// потому что любой ненулевой сэмпл обнуляет счётчик. Оговорка про это есть в свифтовом
+// комментарии, но папка очереди читается как JSON, а не как исходник.
+@Test func trailingSilenceOfTheMicrophoneTrackSurvivesInTheFile() throws {
     let url = FileManager.default.temporaryDirectory
         .appendingPathComponent("\(UUID().uuidString).json")
     defer { try? FileManager.default.removeItem(at: url) }
@@ -105,12 +107,48 @@ private let noon = Date(timeIntervalSince1970: 1_788_000_000)
         gaps: [],
         systemStartedAt: nil,
         microphoneStartedAt: nil,
-        microphoneSilentSeconds: nil
+        trailingMicrophoneSilenceSeconds: nil
     )
-    metadata.microphoneSilentSeconds = 5598.8
+    metadata.trailingMicrophoneSilenceSeconds = 5598.8
     try metadata.write(to: url)
 
     let read = try MeetingMetadata.read(from: url)
+    #expect(read.trailingMicrophoneSilenceSeconds == 5598.8)
 
-    #expect(read.microphoneSilentSeconds == 5598.8)
+    let raw = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+    #expect(raw?["trailingMicrophoneSilenceSeconds"] as? Double == 5598.8)
+    #expect(raw?["microphoneSilentSeconds"] == nil)
+}
+
+// Файлы со старым ключом лежат в очереди прямо сейчас. Поле опциональное, значит ключ просто не
+// находится — папка читается дальше, а не отвергается целиком.
+@Test func aFileCarryingTheOldSilenceKeyStillDecodes() throws {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("\(UUID().uuidString).json")
+    defer { try? FileManager.default.removeItem(at: url) }
+    let metadata = MeetingMetadata(
+        startedAt: noon,
+        stoppedAt: noon.addingTimeInterval(60),
+        app: nil,
+        sampleRate: 16000,
+        channelCount: 1,
+        inputDevice: nil,
+        stopReason: .manual,
+        excludedApps: [],
+        gaps: [],
+        systemStartedAt: nil,
+        microphoneStartedAt: nil,
+        trailingMicrophoneSilenceSeconds: nil
+    )
+    try metadata.write(to: url)
+    var raw = try #require(
+        try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+    )
+    raw["microphoneSilentSeconds"] = 12.5
+    try JSONSerialization.data(withJSONObject: raw).write(to: url)
+
+    let read = try MeetingMetadata.read(from: url)
+
+    #expect(read.startedAt == noon)
+    #expect(read.trailingMicrophoneSilenceSeconds == nil)
 }
