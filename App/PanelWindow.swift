@@ -1,5 +1,6 @@
 import AppKit
 import Dictation
+import Inbox
 import Meetings
 import SwiftUI
 
@@ -35,6 +36,10 @@ final class PanelWindow {
     /// Its own dwell timer, a third one: a transcription notice lives by its own clock, and a
     /// shared timer would let the end of a dictation cut it off halfway.
     private var pendingNoticeHide: DispatchWorkItem?
+    /// A fourth dwell timer. The inbox target stands for two minutes while a dictation lasts
+    /// seconds and a meeting prompt half a minute; one shared timer would let any of them cut
+    /// the others short.
+    private var pendingInboxHide: DispatchWorkItem?
 
     init() {
         panel = Panel(
@@ -127,6 +132,32 @@ final class PanelWindow {
         model.onMeetingAnswer = handler
     }
 
+    func show(inbox state: InboxPanelState) {
+        pendingInboxHide?.cancel()
+        pendingInboxHide = nil
+        model.inbox = state
+        position()
+        panel.orderFrontRegardless()
+        updateAcceptsClicks()
+        resize(forNotice: model.notice != nil)
+    }
+
+    func hideInbox(after delay: TimeInterval) {
+        pendingInboxHide?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.model.inbox = nil
+            self?.panel.invalidateShadow()
+            self?.updateAcceptsClicks()
+            self?.resize(forNotice: self?.model.notice != nil)
+        }
+        pendingInboxHide = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    func setInboxDrop(_ handler: @escaping ([URL]) -> Bool) {
+        model.onInboxDrop = handler
+    }
+
     func show(notice: MeetingNotice) {
         pendingNoticeHide?.cancel()
         pendingNoticeHide = nil
@@ -157,11 +188,16 @@ final class PanelWindow {
         panel.ignoresMouseEvents = !acceptsClicksNow
     }
 
-    /// Whether a click on the panel right now reaches its buttons — the same question
-    /// `updateAcceptsClicks` answers for `ignoresMouseEvents`, and `resize(forNotice:)` needs the
-    /// same answer to decide whether the window may grow.
+    /// Whether a click — or a drag — on the panel right now reaches its content.
+    ///
+    /// The inbox target needs the mouse for the same reason a meeting prompt does, and gets it
+    /// on the same terms: never while dictation is on top of it, because then the target is not
+    /// what is on screen. It deliberately does not grow the window: see the decisions log for
+    /// 2026-09-08 — a 560×96 rectangle taking the mouse for two minutes would sit exactly over
+    /// the mute and leave buttons of a full-screen call.
     private var acceptsClicksNow: Bool {
-        model.state == nil && (model.meeting?.acceptsClicks ?? false)
+        guard model.state == nil else { return false }
+        return (model.meeting?.acceptsClicks ?? false) || (model.inbox?.acceptsDrop ?? false)
     }
 
     func setLevel(_ level: Float) {
