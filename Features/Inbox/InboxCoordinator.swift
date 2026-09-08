@@ -59,11 +59,27 @@ public final class InboxCoordinator {
         self.play = play
     }
 
-    /// fn+C. The previous capture's task is cancelled rather than queued behind: two hotkeys in
-    /// a row mean the owner wants the second selection, and the first is already history.
+    /// fn+C. A capture already in flight ignores a new request rather than being cancelled —
+    /// only one borrow of the pasteboard at a time.
+    ///
+    /// `Task.cancel()` cannot undo a Cmd+C already posted to the foreground application: the
+    /// cancelled task's own `Task.sleep` calls throw and are swallowed by `try?`, so it races to
+    /// the end of its wait loop and gives up in microseconds, but the application under us still
+    /// answers the keystroke eventually. A second capture started in the meantime borrows the
+    /// same pasteboard again, and when the first capture's belated answer to Cmd+C #1 lands, the
+    /// second capture reads it as its own selection and restores the snapshot from under it — the
+    /// clipboard is then left holding the captured text permanently, with nothing left to give it
+    /// back. Ignoring the second request avoids the double borrow instead of racing to undo it.
+    ///
+    /// The cost is silent and small: a second fn+C pressed while the first is still out does
+    /// nothing at all, not even a sound. That is a debounce, not a failure — the whole capture
+    /// takes a fraction of a second, and the panel row for the one that ran appears right after.
     public func captureRequested() {
-        work?.cancel()
-        work = Task { [weak self] in await self?.perform() }
+        guard work == nil else { return }
+        work = Task { [weak self] in
+            await self?.perform()
+            self?.work = nil
+        }
     }
 
     /// Waits for the capture in flight. Internal rather than public: it exists for the tests,
@@ -93,14 +109,6 @@ public final class InboxCoordinator {
             let at = now()
             let source = readSource()
 
-            // Cancellation is cooperative: `Task.cancel()` alone does not stop work already in
-            // flight, and `InboxCapture.selection()`'s own wait loop swallows the resulting
-            // `CancellationError`. This is the one place after the only suspension point that can
-            // still honour it before any side effect happens — a superseded capture must be
-            // silent, so it returns rather than falling through to create a folder, touch state,
-            // or play anything.
-            guard !Task.isCancelled else { return }
-
             let folder = try InboxFolder.create(in: root, capturedAt: at, slug: source.slug)
             createdFolder = folder
             let note = InboxNote.render(
@@ -128,16 +136,13 @@ public final class InboxCoordinator {
             // landed inside it yet, which is what makes the removal safe. An empty folder would
             // look exactly like a capture that happened.
             //
-            // Cleanup stays unconditional — it is about the disk, and this attempt owns whatever
-            // it left there regardless of who won the race. Reporting is about the panel, and
-            // belongs only to the attempt that is still current: a cancelled first capture whose
-            // `capture()` throws (`nothingCopied` is the ordinary case — two quick fn+C presses,
-            // the first with nothing selected) must not flash `.failure` over a second capture
-            // that has already shown `.captured` and armed its own dwell.
+            // Reporting is unconditional too, unlike before: captures no longer race each other
+            // — `captureRequested()` ignores a new request while one is in flight — so whichever
+            // attempt is running here is always the current one, and its failure is always worth
+            // telling the panel about.
             if let createdFolder {
                 try? FileManager.default.removeItem(at: createdFolder)
             }
-            guard !Task.isCancelled else { return }
             reportFailure(error)
         }
     }

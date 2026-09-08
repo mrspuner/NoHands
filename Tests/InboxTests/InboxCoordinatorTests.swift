@@ -186,10 +186,13 @@ private final class Harness {
     #expect(harness.folders.count == 2)
 }
 
-// `captureRequested()`'s own doc comment promises the first hotkey is "already history" once a
-// second one arrives. `Task.cancel()` alone does not make that true — this pins the promise down.
+// `captureRequested()`'s doc comment says a second request is ignored while one is in flight,
+// not cancelled: cancelling cannot undo a Cmd+C already sent, so a second fn+C pressed a
+// fraction of a second after the first must do nothing rather than start a competing attempt.
+// This pins that down: two hotkeys close together still produce exactly one folder, one
+// `.captured`, one `.done`.
 @MainActor
-@Test func aSupersededCaptureLeavesNothingBehind() async throws {
+@Test func aSecondHotkeyWhileACaptureIsInFlightIsIgnored() async throws {
     let root = try temporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let harness = Harness(root: root)
@@ -198,24 +201,21 @@ private final class Harness {
     harness.coordinator.captureRequested()
     harness.coordinator.captureRequested()
     await harness.coordinator.settle()
-    // The orphaned first task is never awaited directly — nothing holds its handle once the
-    // second `captureRequested()` overwrites `work` — so give it time to finish on its own.
-    try await Task.sleep(for: .milliseconds(100))
 
     #expect(harness.folders.count == 1)
     #expect(harness.shown.count == 1)
     if case .captured = harness.shown.first {} else {
-        Issue.record("ожидался единственный .captured от второго захвата: \(harness.shown)")
+        Issue.record("expected a single .captured from the one capture that ran: \(harness.shown)")
     }
     #expect(harness.sounds == [.done])
 }
 
-// The guard after `try await capture()` only covers the path where it returns. If it throws
-// instead — `nothingCopied` is the ordinary case, two quick fn+C presses where the first had
-// nothing selected — the failure must still be silenced for a superseded attempt, or it flashes
-// `.failure` over a second capture that has already shown `.captured`.
+// The second press is ignored outright, not queued behind the first: if the one attempt that
+// runs fails, no second attempt should have started at all. `textQueue` holds only one answer —
+// a failure — while `text` defaults to success, so a wrongly-started second attempt would show
+// up unmistakably as a folder and a `.captured` that should not exist.
 @MainActor
-@Test func aSupersededCaptureThatFailsSaysNothing() async throws {
+@Test func aSecondHotkeyDuringAFailingCaptureStartsNoSecondAttempt() async throws {
     let root = try temporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let harness = Harness(root: root)
@@ -225,13 +225,13 @@ private final class Harness {
     harness.coordinator.captureRequested()
     harness.coordinator.captureRequested()
     await harness.coordinator.settle()
-    // The orphaned first task is never awaited directly — give it time to finish on its own.
-    try await Task.sleep(for: .milliseconds(100))
 
-    #expect(!harness.shown.contains { if case .failure = $0 { true } else { false } })
-    #expect(!harness.sounds.contains(.error))
+    #expect(harness.folders.isEmpty)
+    #expect(harness.sounds == [.error])
+    let failureCount = harness.shown.filter { if case .failure = $0 { true } else { false } }.count
+    #expect(failureCount == 1)
     let capturedCount = harness.shown.filter { if case .captured = $0 { true } else { false } }.count
-    #expect(capturedCount == 1)
+    #expect(capturedCount == 0)
 }
 
 // A drop is a promise of more time, not just of a copied file: the design lets a file dropped at
