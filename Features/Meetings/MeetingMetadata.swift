@@ -82,6 +82,14 @@ public struct MeetingMetadata: Equatable, Sendable, Codable {
     public var systemStartedAt: Double?
     public var microphoneStartedAt: Double?
 
+    /// How long the microphone track had been delivering nothing but digital zeroes when the
+    /// recording ended, or `nil` for a recording that ended before this was measured.
+    ///
+    /// Not the same question as `inputDevice`: with no input device ScreenCaptureKit still hands
+    /// over a full-rate stream of zeroes, so a file can carry a perfectly good device and an
+    /// empty track. This is the number that explains a transcript with no "Я" in it.
+    public var microphoneSilentSeconds: TimeInterval?
+
     public init(
         startedAt: Date,
         stoppedAt: Date?,
@@ -93,7 +101,8 @@ public struct MeetingMetadata: Equatable, Sendable, Codable {
         excludedApps: [String],
         gaps: [Gap],
         systemStartedAt: Double?,
-        microphoneStartedAt: Double?
+        microphoneStartedAt: Double?,
+        microphoneSilentSeconds: TimeInterval?
     ) {
         self.startedAt = startedAt
         self.stoppedAt = stoppedAt
@@ -106,6 +115,7 @@ public struct MeetingMetadata: Equatable, Sendable, Codable {
         self.gaps = gaps
         self.systemStartedAt = systemStartedAt
         self.microphoneStartedAt = microphoneStartedAt
+        self.microphoneSilentSeconds = microphoneSilentSeconds
     }
 
     public static let fileName = "meeting.json"

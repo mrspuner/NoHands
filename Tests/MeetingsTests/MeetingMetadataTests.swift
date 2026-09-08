@@ -20,7 +20,8 @@ private let noon = Date(timeIntervalSince1970: 1_788_000_000)
         excludedApps: ["com.spotify.client"],
         gaps: [MeetingMetadata.Gap(track: .microphone, from: noon.addingTimeInterval(60), to: noon.addingTimeInterval(75))],
         systemStartedAt: 0.42,
-        microphoneStartedAt: 0.58
+        microphoneStartedAt: 0.58,
+        microphoneSilentSeconds: 12.5
     )
 
     let url = directory.appendingPathComponent("meeting.json")
@@ -46,7 +47,8 @@ private let noon = Date(timeIntervalSince1970: 1_788_000_000)
         excludedApps: [],
         gaps: [],
         systemStartedAt: nil,
-        microphoneStartedAt: nil
+        microphoneStartedAt: nil,
+        microphoneSilentSeconds: nil
     )
 
     let url = directory.appendingPathComponent("meeting.json")
@@ -76,10 +78,39 @@ private let noon = Date(timeIntervalSince1970: 1_788_000_000)
         excludedApps: [],
         gaps: [],
         systemStartedAt: nil,
-        microphoneStartedAt: nil
+        microphoneStartedAt: nil,
+        microphoneSilentSeconds: nil
     )
     try metadata.write(to: url)
     let raw = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
     #expect(raw?["stopReason"] as? String == "lengthLimit")
     #expect(raw?["app"] == nil)
+}
+
+// Через полгода в файле встречи не будет ни одной реплики «Я», и единственное, чем это можно
+// объяснить, — запись рядом с дорожками.
+@Test func silenceOfTheMicrophoneTrackSurvivesInTheFile() throws {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("\(UUID().uuidString).json")
+    defer { try? FileManager.default.removeItem(at: url) }
+    var metadata = MeetingMetadata(
+        startedAt: noon,
+        stoppedAt: noon.addingTimeInterval(60),
+        app: nil,
+        sampleRate: 16000,
+        channelCount: 1,
+        inputDevice: nil,
+        stopReason: .manual,
+        excludedApps: [],
+        gaps: [],
+        systemStartedAt: nil,
+        microphoneStartedAt: nil,
+        microphoneSilentSeconds: nil
+    )
+    metadata.microphoneSilentSeconds = 5598.8
+    try metadata.write(to: url)
+
+    let read = try MeetingMetadata.read(from: url)
+
+    #expect(read.microphoneSilentSeconds == 5598.8)
 }

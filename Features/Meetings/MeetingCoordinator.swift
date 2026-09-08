@@ -74,9 +74,17 @@ public final class MeetingCoordinator {
     /// `start` would tear down a stream that does not exist yet and leave the one still being
     /// built with nobody to close it. `DictationCoordinator` documents the same hazard.
     private var captureTask: Task<Void, Never>?
+    /// What closing a capture leaves for whoever decides the folder's fate. Two fields rather
+    /// than one string: a failure is an `Error` and stays English, while a silent track is a
+    /// sentence for a person — the same split `MeetingNotice` already makes.
+    private struct Closed {
+        var failure: String?
+        var microphoneSilentSeconds: TimeInterval
+    }
+
     /// The task that closes the capture and writes the final metadata, returning whatever went
     /// wrong. The hand-off waits for it and is what shows the failure — see `keepDraft`.
-    private var closing: Task<String?, Never>?
+    private var closing: Task<Closed, Never>?
     /// The task that renames or removes the folder once `closing` has finished.
     private var housekeeping: Task<Void, Never>?
 
@@ -422,7 +430,8 @@ public final class MeetingCoordinator {
                 excludedApps: config.excludedApps,
                 gaps: [],
                 systemStartedAt: nil,
-                microphoneStartedAt: nil
+                microphoneStartedAt: nil,
+                microphoneSilentSeconds: nil
             )
             // Written now and rewritten at the end, rather than only at the end: a draft left
             // behind by a crash is otherwise two nameless wav files, with no record of when the
@@ -506,11 +515,16 @@ public final class MeetingCoordinator {
             await pendingStart?.value
             var record = finished
             var failure: String?
+            // No outcome when `stop()` itself throws, and therefore no number to report — 0
+            // rather than a guess, same as a recording that never went silent at all.
+            var silentSeconds: TimeInterval = 0
             do {
                 let outcome = try await capture.stop()
                 record?.systemStartedAt = outcome.systemStartedAt
                 record?.microphoneStartedAt = outcome.microphoneStartedAt
+                record?.microphoneSilentSeconds = outcome.microphoneSilentSeconds
                 failure = outcome.failure
+                silentSeconds = outcome.microphoneSilentSeconds
             } catch {
                 failure = Self.describe(error)
             }
@@ -520,7 +534,10 @@ public final class MeetingCoordinator {
                 failure = failure ?? "Cannot write \(MeetingMetadata.fileName): " +
                     "\(error.localizedDescription)"
             }
-            return failure
+            return Closed(
+                failure: failure,
+                microphoneSilentSeconds: silentSeconds
+            )
         }
     }
 
@@ -535,7 +552,18 @@ public final class MeetingCoordinator {
             // that closes the capture and rewrites the metadata is the whole guarantee; a sleep
             // in its place would only make the race rarer and harder to see.
             var failures: [String] = []
-            if let stopFailure = await closing?.value ?? nil { failures.append(stopFailure) }
+            if let closed = await closing?.value {
+                if let failure = closed.failure { failures.append(failure) }
+                // Interface text, so Russian — the rule `MeetingNotice` follows. Said only when
+                // the silence outlasted the threshold: a recording that lost its last ten
+                // seconds of microphone lost nothing worth a red line.
+                if closed.microphoneSilentSeconds >= Self.microphoneSilenceThreshold {
+                    failures.append(
+                        "Микрофон молчал \(ElapsedTime.minutes(closed.microphoneSilentSeconds)) мин"
+                            + " — ваша дорожка пустая"
+                    )
+                }
+            }
             do {
                 let ready = try MeetingFolder.promote(folder)
                 self?.onFolderReady(ready)

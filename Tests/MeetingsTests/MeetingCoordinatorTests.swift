@@ -61,6 +61,10 @@ private final class FakeCapture: MeetingCapture {
     /// What the next `microphoneSilentSeconds()` answers. The tests set it directly: this fake
     /// has no audio to be silent about.
     var silentSeconds: TimeInterval = 0
+    /// What the next `stop()` reports as `Outcome.microphoneSilentSeconds` — the number
+    /// `keepDraft` turns into a sentence on the panel. Separate from `silentSeconds`, which
+    /// answers the polling question asked while the meeting is still live.
+    var silentAtStop: TimeInterval = 0
     /// Set to make `microphoneSilentSeconds()` suspend instead of answering at once, holding the
     /// continuation in `pendingSilenceCheck` until `resumeMicrophoneCheck()` releases it. Models
     /// the real gap between a poll asking the question and the answer arriving — the gap in
@@ -125,7 +129,7 @@ private final class FakeCapture: MeetingCapture {
             systemStartedAt: 0.25,
             microphoneStartedAt: 0.5,
             failure: failure,
-            microphoneSilentSeconds: 0
+            microphoneSilentSeconds: silentAtStop
         )
     }
 
@@ -297,7 +301,8 @@ private func orphanDraft(in queue: URL, startedAt: Date = noon, broken: Bool = f
         excludedApps: [],
         gaps: [],
         systemStartedAt: nil,
-        microphoneStartedAt: nil
+        microphoneStartedAt: nil,
+        microphoneSilentSeconds: nil
     ).write(to: draft.appendingPathComponent(MeetingMetadata.fileName))
     if broken {
         for name in [MeetingAudioRecorder.systemFileName, MeetingAudioRecorder.microphoneFileName] {
@@ -1153,6 +1158,25 @@ private let zoom = AudioProcessMonitor.State(
 
     #expect(harness.handedOver.count == 1)
     #expect(harness.shown.contains(.failure("no audio arrived on the system track")))
+}
+
+// Английская строка про формат буфера была последним, что владелец узнал о потере своей
+// дорожки. Панель говорит по-русски и говорит, что именно потеряно.
+@Test @MainActor func aRecordingWhoseMicrophoneStayedSilentSaysSoWhenItIsKept() async throws {
+    let harness = try Harness()
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+    harness.captures[0].silentAtStop = 600
+
+    harness.coordinator.answer(.confirm, at: noon.addingTimeInterval(1))
+    harness.coordinator.stopPressed(at: noon.addingTimeInterval(2))
+    await harness.coordinator.settle()
+
+    #expect(harness.shown.contains { state in
+        if case .failure(let text) = state { return text.contains("Микрофон молчал 10 мин") }
+        return false
+    })
 }
 
 // A failure shown while the save prompt is up would replace it, and the owner would be left with
