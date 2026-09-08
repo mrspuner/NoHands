@@ -222,7 +222,7 @@ url: "https://tracker.yandex.ru/PULSE-42"
 5. Создаёт задачу в Todoist
 6. Пишет `card.md` рядом с `note.md` — что ушло в Todoist, с идентификатором задачи и оценкой
 
-Задача в Todoist: `POST https://api.todoist.com/rest/v2/tasks`, токен `Bearer` из Keychain под именем `todoist-token`. Поля: `content` — формулировка, `description` — сжатый контекст плюс путь к папке входящего, `due_string` — срок, `labels` — ведро размера, `priority`.
+Задача в Todoist: `POST https://api.todoist.com/rest/v2/tasks`, токен `Bearer` из Keychain: сервис `nohands-todoist`, учётная запись `api-token` — по той же форме, что у ключей ElevenLabs и DeepSeek в `Core/Secrets/Keychain.swift`. Поля: `content` — формулировка, `description` — сжатый контекст плюс путь к папке входящего, `due_string` — срок, `labels` — ведро размера, `priority`.
 
 Токен кладётся в Keychain с флагом `-T` на приложение, которое его читает. Урок 3 сентября: элемент, созданный без `-T`, поднимает системный диалог при первом чтении из другой идентичности кода.
 
