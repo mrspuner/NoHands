@@ -53,18 +53,24 @@ public actor MeetingAudioRecorder {
         /// What went wrong, named, or `nil` when nothing did.
         public let failure: String?
 
+        /// How long the microphone track had been delivering nothing but digital zeroes when the
+        /// recording was handed over. Zero while it was delivering audio.
+        public let microphoneSilentSeconds: TimeInterval
+
         public init(
             systemURL: URL,
             microphoneURL: URL,
             systemStartedAt: Double?,
             microphoneStartedAt: Double?,
-            failure: String?
+            failure: String?,
+            microphoneSilentSeconds: TimeInterval
         ) {
             self.systemURL = systemURL
             self.microphoneURL = microphoneURL
             self.systemStartedAt = systemStartedAt
             self.microphoneStartedAt = microphoneStartedAt
             self.failure = failure
+            self.microphoneSilentSeconds = microphoneSilentSeconds
         }
     }
 
@@ -274,6 +280,20 @@ final class CaptureTrack {
     /// back, but the content still starts at this buffer.
     private(set) var startedAt: Double?
 
+    /// Frames of unbroken digital silence — samples that are exactly zero — at the end of what
+    /// this track has been handed.
+    ///
+    /// Exactly zero, not "quiet": with no input device ScreenCaptureKit hands over a full-rate
+    /// stream of zeroes, while a real microphone in an empty room still delivers −46…−57 dBFS.
+    /// A loudness threshold here would cut off the owner's own quiet speech; this one only ever
+    /// fires on a track nobody is recording into.
+    private var silentFrames: AVAudioFrameCount = 0
+    private var silentRate: Double = MeetingAudioRecorder.sampleRate
+
+    var silentSeconds: TimeInterval {
+        silentRate > 0 ? TimeInterval(silentFrames) / silentRate : 0
+    }
+
     init(name: String, url: URL, format: AVAudioFormat) {
         self.name = name
         self.url = url
@@ -295,6 +315,7 @@ final class CaptureTrack {
             fail("cannot down-mix the \(name) track from \(source.format)")
             return
         }
+        note(silenceOf: mono)
         guard let converted = resampled(mono), converted.frameLength > 0 else { return }
         do {
             // Created on the first buffer rather than at start, so a capture that never
@@ -307,6 +328,32 @@ final class CaptureTrack {
         } catch {
             fail("cannot write \(url.lastPathComponent): \(error.localizedDescription)")
         }
+    }
+
+    /// Internal rather than private so the tests can drive the counter without a stream: the
+    /// buffer this measures is the down-mixed one, and building it by hand is the whole test.
+    func note(silenceOf buffer: AVAudioPCMBuffer) {
+        silentRate = buffer.format.sampleRate
+        // A format this cannot read is not judged: reporting it as silence would raise a warning
+        // about a track that may well be recording.
+        guard let planes = buffer.floatChannelData else {
+            silentFrames = 0
+            return
+        }
+        let channels = Int(buffer.format.channelCount)
+        let interleaved = buffer.format.isInterleaved
+        for frame in 0..<Int(buffer.frameLength) {
+            for channel in 0..<channels {
+                let sample = interleaved
+                    ? planes[0][frame * channels + channel]
+                    : planes[channel][frame]
+                if sample != 0 {
+                    silentFrames = 0
+                    return
+                }
+            }
+        }
+        silentFrames += buffer.frameLength
     }
 
     /// Copies the samples out of the sample buffer into a buffer of their own format.
@@ -517,6 +564,10 @@ final class TrackWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked 
         queue.sync { closeOnQueue() }
     }
 
+    func microphoneSilentSeconds() -> TimeInterval {
+        queue.sync { microphone.silentSeconds }
+    }
+
     func finish() -> MeetingAudioRecorder.Outcome {
         queue.sync {
             closeOnQueue()
@@ -525,7 +576,8 @@ final class TrackWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked 
                 microphoneURL: microphone.url,
                 systemStartedAt: system.startedAt,
                 microphoneStartedAt: microphone.startedAt,
-                failure: firstFailure()
+                failure: firstFailure(),
+                microphoneSilentSeconds: microphone.silentSeconds
             )
         }
     }

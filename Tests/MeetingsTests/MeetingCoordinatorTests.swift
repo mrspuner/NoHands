@@ -99,7 +99,8 @@ private final class FakeCapture: MeetingCapture {
             microphoneURL: folder.appendingPathComponent(MeetingAudioRecorder.microphoneFileName),
             systemStartedAt: 0.25,
             microphoneStartedAt: 0.5,
-            failure: failure
+            failure: failure,
+            microphoneSilentSeconds: 0
         )
     }
 }
