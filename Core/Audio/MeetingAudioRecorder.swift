@@ -219,16 +219,18 @@ public actor MeetingAudioRecorder {
 /// nothing about the resulting file would look wrong.
 enum AudioDownmix {
     /// - Returns: the buffer itself when it is already mono, a new 32-bit float mono buffer at
-    ///   the same sample rate otherwise, and `nil` when the samples are laid out in a way this
-    ///   cannot read — which the caller has to report rather than quietly drop channels.
+    ///   the same sample rate otherwise, and `nil` when the format is not 32-bit float —
+    ///   which the caller has to report rather than quietly drop channels.
     static func mono(from buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
         let channels = Int(buffer.format.channelCount)
         guard channels > 1 else { return buffer }
-        // ScreenCaptureKit delivers 32-bit float, one plane per channel. Anything else is
-        // unexpected enough to be worth a named failure instead of a guess.
-        guard !buffer.format.isInterleaved, let planes = buffer.floatChannelData else {
-            return nil
-        }
+        // ScreenCaptureKit delivers 32-bit float on both tracks and lays them out differently:
+        // the system mix arrives deinterleaved, one plane per channel, and the microphone
+        // arrives interleaved, every channel in one plane. Both are readable — what differs is
+        // the stride from one frame to the next, not whether the samples can be found — so both
+        // are averaged here. Refusing the interleaved one cost a whole meeting's own track: see
+        // the decision of 2026-09-08.
+        guard let planes = buffer.floatChannelData else { return nil }
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: buffer.format.sampleRate,
@@ -241,10 +243,11 @@ enum AudioDownmix {
         }
         mixed.frameLength = buffer.frameLength
         let scale = 1 / Float(channels)
+        let interleaved = buffer.format.isInterleaved
         for frame in 0..<Int(buffer.frameLength) {
             var sum: Float = 0
             for channel in 0..<channels {
-                sum += planes[channel][frame]
+                sum += interleaved ? planes[0][frame * channels + channel] : planes[channel][frame]
             }
             output[0][frame] = sum * scale
         }

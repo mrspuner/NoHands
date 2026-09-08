@@ -53,15 +53,29 @@ private func stereo(left: Float, right: Float, frames: AVAudioFrameCount = 64) -
     #expect(mixed === buffer)
 }
 
-// A layout this cannot read must be reported, not guessed at: the caller turns nil into a named
-// capture failure. Silently keeping the first channel is the bug this whole file prevents.
-@Test func anInterleavedSourceIsRefusedRatherThanGuessed() {
+// Микрофонный выход SCStream интерливленный всегда — проба 4 из спеки. Раскладка читается
+// ровно так же, просто шаг между сэмплами одного кадра равен числу каналов, а не единице.
+// Отказ на этом месте стоил живой встречи: дорожка умирала на первом буфере.
+@Test func anInterleavedStereoSourceIsAveraged() throws {
     let format = AVAudioFormat(
         commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 2, interleaved: true
     )!
-    let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 8)!
-    buffer.frameLength = 8
-    #expect(AudioDownmix.mono(from: buffer) == nil)
+    let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4)!
+    buffer.frameLength = 4
+    let samples = try #require(buffer.floatChannelData)
+    for frame in 0..<4 {
+        samples[0][frame * 2] = 0
+        samples[0][frame * 2 + 1] = 0.5
+    }
+
+    let mixed = try #require(AudioDownmix.mono(from: buffer))
+
+    #expect(mixed.format.channelCount == 1)
+    #expect(mixed.frameLength == 4)
+    let output = try #require(mixed.floatChannelData)
+    for frame in 0..<4 {
+        #expect(abs(output[0][frame] - 0.25) < 0.0001)
+    }
 }
 
 @Test func anIntegerSourceIsRefusedRatherThanGuessed() {
