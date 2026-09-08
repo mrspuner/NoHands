@@ -49,4 +49,30 @@ public enum InboxFolder {
         try fileManager.createDirectory(at: folder, withIntermediateDirectories: false)
         return folder
     }
+
+    /// Copies a dropped file into the capture's folder.
+    ///
+    /// Copied, never moved: the source is somebody else's folder — the Telegram cache, the
+    /// Downloads folder — and carrying a file out of it is not this application's business.
+    /// A name that is already taken gets the same numeric suffix a folder does, with the
+    /// extension kept where it belongs so the file still opens by double-click.
+    @discardableResult
+    public static func copyAttachment(
+        _ source: URL,
+        into folder: URL,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        let name = source.lastPathComponent
+        let ext = source.pathExtension
+        let stem = ext.isEmpty ? name : String(name.dropLast(ext.count + 1))
+        var candidate = name
+        var suffix = 1
+        while fileManager.fileExists(atPath: folder.appendingPathComponent(candidate).path) {
+            suffix += 1
+            candidate = ext.isEmpty ? "\(stem)-\(suffix)" : "\(stem)-\(suffix).\(ext)"
+        }
+        let destination = folder.appendingPathComponent(candidate)
+        try fileManager.copyItem(at: source, to: destination)
+        return destination
+    }
 }
