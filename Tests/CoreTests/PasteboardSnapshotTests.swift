@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 import Testing
-@testable import Dictation
+@testable import Core
 
 private func scratchPasteboard() -> NSPasteboard {
     NSPasteboard(name: NSPasteboard.Name("nohands-test-\(UUID().uuidString)"))
