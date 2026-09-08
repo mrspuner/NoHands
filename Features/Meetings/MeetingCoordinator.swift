@@ -80,6 +80,10 @@ public final class MeetingCoordinator {
     private struct Closed {
         var failure: String?
         var microphoneSilentSeconds: TimeInterval
+        /// Whether the microphone track ever carried anything. Only meaningful alongside the
+        /// number above — see `keepDraft`, which needs both to choose between "empty" and
+        /// "incomplete".
+        var microphoneSawAudio: Bool
     }
 
     /// The task that closes the capture and writes the final metadata, returning whatever went
@@ -329,7 +333,15 @@ public final class MeetingCoordinator {
             // `microphoneCheck` below would erase the handle the *next* meeting's check just
             // took, since a single tick is enough to start one — see `stopCapture`'s own comment.
             guard !Task.isCancelled else { return }
-            if silent != microphoneSilent {
+            // A rebind restarts the silence counter, which is right for the counter — it is about
+            // the binding that exists now — and wrong for the warning. For one cooldown after a
+            // rebind the counter reads zero whether or not any audio arrived, so taking the
+            // warning down on it is a false all-clear: the red line went out, came back ten
+            // seconds later, and did it up to three times over a track that never spoke and never
+            // would. Only silence is allowed to be said inside that window; the counter means
+            // something again once the cooldown is out, by which point it has either been reset
+            // by real audio or climbed back over the threshold.
+            if silent != microphoneSilent, silent || !withinRebindCooldown(now: now) {
                 microphoneSilent = silent
                 onMicrophoneSilent(silent)
             }
@@ -360,8 +372,15 @@ public final class MeetingCoordinator {
     /// a second failure and spend the budget faster than the device could ever answer.
     private func mayRebind(now: Date) -> Bool {
         guard rebindAttempts < Self.rebindLimit else { return false }
-        guard let lastRebindAt else { return true }
-        return now.timeIntervalSince(lastRebindAt) >= Self.rebindCooldown
+        return !withinRebindCooldown(now: now)
+    }
+
+    /// Whether a rebind is recent enough that the counter it reset cannot be evidence of anything
+    /// yet. Two things read this: whether another attempt is affordable, and whether the panel's
+    /// warning may be taken down — see `checkMicrophone` for why the second one needs it.
+    private func withinRebindCooldown(now: Date) -> Bool {
+        guard let lastRebindAt else { return false }
+        return now.timeIntervalSince(lastRebindAt) < Self.rebindCooldown
     }
 
     private func noteMonitorFailure() {
@@ -516,8 +535,10 @@ public final class MeetingCoordinator {
             var record = finished
             var failure: String?
             // No outcome when `stop()` itself throws, and therefore no number to report — 0
-            // rather than a guess, same as a recording that never went silent at all.
+            // rather than a guess, same as a recording that never went silent at all. The flag
+            // beside it is then never read: the sentence in `keepDraft` is gated on the number.
             var silentSeconds: TimeInterval = 0
+            var sawAudio = false
             do {
                 let outcome = try await capture.stop()
                 record?.systemStartedAt = outcome.systemStartedAt
@@ -525,6 +546,7 @@ public final class MeetingCoordinator {
                 record?.microphoneSilentSeconds = outcome.microphoneSilentSeconds
                 failure = outcome.failure
                 silentSeconds = outcome.microphoneSilentSeconds
+                sawAudio = outcome.microphoneSawAudio
             } catch {
                 failure = Self.describe(error)
             }
@@ -536,7 +558,8 @@ public final class MeetingCoordinator {
             }
             return Closed(
                 failure: failure,
-                microphoneSilentSeconds: silentSeconds
+                microphoneSilentSeconds: silentSeconds,
+                microphoneSawAudio: sawAudio
             )
         }
     }
@@ -558,15 +581,24 @@ public final class MeetingCoordinator {
                 // the silence outlasted the threshold: a recording that lost its last ten
                 // seconds of microphone lost nothing worth a red line.
                 //
+                // Two sentences, because the number alone cannot tell the two cases apart. It is
+                // trailing silence by construction — any non-zero sample restarts it — so calling
+                // it "the track is empty" is false in the ordinary case: the stop prompt goes up
+                // the moment a call ends and the recording runs on for two more minutes, in which
+                // AirPods going into their case, or a hardware mute switch, produce exact digital
+                // zero. Ten seconds of that would have reported a whole good meeting as empty.
+                //
                 // `MeetingNotice.length` and not a bare `ElapsedTime.minutes(...) мин`: the gate
                 // above is ten seconds, but rounding to the nearest minute takes anything under
-                // thirty down to zero, and "Микрофон молчал 0 мин" would claim no silence and an
-                // empty track in the same sentence.
+                // thirty down to zero, and "0 мин" would claim no silence and a lost track in the
+                // same sentence.
                 if closed.microphoneSilentSeconds >= Self.microphoneSilenceThreshold {
                     failures.append(
-                        "Микрофон молчал "
-                            + MeetingNotice.length(ElapsedTime.minutes(closed.microphoneSilentSeconds))
-                            + " — ваша дорожка пустая"
+                        closed.microphoneSawAudio
+                            ? "Микрофон замолчал в конце — "
+                                + MeetingNotice.length(ElapsedTime.minutes(closed.microphoneSilentSeconds))
+                                + " тишины, ваша дорожка неполная"
+                            : "Микрофон молчал всю запись — ваша дорожка пустая"
                     )
                 }
             }

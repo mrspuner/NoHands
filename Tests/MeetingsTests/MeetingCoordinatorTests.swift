@@ -65,6 +65,10 @@ private final class FakeCapture: MeetingCapture {
     /// `keepDraft` turns into a sentence on the panel. Separate from `silentSeconds`, which
     /// answers the polling question asked while the meeting is still live.
     var silentAtStop: TimeInterval = 0
+    /// What the next `stop()` reports as `Outcome.microphoneSawAudio`. Defaults to the ordinary
+    /// case — a track that heard something — so that the tests which care about an empty track
+    /// have to say so, rather than getting the harsher sentence by omission.
+    var sawAudioAtStop = true
     /// Set to make `microphoneSilentSeconds()` suspend instead of answering at once, holding the
     /// continuation in `pendingSilenceCheck` until `resumeMicrophoneCheck()` releases it. Models
     /// the real gap between a poll asking the question and the answer arriving — the gap in
@@ -129,7 +133,8 @@ private final class FakeCapture: MeetingCapture {
             systemStartedAt: 0.25,
             microphoneStartedAt: 0.5,
             failure: failure,
-            microphoneSilentSeconds: silentAtStop
+            microphoneSilentSeconds: silentAtStop,
+            microphoneSawAudio: sawAudioAtStop
         )
     }
 
@@ -843,6 +848,58 @@ private let airpods = AudioInputDevice(
     #expect(harness.captures[0].rebinds.count == 1)
 }
 
+// Перепривязка обнуляет счётчик тишины, и это верно для счётчика: он про новую привязку. Но для
+// надписи это ложное «всё в порядке» — следующий опрос читает ноль независимо от того, пошёл ли
+// звук. Красная строка гасла, через десять секунд возвращалась, и так до трёх раз, при том что
+// звука не было и не будет. Счётчик снова что-то значит только после полной выдержки: к этому
+// моменту его либо обнулил настоящий звук, либо он перевалил порог обратно.
+@Test @MainActor func aRebindDoesNotWithdrawTheWarningWhileItsCooldownRuns() async throws {
+    let harness = try Harness()
+    harness.inputDevice = airpods
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+
+    harness.captures[0].silentSeconds = 10
+    harness.coordinator.poll(now: noon.addingTimeInterval(11))
+    await harness.coordinator.settle()
+    #expect(harness.microphoneSilent == [true])
+    #expect(harness.captures[0].rebinds.count == 1)
+
+    // The fake resets its own counter inside the rebind, exactly as the real writer does. This
+    // poll therefore reads a fresh zero — which is not evidence of anything.
+    harness.coordinator.poll(now: noon.addingTimeInterval(12))
+    await harness.coordinator.settle()
+    #expect(harness.microphoneSilent == [true])
+
+    // Ten seconds on, still nothing: the counter has climbed back past the threshold, and the
+    // warning was never taken down and put back up in between.
+    harness.captures[0].silentSeconds = 10
+    harness.coordinator.poll(now: noon.addingTimeInterval(22))
+    await harness.coordinator.settle()
+    #expect(harness.microphoneSilent == [true])
+}
+
+// The other side of the same rule: once the cooldown is out, a counter reading zero really is
+// audio arriving, and the warning goes away.
+@Test @MainActor func aRebindThatWorkedClearsTheWarningOnceTheCooldownIsOut() async throws {
+    let harness = try Harness()
+    harness.inputDevice = airpods
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+
+    harness.captures[0].silentSeconds = 10
+    harness.coordinator.poll(now: noon.addingTimeInterval(11))
+    await harness.coordinator.settle()
+    #expect(harness.microphoneSilent == [true])
+
+    harness.coordinator.poll(now: noon.addingTimeInterval(21))
+    await harness.coordinator.settle()
+
+    #expect(harness.microphoneSilent == [true, false])
+}
+
 // `rebindMicrophone` really suspends — the real one awaits `stream.updateConfiguration` — so the
 // cancellation guard at the top of `checkMicrophone`'s task no longer covers everything after it:
 // a rebind still in flight when `stopCapture` cancels this task resumes later, after the next
@@ -1168,15 +1225,43 @@ private let zoom = AudioProcessMonitor.State(
     harness.coordinator.poll(now: noon)
     await harness.coordinator.settle()
     harness.captures[0].silentAtStop = 600
+    harness.captures[0].sawAudioAtStop = false
 
     harness.coordinator.answer(.confirm, at: noon.addingTimeInterval(1))
     harness.coordinator.stopPressed(at: noon.addingTimeInterval(2))
     await harness.coordinator.settle()
 
     #expect(harness.shown.contains { state in
-        if case .failure(let text) = state { return text.contains("Микрофон молчал 10 мин") }
+        if case .failure(let text) = state {
+            return text.contains("Микрофон молчал всю запись — ваша дорожка пустая")
+        }
         return false
     })
+}
+
+// `silentSeconds` по построению меряет непрерывный ноль **в конце** дорожки: любой ненулевой
+// сэмпл обнуляет счётчик. Выдавать его за всю запись — ложь в самом обычном случае. Порог
+// тишины ноль, автостоп две минуты: подсказка остановки поднимается в момент конца встречи, а
+// запись идёт ещё две минуты, и AirPods, убранные в кейс, дают ровно цифровой ноль. Десяти
+// секунд такого хватало, чтобы объявить пустой полностью записанную часовую дорожку.
+@Test @MainActor func aTrackThatSpokeAndThenWentQuietIsCalledIncompleteNotEmpty() async throws {
+    let harness = try Harness()
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    await harness.coordinator.settle()
+    harness.captures[0].silentAtStop = 600
+    harness.captures[0].sawAudioAtStop = true
+
+    harness.coordinator.answer(.confirm, at: noon.addingTimeInterval(1))
+    harness.coordinator.stopPressed(at: noon.addingTimeInterval(2))
+    await harness.coordinator.settle()
+
+    let said = harness.shown.compactMap { state -> String? in
+        if case .failure(let text) = state { return text }
+        return nil
+    }
+    #expect(said.contains { $0.contains("Микрофон замолчал в конце") && $0.contains("10 мин") })
+    #expect(!said.contains { $0.contains("пустая") })
 }
 
 // The gate is ten seconds, but `ElapsedTime.minutes` rounds anything under thirty down to
@@ -1189,13 +1274,16 @@ private let zoom = AudioProcessMonitor.State(
     harness.coordinator.poll(now: noon)
     await harness.coordinator.settle()
     harness.captures[0].silentAtStop = 15
+    harness.captures[0].sawAudioAtStop = true
 
     harness.coordinator.answer(.confirm, at: noon.addingTimeInterval(1))
     harness.coordinator.stopPressed(at: noon.addingTimeInterval(2))
     await harness.coordinator.settle()
 
     #expect(harness.shown.contains { state in
-        if case .failure(let text) = state { return text.contains("Микрофон молчал меньше минуты") }
+        if case .failure(let text) = state {
+            return text.contains("Микрофон замолчал в конце") && text.contains("меньше минуты")
+        }
         return false
     })
     #expect(!harness.shown.contains { state in

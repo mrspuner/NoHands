@@ -55,7 +55,20 @@ public actor MeetingAudioRecorder {
 
         /// How long the microphone track had been delivering nothing but digital zeroes when the
         /// recording was handed over. Zero while it was delivering audio.
+        ///
+        /// Trailing silence, by construction: any sample that is not exactly zero restarts the
+        /// count. It says how the track *ended*, never how much of it was empty.
         public let microphoneSilentSeconds: TimeInterval
+
+        /// Whether the microphone track ever carried a sample that was not exactly zero.
+        ///
+        /// The one thing `microphoneSilentSeconds` cannot answer, and the difference between two
+        /// very different sentences: a track that was never recorded into at all, and a full
+        /// track whose last minutes are quiet. The second is ordinary — the stop prompt goes up
+        /// the moment a call ends and the recording runs on for two more minutes, in which
+        /// AirPods go back in their case — and calling a good ninety-minute track empty because
+        /// of it would be the same kind of lie this recorder was fixed for.
+        public let microphoneSawAudio: Bool
 
         public init(
             systemURL: URL,
@@ -63,7 +76,8 @@ public actor MeetingAudioRecorder {
             systemStartedAt: Double?,
             microphoneStartedAt: Double?,
             failure: String?,
-            microphoneSilentSeconds: TimeInterval
+            microphoneSilentSeconds: TimeInterval,
+            microphoneSawAudio: Bool
         ) {
             self.systemURL = systemURL
             self.microphoneURL = microphoneURL
@@ -71,6 +85,7 @@ public actor MeetingAudioRecorder {
             self.microphoneStartedAt = microphoneStartedAt
             self.failure = failure
             self.microphoneSilentSeconds = microphoneSilentSeconds
+            self.microphoneSawAudio = microphoneSawAudio
         }
     }
 
@@ -332,6 +347,14 @@ final class CaptureTrack {
     private var silentFrames: AVAudioFrameCount = 0
     private var silentRate: Double = MeetingAudioRecorder.sampleRate
 
+    /// Whether this track was ever handed a sample that was not exactly zero.
+    ///
+    /// About the whole recording, and therefore never reset — not by a rebind, which is only
+    /// about the binding that exists now. `silentFrames` measures the end of the track and this
+    /// measures whether there was ever anything in it; only the two together tell an empty track
+    /// apart from a full one that went quiet. Found in the same scan, so it costs nothing.
+    private(set) var sawAudio = false
+
     var silentSeconds: TimeInterval {
         silentRate > 0 ? TimeInterval(silentFrames) / silentRate : 0
     }
@@ -395,6 +418,7 @@ final class CaptureTrack {
                     ? planes[0][frame * channels + channel]
                     : planes[channel][frame]
                 if sample != 0 {
+                    sawAudio = true
                     silentFrames = 0
                     return
                 }
@@ -632,7 +656,8 @@ final class TrackWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked 
                 systemStartedAt: system.startedAt,
                 microphoneStartedAt: microphone.startedAt,
                 failure: firstFailure(),
-                microphoneSilentSeconds: microphone.silentSeconds
+                microphoneSilentSeconds: microphone.silentSeconds,
+                microphoneSawAudio: microphone.sawAudio
             )
         }
     }

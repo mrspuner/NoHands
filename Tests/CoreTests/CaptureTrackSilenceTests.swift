@@ -52,6 +52,31 @@ private func buffer(rate: Double, frames: AVAudioFrameCount, value: Float) -> AV
     #expect(abs(track.silentSeconds - 0.1) < 0.001)
 }
 
+// «Дорожка пустая» и «дорожка замолчала под конец» — разные утверждения, и счётчик тишины
+// различить их не может: он по построению меряет непрерывный ноль в конце. Дорожка помнит сам
+// факт, что когда-то звучала, и помнит его до конца записи — иначе часовая запись с молчанием в
+// хвосте объявлялась бы пустой.
+@Test func aTrackRemembersThatItOnceHeardSomething() {
+    let track = CaptureTrack(name: "microphone", url: URL(fileURLWithPath: "/dev/null"), format: outputFormat())
+    #expect(!track.sawAudio)
+
+    track.note(silenceOf: buffer(rate: 16000, frames: 160, value: 0))
+    #expect(!track.sawAudio)
+
+    track.note(silenceOf: buffer(rate: 16000, frames: 160, value: 0.002))
+    #expect(track.sawAudio)
+
+    track.note(silenceOf: buffer(rate: 16000, frames: 16000, value: 0))
+    #expect(track.sawAudio)
+    #expect(track.silentSeconds > 0)
+
+    // Перепривязка обнуляет счётчик тишины — она про новую привязку. Про то, что дорожка уже
+    // звучала, она ничего не отменяет: это факт обо всей записи.
+    track.resetSilence()
+    #expect(track.sawAudio)
+    #expect(track.silentSeconds == 0)
+}
+
 // Уровень комнаты — не тишина. Настоящий микрофон в пустой комнате даёт −46…−57 dBFS, и
 // порогом по громкости мы бы отрезали живую речь вместе с фоном.
 @Test func aQuietRoomIsNotSilence() {
