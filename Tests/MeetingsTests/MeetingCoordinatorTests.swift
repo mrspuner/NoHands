@@ -979,6 +979,34 @@ private let airpods = AudioInputDevice(
     #expect(harness.captures[1].rebinds == ["F0-D3:input"])
 }
 
+// `discardDraft` — единственная дверь, в которую входят без `stopCapture` перед ней: отказ
+// старта. Проверка микрофона к этому моменту уже заведена — тот же опрос, что создал захват,
+// её и установил, — и отменить её больше некому. Она переживает выброшенный черновик, держит
+// единственный слот проверки, и следующая встреча остаётся без своей.
+@Test @MainActor func aCaptureThatFailedAtStartLeavesNoMicrophoneCheckBehind() async throws {
+    let harness = try Harness()
+    harness.startError = MeetingCaptureError.streamFailed("no display")
+    harness.processes = [telemost]
+    harness.coordinator.poll(now: noon)
+    // Suspended after the poll for the same reason the rebind test does it: the fake does not
+    // exist until the poll that creates it, and its check has not run a line yet.
+    harness.captures[0].suspendMicrophoneCheck = true
+    for _ in 0..<8 { await Task.yield() }
+
+    harness.startError = nil
+    harness.coordinator.poll(now: noon.addingTimeInterval(1))
+    for _ in 0..<8 { await Task.yield() }
+
+    #expect(harness.captures.count == 2)
+    #expect(harness.captures[1].microphoneSilentSecondsCallCount == 1)
+
+    // Released so the fake's continuation is not left dangling. The stale check finds itself
+    // cancelled and touches nothing that belongs to the meeting recording now.
+    harness.captures[0].resumeMicrophoneCheck()
+    for _ in 0..<8 { await Task.yield() }
+    #expect(harness.microphoneSilent == [])
+}
+
 // MARK: - A dictation already under way
 
 // Spec §6: a meeting starting while a dictation is in flight waits for it — the draft begins a

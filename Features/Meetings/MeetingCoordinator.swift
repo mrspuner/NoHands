@@ -636,6 +636,20 @@ public final class MeetingCoordinator {
         capture = nil
         captureTask = nil
         liveCaptureID = nil
+        // The same teardown `stopCapture` does, and needed for the same reason: the poll that
+        // created this capture also installed a microphone check for it, one poll being enough
+        // for both. Left standing, that check outlives the draft it belongs to, holds the single
+        // check slot, and the next meeting never gets one of its own.
+        //
+        // Without the panel withdrawal `stopCapture` pairs with these, deliberately. Every door
+        // into here either ran `stopCapture` first — which already took the warning down — or is
+        // the failed start above, where no buffer ever reached a track and the warning cannot be
+        // standing.
+        microphoneCheck?.cancel()
+        microphoneCheck = nil
+        microphoneSilent = false
+        rebindAttempts = 0
+        lastRebindAt = nil
         let closing = self.closing
         self.closing = nil
         housekeeping = Task { @MainActor [weak self] in
