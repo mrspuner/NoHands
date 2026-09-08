@@ -51,8 +51,8 @@ import Testing
     #expect(Frontmatter.quoted("Telegram") == "\"Telegram\"")
 }
 
-// Настоящее имя приложения ничем не ограничено: `Яндекс Телемост` приехало в архив фазы 2б
-// именно так, с пробелом.
+// An application's real display name is unconstrained: `Яндекс Телемост` reached the phase 2б
+// archive exactly like that, with a space.
 @Test func aNameWithASpaceStaysOneValue() {
     #expect(Frontmatter.quoted("Яндекс Телемост") == "\"Яндекс Телемост\"")
 }
@@ -61,8 +61,8 @@ import Testing
     #expect(Frontmatter.quoted("a\"b\\c") == "\"a\\\"b\\\\c\"")
 }
 
-// Перевод строки внутри значения разорвал бы блок `---` для Obsidian и для всего, что этот
-// файл потом перечитывает.
+// A newline inside the value would break the `---` block, for Obsidian and for everything
+// else that reads this file back later.
 @Test func controlCharactersAreDropped() {
     #expect(Frontmatter.quoted("a\nb\tc") == "\"abc\"")
 }
@@ -1590,8 +1590,9 @@ private struct InboxContent: View {
         var parts = ["во входящих"]
         if let app { parts.append(app) }
         parts.append("строк: \(lines)")
-        // Никаких «1 файл / 2 файла / 5 файлов»: в панели уже принято писать «N мин», а не
-        // склонять, и по той же причине — форма счётного слова не стоит ветки в интерфейсе.
+        // No "1 файл / 2 файла / 5 файлов" branching: the panel already writes "N мин" rather
+        // than declining, and for the same reason — a counted noun's grammatical form is not
+        // worth a branch in the interface.
         parts.append(attachments == 0 ? "перетащи файлы сюда" : "файлов: \(attachments)")
         return parts.joined(separator: " · ")
     }
