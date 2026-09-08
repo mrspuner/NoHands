@@ -14,17 +14,37 @@ public enum MeetingMarkdown {
         return String(format: "%02d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
     }
 
+    /// - Parameter trailingMicrophoneSilenceSeconds: how long the owner's own track had been
+    ///   exactly zero when the recording ended, or `nil` when it had not been silent long enough
+    ///   to be worth saying. The caller applies that threshold, because it is the same one the
+    ///   panel uses while the meeting runs and it lives with the panel.
+    ///
+    ///   This is the only reason the archive knows anything about the microphone. The number is
+    ///   also written into `meeting.json`, but `MeetingQueue.sweep` removes that folder whole
+    ///   once the meeting is older than `audioRetentionDays` — seven days — and the question
+    ///   "why is there no «Я» in this file" is asked much later than that. The markdown is what
+    ///   is still here in a year.
+    ///
+    ///   Only when there was silence: a key on every ordinary meeting would be a claim about
+    ///   every ordinary meeting, and this file is meant to hold only what is known.
     public static func render(
         transcript: [Utterance],
         startedAt: Date,
         durationSeconds: TimeInterval,
-        appName: String?
+        appName: String?,
+        trailingMicrophoneSilenceSeconds: TimeInterval?
     ) -> String {
         var lines: [String] = ["---"]
         lines.append("date: \(format(startedAt, as: "yyyy-MM-dd"))")
         lines.append("started: \(format(startedAt, as: "HH:mm"))")
         lines.append("duration: \(minutes(durationSeconds))m")
         if let appName { lines.append("app: \(quoted(appName))") }
+        if let silence = trailingMicrophoneSilenceSeconds, silence > 0 {
+            // Quoted and escaped like `app`, though nothing here comes from outside: the value is
+            // a Russian sentence with a colon's worth of punctuation in it, and the front matter
+            // has one rule for values rather than one per key.
+            lines.append("microphone: \(quoted("замолчал в конце — \(silenceLength(silence)) тишины"))")
+        }
         lines.append("---")
         lines.append("")
         lines.append(TranscriptIndex.heading)
@@ -67,6 +87,17 @@ public enum MeetingMarkdown {
     private static func minutes(_ durationSeconds: TimeInterval) -> Int {
         guard durationSeconds > 0 else { return 0 }
         return max(1, Int((durationSeconds / 60).rounded()))
+    }
+
+    /// The same rule as `MeetingNotice.length`, which says this sentence on the panel while the
+    /// meeting is still running: under a minute becomes a word, because the gate above is ten
+    /// seconds and rounding takes anything under thirty down to zero. "0 мин тишины" would deny
+    /// the silence and call the track incomplete in one line — permanently, in the file the owner
+    /// keeps. A third copy of a two-line rule rather than a shared one: `MeetingNotice` lives in
+    /// `Meetings`, which depends on this module and not the other way round.
+    private static func silenceLength(_ seconds: TimeInterval) -> String {
+        let whole = Int((seconds / 60).rounded())
+        return whole < 1 ? "меньше минуты" : "\(whole) мин"
     }
 
     private static func label(_ speaker: Utterance.Speaker) -> String {

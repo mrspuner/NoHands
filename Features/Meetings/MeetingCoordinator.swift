@@ -33,7 +33,11 @@ public final class MeetingCoordinator {
 
     /// How long the microphone track must be exactly zero before it is called silent. Long
     /// enough to outlast any gap between buffers, short enough that the owner can still fix it.
-    static let microphoneSilenceThreshold: TimeInterval = 10
+    ///
+    /// `nonisolated` because `MeetingQueue` reads it too, from its own actor: the archive decides
+    /// whether a track was silent by the same number the panel uses while the meeting is running,
+    /// so the file and the warning can never disagree.
+    nonisolated static let microphoneSilenceThreshold: TimeInterval = 10
 
     /// Not more often than this, and not more than `rebindLimit` times per recording.
     static let rebindCooldown: TimeInterval = 10
