@@ -123,7 +123,7 @@ private final class Harness {
     #expect(harness.folders.isEmpty)
     #expect(harness.sounds == [.error])
     if case .failure = harness.shown.first {} else {
-        Issue.record("панель должна назвать причину: \(harness.shown)")
+        Issue.record("the panel should have named the cause: \(harness.shown)")
     }
 }
 
