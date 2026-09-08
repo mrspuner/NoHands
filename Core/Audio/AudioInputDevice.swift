@@ -8,6 +8,7 @@ import Foundation
 /// yields silence that looks like a recognition failure.
 public struct AudioInputDevice: Sendable {
     public let name: String
+    public let uid: String
     public let sampleRate: Double
     public let channelCount: UInt32
 
@@ -24,8 +25,9 @@ public struct AudioInputDevice: Sendable {
     /// Public so a test outside this module can stand in a device of its own. Nothing in the
     /// application builds one: `current()` is the only honest source, and a device described by
     /// hand would be a description of a microphone nobody is recording through.
-    public init(name: String, sampleRate: Double, channelCount: UInt32) {
+    public init(name: String, uid: String, sampleRate: Double, channelCount: UInt32) {
         self.name = name
+        self.uid = uid
         self.sampleRate = sampleRate
         self.channelCount = channelCount
     }
@@ -33,12 +35,14 @@ public struct AudioInputDevice: Sendable {
     public static func current() -> AudioInputDevice? {
         guard let deviceID = defaultInputDeviceID(),
               let name = deviceName(deviceID),
+              let uid = deviceUID(deviceID),
               let format = streamFormat(deviceID)
         else {
             return nil
         }
         return AudioInputDevice(
             name: name,
+            uid: uid,
             sampleRate: format.mSampleRate,
             channelCount: format.mChannelsPerFrame
         )
@@ -70,6 +74,21 @@ public struct AudioInputDevice: Sendable {
         let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &name)
         guard status == noErr else { return nil }
         return name as String
+    }
+
+    /// What ScreenCaptureKit binds a microphone to — `kAudioDevicePropertyDeviceUID`, the same
+    /// string `SCStreamConfiguration.microphoneCaptureDeviceID` takes.
+    private static func deviceUID(_ deviceID: AudioDeviceID) -> String? {
+        var uid: CFString = "" as CFString
+        var size = UInt32(MemoryLayout<CFString>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &uid)
+        guard status == noErr else { return nil }
+        return uid as String
     }
 
     private static func streamFormat(_ deviceID: AudioDeviceID) -> AudioStreamBasicDescription? {

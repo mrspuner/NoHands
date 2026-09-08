@@ -553,7 +553,7 @@ private func isFailure(_ state: MeetingPanelState?) -> Bool {
 // only one who can swap the microphone while it still matters.
 @Test @MainActor func aNarrowbandMicrophoneIsNamedWhenTheMeetingStarts() async throws {
     let harness = try Harness()
-    harness.inputDevice = AudioInputDevice(name: "AirPods", sampleRate: 16000, channelCount: 1)
+    harness.inputDevice = AudioInputDevice(name: "AirPods", uid: "test-airpods", sampleRate: 16000, channelCount: 1)
     harness.processes = [telemost]
 
     harness.coordinator.poll(now: noon)
@@ -565,7 +565,7 @@ private func isFailure(_ state: MeetingPanelState?) -> Bool {
 
 @Test @MainActor func aFullBandMicrophoneIsNothingToWarnAbout() async throws {
     let harness = try Harness()
-    harness.inputDevice = AudioInputDevice(name: "USB", sampleRate: 48000, channelCount: 1)
+    harness.inputDevice = AudioInputDevice(name: "USB", uid: "test-usb", sampleRate: 48000, channelCount: 1)
     harness.processes = [telemost]
 
     harness.coordinator.poll(now: noon)
@@ -577,7 +577,7 @@ private func isFailure(_ state: MeetingPanelState?) -> Bool {
 // Once, at the start, exactly as dictation reports it — not once a second for an hour.
 @Test @MainActor func theWarningIsSaidAtTheStartAndNotRepeated() async throws {
     let harness = try Harness()
-    harness.inputDevice = AudioInputDevice(name: "AirPods", sampleRate: 16000, channelCount: 1)
+    harness.inputDevice = AudioInputDevice(name: "AirPods", uid: "test-airpods", sampleRate: 16000, channelCount: 1)
     harness.processes = [telemost]
 
     harness.coordinator.poll(now: noon)
