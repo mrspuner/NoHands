@@ -1,4 +1,5 @@
 import AVFoundation
+import ScreenCaptureKit
 import Testing
 @testable import Core
 
@@ -77,6 +78,32 @@ private func outputFormat() -> AVAudioFormat {
     )
     await #expect(throws: MeetingCaptureError.self) {
         try await recorder.rebindMicrophone(to: "any-uid")
+    }
+}
+
+// `SCStreamConfiguration` — обычный `NSObject` без документированного `NSCopying`, и нигде не
+// сказано, держит ли поток сам объект или его снимок. Отдать `updateConfiguration` тот самый
+// экземпляр, что уже у потока, значит поменять поле до вызова и, возможно, не поменять ничего:
+// отказ молчаливый и выглядит ровно как та поломка, которую эта ветка чинит. Проба, доказавшая,
+// что перепривязка работает, строила конфигурацию заново — эта форма и закрепляется.
+@Test func everyConfigurationIsABrandNewObjectCarryingTheWholeSetup() {
+    let atStart = MeetingAudioRecorder.makeConfiguration(microphoneDeviceUID: nil)
+    let forRebind = MeetingAudioRecorder.makeConfiguration(microphoneDeviceUID: "F0-D3:input")
+
+    #expect(atStart !== forRebind)
+    #expect(atStart.microphoneCaptureDeviceID == nil)
+    #expect(forRebind.microphoneCaptureDeviceID == "F0-D3:input")
+    // Перепривязка обязана нести всю настройку, а не одно поле: конфигурация, потерявшая частоту,
+    // исключение своих звуков или интервал кадров, тихо переписала бы их значениями по умолчанию.
+    for configuration in [atStart, forRebind] {
+        #expect(configuration.capturesAudio)
+        #expect(configuration.captureMicrophone)
+        #expect(configuration.excludesCurrentProcessAudio)
+        #expect(configuration.sampleRate == 48000)
+        #expect(configuration.channelCount == 2)
+        #expect(configuration.width == 2)
+        #expect(configuration.height == 2)
+        #expect(configuration.minimumFrameInterval == CMTime(value: 1, timescale: 1))
     }
 }
 

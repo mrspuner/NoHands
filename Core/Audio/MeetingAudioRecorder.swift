@@ -84,10 +84,6 @@ public actor MeetingAudioRecorder {
     private let onFailureWhileRecording: @Sendable (String) -> Void
     private var stream: SCStream?
     private var writer: TrackWriter?
-    /// The configuration the stream was started with, kept so a rebind can hand `updateConfiguration`
-    /// a whole configuration with one field changed rather than a fresh one that would also
-    /// silently reset the sample rate, the exclusions and the frame interval.
-    private var configuration: SCStreamConfiguration?
 
     /// - Parameter excludedBundleIDs: applications whose audio is cut out of the system track.
     ///
@@ -156,18 +152,7 @@ public actor MeetingAudioRecorder {
             display: display, excludingApplications: excluded, exceptingWindows: []
         )
 
-        let configuration = SCStreamConfiguration()
-        configuration.capturesAudio = true
-        // Our own sounds — the dictation chimes — must not end up in the meeting.
-        configuration.excludesCurrentProcessAudio = true
-        configuration.captureMicrophone = true
-        configuration.sampleRate = 48000
-        configuration.channelCount = 2
-        // Only the two audio outputs are attached below, so no video frame is ever delivered.
-        // These keep the capture from building full-display frames for an hour anyway.
-        configuration.width = 2
-        configuration.height = 2
-        configuration.minimumFrameInterval = CMTime(value: 1, timescale: 1)
+        let configuration = Self.makeConfiguration(microphoneDeviceUID: nil)
 
         let writer = try TrackWriter(
             systemURL: folder.appendingPathComponent(Self.systemFileName),
@@ -189,7 +174,40 @@ public actor MeetingAudioRecorder {
         }
         self.stream = stream
         self.writer = writer
-        self.configuration = configuration
+    }
+
+    /// The whole capture setup, built from scratch every time it is asked for.
+    ///
+    /// Every field the stream needs lives here rather than at the one call site that starts it,
+    /// because a rebind has to hand `updateConfiguration` the same setup with one field changed —
+    /// a configuration carrying only the device uid would silently reset the sample rate, the
+    /// exclusion of our own sounds and the frame interval to their defaults.
+    ///
+    /// A new object every time, never the one the stream already has. `SCStreamConfiguration` is
+    /// an `NSObject` with no documented `NSCopying`, so whether a running stream holds the object
+    /// or a snapshot of it is undocumented; if it holds the object, mutating the stored instance
+    /// changes the binding *before* `updateConfiguration` is called and the call may find nothing
+    /// to do. That failure is silent and looks exactly like a microphone that never rebound. The
+    /// probe that measured rebinding working built a fresh configuration each time, and this is
+    /// that shape.
+    ///
+    /// Deliberately not set at start: three meetings recorded correctly with the uid left `nil`,
+    /// and changing a working path for symmetry is risk without gain — see §5 of the spec.
+    static func makeConfiguration(microphoneDeviceUID: String?) -> SCStreamConfiguration {
+        let configuration = SCStreamConfiguration()
+        configuration.capturesAudio = true
+        // Our own sounds — the dictation chimes — must not end up in the meeting.
+        configuration.excludesCurrentProcessAudio = true
+        configuration.captureMicrophone = true
+        configuration.microphoneCaptureDeviceID = microphoneDeviceUID
+        configuration.sampleRate = 48000
+        configuration.channelCount = 2
+        // Only the two audio outputs are ever attached, so no video frame is delivered. These
+        // keep the capture from building full-display frames for an hour anyway.
+        configuration.width = 2
+        configuration.height = 2
+        configuration.minimumFrameInterval = CMTime(value: 1, timescale: 1)
+        return configuration
     }
 
     /// Stops the capture and closes both files.
@@ -213,7 +231,6 @@ public actor MeetingAudioRecorder {
         }
         self.stream = nil
         self.writer = nil
-        self.configuration = nil
         // `try?`: a stream that already died reports "not running" here, while the reason it
         // died was recorded by the delegate. `finish` is what names it.
         try? await stream.stopCapture()
@@ -228,11 +245,12 @@ public actor MeetingAudioRecorder {
     ///   circumstance, and a silent success would tell the coordinator the microphone was picked
     ///   up when nothing happened at all.
     public func rebindMicrophone(to deviceUID: String) async throws {
-        guard let stream, let configuration else {
+        guard let stream else {
             throw MeetingCaptureError.streamFailed("rebind called with no capture running")
         }
-        configuration.microphoneCaptureDeviceID = deviceUID
-        try await stream.updateConfiguration(configuration)
+        try await stream.updateConfiguration(
+            Self.makeConfiguration(microphoneDeviceUID: deviceUID)
+        )
         // The next ten seconds are measured from here: the counter is about the binding that
         // exists now, and leaving the old total behind would ask for a second rebind at once.
         writer?.resetMicrophoneSilence()
