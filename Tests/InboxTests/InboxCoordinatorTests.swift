@@ -37,7 +37,7 @@ private final class Harness {
     /// property has a default, so `self` is fully initialised by the time they are built.
     var coordinator: InboxCoordinator!
 
-    init(root: URL, dropWindow: TimeInterval = 120) {
+    init(root: URL, dropWindow: TimeInterval = 120, failureDwell: TimeInterval = 5) {
         self.root = root
         coordinator = InboxCoordinator(
             root: root,
@@ -58,6 +58,7 @@ private final class Harness {
             },
             now: { noon },
             dropWindow: dropWindow,
+            failureDwell: failureDwell,
             showPanel: { [weak self] in self?.shown.append($0) },
             hidePanel: { [weak self] in self?.hidden.append($0) },
             play: { [weak self] in self?.sounds.append($0) }
@@ -271,4 +272,35 @@ private final class Harness {
     let folder = root.appendingPathComponent(harness.folders[0])
     #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("первый.txt").path))
     #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("второй.txt").path))
+}
+
+// A refusal used to close the whole inbox row: `reportFailure` re-arms `hidePanel` for its own
+// short dwell, and `PanelWindow.hideInbox` cancels whatever hide was pending — including the
+// two-minute one a successful capture had just armed. The spec promises two minutes and `target`
+// still agrees; only the panel disagreed, and the owner could no longer see anywhere to drop a
+// file even though `target` was still open. Once the failure has been read, the row has to come
+// back with whatever is left of its own window.
+@MainActor
+@Test func aFailureDuringTheDropWindowLeavesTheTargetReachableAfterItsDwell() async throws {
+    let root = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let harness = Harness(root: root, dropWindow: 0.4, failureDwell: 0.05)
+    await harness.capture()
+
+    harness.text = .failure(InboxCapture.Failure.nothingCopied)
+    await harness.capture()
+
+    // Past the failure's own dwell, short of the drop window's.
+    try await Task.sleep(for: .milliseconds(120))
+
+    #expect(harness.shown.last == .captured(app: "Telegram", lines: 2, attachments: 0))
+
+    let elsewhere = try temporaryRoot()
+    defer { try? FileManager.default.removeItem(at: elsewhere) }
+    let file = elsewhere.appendingPathComponent("после-отказа.txt")
+    try "данные".write(to: file, atomically: true, encoding: .utf8)
+
+    #expect(harness.coordinator.drop([file]))
+    let folder = root.appendingPathComponent(harness.folders[0])
+    #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("после-отказа.txt").path))
 }

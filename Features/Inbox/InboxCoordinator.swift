@@ -24,6 +24,7 @@ public final class InboxCoordinator {
     private let readSource: @MainActor () -> InboxSource
     private let now: () -> Date
     private let dropWindow: TimeInterval
+    private let failureDwell: TimeInterval
     private let showPanel: (InboxPanelState) -> Void
     private let hidePanel: (TimeInterval) -> Void
     private let play: (Sound) -> Void
@@ -32,6 +33,12 @@ public final class InboxCoordinator {
     /// what the panel is currently saying about it. Cleared by `expiry` rather than by the panel
     /// collapsing: the two clocks are the same length, but only one of them belongs here.
     private var target: URL?
+    /// When the current `target`'s drop window runs out — the real wall clock, not the injected
+    /// `now`, because this is compared against as time actually passes while the app runs, the
+    /// same way `expiry` below is already scheduled against the real clock rather than `now`.
+    /// Read back by `reportFailure` to decide whether the row a failure just hid is still worth
+    /// bringing back.
+    private var targetExpiresAt: Date?
     private var attachments = 0
     private var lines = 0
     private var appName: String?
@@ -45,6 +52,7 @@ public final class InboxCoordinator {
         readSource: @escaping @MainActor () -> InboxSource = { FrontmostSource.read() },
         now: @escaping () -> Date = Date.init,
         dropWindow: TimeInterval = InboxCoordinator.dropWindow,
+        failureDwell: TimeInterval = InboxCoordinator.failureDwell,
         showPanel: @escaping (InboxPanelState) -> Void,
         hidePanel: @escaping (TimeInterval) -> Void,
         play: @escaping (Sound) -> Void
@@ -54,6 +62,7 @@ public final class InboxCoordinator {
         self.readSource = readSource
         self.now = now
         self.dropWindow = dropWindow
+        self.failureDwell = failureDwell
         self.showPanel = showPanel
         self.hidePanel = hidePanel
         self.play = play
@@ -159,6 +168,10 @@ public final class InboxCoordinator {
             }
             play(.done)
         } catch {
+            // Whatever copied before the failure is real and the count is not lost — `attachments`
+            // already includes it — so the panel is told about it before it is told why the rest
+            // did not arrive, rather than the successful ones vanishing behind the failure message.
+            announce()
             reportFailure(error)
             return true
         }
@@ -167,10 +180,28 @@ public final class InboxCoordinator {
     }
 
     /// Reports a refusal the same way regardless of which step it broke in: sound, panel, dwell.
+    ///
+    /// `hidePanel` collapses the whole inbox row on this dwell — it does not know there might be
+    /// a drop target underneath still good for another two minutes. `target` and
+    /// `targetExpiresAt` are untouched here, so once the failure has been read, the row is worth
+    /// bringing back with whatever time is actually left on the window a successful capture or
+    /// drop already promised.
     private func reportFailure(_ error: Error) {
         play(.error)
         showPanel(.failure(error.localizedDescription))
-        hidePanel(Self.failureDwell)
+        hidePanel(failureDwell)
+
+        guard let failedTarget = target, let targetExpiresAt else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + failureDwell) { [weak self] in
+            // `self.target` may have moved on by the time this fires — a later capture or drop
+            // superseded it and already re-announced its own state — in which case this has
+            // nothing useful to add and must not stomp on it.
+            guard let self, self.target == failedTarget else { return }
+            let remaining = targetExpiresAt.timeIntervalSinceNow
+            guard remaining > 0 else { return }
+            self.showPanel(.captured(app: self.appName, lines: self.lines, attachments: self.attachments))
+            self.hidePanel(remaining)
+        }
     }
 
     /// Shows the strip and re-arms both clocks — the panel's and the target's — so a file
@@ -179,7 +210,11 @@ public final class InboxCoordinator {
         showPanel(.captured(app: appName, lines: lines, attachments: attachments))
         hidePanel(dropWindow)
         expiry?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.target = nil }
+        targetExpiresAt = Date().addingTimeInterval(dropWindow)
+        let work = DispatchWorkItem { [weak self] in
+            self?.target = nil
+            self?.targetExpiresAt = nil
+        }
         expiry = work
         DispatchQueue.main.asyncAfter(deadline: .now() + dropWindow, execute: work)
     }
