@@ -32,6 +32,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// same three system sounds without a second copy of the config. Nil until the first build
     /// finishes — and the hotkey does not exist until then either.
     private var sounds: SoundPlayer?
+    /// One guard for both recorders: its memory of what the owner chose by hand is about the
+    /// machine, not about which of the two is recording.
+    private let inputGuard = InputDeviceGuard()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let menu = StatusMenu(
@@ -220,6 +223,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // The rename in `MeetingCoordinator` is the only hand-off point into phase 2б — see
             // its own comment. Without this, a finished recording would only reach the archive on
             // the next launch's `scanAll`.
+            prepareInput: { [weak self] in self?.prepareInput() },
             onFolderReady: { url in
                 Task { await queue.enqueue(url) }
             }
@@ -259,6 +263,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The menu has one status line and, on a bad day, two things to say on it.
     private static func status(_ dictation: String, _ meetings: String?) -> String {
         [dictation, meetings].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    /// Takes the system input away from a Bluetooth microphone before a recording starts, and
+    /// says so. Silent when nothing changed and when the owner's own choice was left alone —
+    /// a notice for "everything is as you left it" would be noise on every dictation.
+    private func prepareInput() {
+        switch inputGuard.prepare() {
+        case .switched(let name):
+            panel.show(notice: PanelNotice(text: "Вход переключён на \(name)", isFailure: false))
+            panel.hideNotice(after: PanelNotice.dwell)
+        case .failed:
+            panel.show(notice: PanelNotice(
+                text: "Не удалось увести вход с блютус-микрофона", isFailure: true
+            ))
+            panel.hideNotice(after: PanelNotice.dwell)
+        case .unchanged, .yielded:
+            break
+        }
     }
 
     private func buildCoordinator(menu: StatusMenu, meetingsNote: String?) async {
@@ -304,6 +326,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 },
                 onNarrowbandInput: { [panel] hz in panel.setInputWarning(hz: hz) },
+                prepareInput: { [weak self] in self?.prepareInput() },
                 onCapture: { [weak self] in self?.inbox?.captureRequested() }
             )
             try coordinator.start()
