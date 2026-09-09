@@ -39,7 +39,7 @@ final class PanelModel: ObservableObject {
     /// either. A finished transcript lands seconds after a meeting ends — exactly when dictation
     /// has just been unblocked and may well be in use — so it must not take the row a dictation
     /// is drawing on.
-    @Published var notice: MeetingNotice?
+    @Published var notice: PanelNotice?
     /// The inbox side of the panel. A third layer rather than a state inside `state`: a capture
     /// happens while the owner is reading somebody else's window, and it must not overwrite what
     /// a dictation in flight is saying about itself.

@@ -159,7 +159,7 @@ final class PanelWindow {
         model.onInboxDrop = handler
     }
 
-    func show(notice: MeetingNotice) {
+    func show(notice: PanelNotice) {
         pendingNoticeHide?.cancel()
         pendingNoticeHide = nil
         model.notice = notice

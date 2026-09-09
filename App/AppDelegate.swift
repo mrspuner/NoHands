@@ -170,8 +170,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 makeRunner: makeRunner,
                 report: { [panel] outcome in
                     Task { @MainActor in
-                        panel.show(notice: MeetingNotice.forSummary(outcome))
-                        panel.hideNotice(after: MeetingNotice.dwell)
+                        panel.show(notice: PanelNotice.forSummary(outcome))
+                        panel.hideNotice(after: PanelNotice.dwell)
                     }
                 }
             )
@@ -191,8 +191,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 makeTranscriber: makeTranscriber,
                 report: { [panel] outcome in
                     Task { @MainActor in
-                        panel.show(notice: MeetingNotice.forOutcome(outcome))
-                        panel.hideNotice(after: MeetingNotice.dwell)
+                        panel.show(notice: PanelNotice.forOutcome(outcome))
+                        panel.hideNotice(after: PanelNotice.dwell)
                     }
                     // A meeting that failed has no file in the archive to summarise; one that
                     // succeeded does, and `scanArchive` finds it without being told the path.

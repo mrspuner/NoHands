@@ -71,7 +71,7 @@ public enum MeetingMarkdown {
         return lines.joined(separator: "\n")
     }
 
-    /// Same rule as `MeetingContent.length` in `PanelView` and `MeetingNotice.length`: a meeting
+    /// Same rule as `MeetingContent.length` in `PanelView` and `PanelNotice.length`: a meeting
     /// that was in fact recorded must never round down to `0m` in the archive's own front matter
     /// — that would answer "how long was this" wrongly, permanently, in the file the owner keeps.
     /// Unlike the two panel-facing versions this stays numeric rather than switching to words,
@@ -104,11 +104,11 @@ public enum MeetingMarkdown {
         }
     }
 
-    /// The same rule as `MeetingNotice.length`, which says this sentence on the panel while the
+    /// The same rule as `PanelNotice.length`, which says this sentence on the panel while the
     /// meeting is still running: under a minute becomes a word, because the gate above is ten
     /// seconds and rounding takes anything under thirty down to zero. "0 мин тишины" would deny
     /// the silence and call the track incomplete in one line — permanently, in the file the owner
-    /// keeps. A third copy of a two-line rule rather than a shared one: `MeetingNotice` lives in
+    /// keeps. A third copy of a two-line rule rather than a shared one: `PanelNotice` lives in
     /// `Meetings`, which depends on this module and not the other way round.
     private static func silenceLength(_ seconds: TimeInterval) -> String {
         let whole = Int((seconds / 60).rounded())
