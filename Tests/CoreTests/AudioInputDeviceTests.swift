@@ -1,3 +1,4 @@
+import CoreAudio
 import Testing
 @testable import Core
 
@@ -43,4 +44,48 @@ import Testing
         name: "AirPods", uid: "F0-D3-1F-6F-CA-96:input", sampleRate: 24000, channelCount: 1
     )
     #expect(device.uid == "F0-D3-1F-6F-CA-96:input")
+}
+
+// The four-character codes are CoreAudio's own; they are matched against the SDK constants
+// rather than against literals, so a renamed constant fails to compile instead of silently
+// falling through to `.other`.
+@Test func transportsAreMappedFromCoreAudioCodes() {
+    #expect(InputTransport.from(kAudioDeviceTransportTypeUSB) == .usb)
+    #expect(InputTransport.from(kAudioDeviceTransportTypeBuiltIn) == .builtIn)
+    #expect(InputTransport.from(kAudioDeviceTransportTypeBluetooth) == .bluetooth)
+    #expect(InputTransport.from(kAudioDeviceTransportTypeBluetoothLE) == .bluetooth)
+    #expect(InputTransport.from(kAudioDeviceTransportTypeVirtual) == .virtual)
+    #expect(InputTransport.from(kAudioDeviceTransportTypeAggregate) == .virtual)
+}
+
+// Both flavours of a Continuity microphone are one thing to this application: an iPhone on the
+// desk. Measured on this machine — the iPhone microphone reports `ccwd`.
+@Test func bothContinuityFlavoursAreOneTransport() {
+    #expect(InputTransport.from(kAudioDeviceTransportTypeContinuityCaptureWired) == .continuity)
+    #expect(InputTransport.from(kAudioDeviceTransportTypeContinuityCaptureWireless) == .continuity)
+}
+
+// Anything this application has no rule for stays `.other`, and `.other` is never chosen as a
+// replacement — an unknown transport is not an argument for switching the owner's microphone.
+@Test func anUnknownTransportIsOther() {
+    #expect(InputTransport.from(kAudioDeviceTransportTypeHDMI) == .other)
+    #expect(InputTransport.from(kAudioDeviceTransportTypeAirPlay) == .other)
+}
+
+// The same shape the single-device test has, for the same reason: this machine may have no input
+// at all, and a half-filled entry is the only outcome that is always wrong.
+@Test func everyListedInputIsFullyDescribed() {
+    for device in AudioInputDevice.inputDevices() {
+        #expect(!device.name.isEmpty)
+        #expect(device.sampleRate > 0)
+        #expect(device.channelCount > 0)
+    }
+}
+
+// A uid nothing answers to must not be written anywhere: the call reports the miss instead of
+// picking some other device, and the system default is left exactly as it was.
+@Test func settingAnUnknownDeviceAsDefaultIsRefused() {
+    let before = AudioInputDevice.current()?.uid
+    #expect(AudioInputDevice.setDefaultInput(uid: "no-such-device") == false)
+    #expect(AudioInputDevice.current()?.uid == before)
 }
