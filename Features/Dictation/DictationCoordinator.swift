@@ -25,6 +25,10 @@ public final class DictationCoordinator {
     /// knows nothing about folders, and a protocol with one implementation would only hide which
     /// way the dependency runs.
     private let onCapture: () -> Void
+    /// Called before the engine opens, to take the system input away from a Bluetooth
+    /// microphone if there is something better. A closure rather than a dependency, for the
+    /// same reason the panel is one.
+    private let prepareInput: () -> Void
 
     private var machine: DictationMachine
     private var monitor: FnKeyMonitor?
@@ -70,6 +74,10 @@ public final class DictationCoordinator {
         hidePanel: @escaping (TimeInterval) -> Void,
         onLevel: @escaping @Sendable (Float) -> Void,
         onNarrowbandInput: @escaping (Double?) -> Void,
+        /// Called before the engine opens, to take the system input away from a Bluetooth
+        /// microphone if there is something better. A closure rather than a dependency, for the
+        /// same reason the panel is one.
+        prepareInput: @escaping () -> Void = {},
         onCapture: @escaping () -> Void
     ) {
         self.recorder = recorder
@@ -82,6 +90,7 @@ public final class DictationCoordinator {
         self.hidePanel = hidePanel
         self.onLevel = onLevel
         self.onNarrowbandInput = onNarrowbandInput
+        self.prepareInput = prepareInput
         self.onCapture = onCapture
         self.machine = DictationMachine(limits: DictationMachine.Limits(config: config))
     }
@@ -247,6 +256,9 @@ public final class DictationCoordinator {
     }
 
     private func startRecording() {
+        // Before the band is read, not after: the whole point is that the number reported here
+        // describes the device this recording will actually run on.
+        prepareInput()
         onNarrowbandInput(
             AudioInputDevice.current().flatMap { $0.isNarrowband ? $0.sampleRate : nil }
         )
