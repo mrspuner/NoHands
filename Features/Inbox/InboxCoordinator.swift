@@ -12,10 +12,11 @@ public final class InboxCoordinator {
         case error
     }
 
-    /// How long the strip stays a target after a capture. Two minutes: long enough to find the
-    /// file in Telegram, wait for it to download and drag it over; short enough that the strip
-    /// is not taking the mouse over a full-screen call for the rest of the day.
-    public static let dropWindow: TimeInterval = 120
+    /// How long the strip stays a target when nobody closes it. Ten minutes, and it is a
+    /// backstop rather than the way this ends: the owner closes the row with «Готово» the moment
+    /// everything is brought over. It cannot be infinite — the strip takes the mouse while it is
+    /// up, and in a full-screen call it sits exactly over the mute and leave buttons.
+    public static let dropWindow: TimeInterval = 600
     /// A refusal is read, not answered.
     public static let failureDwell: TimeInterval = 5
 
@@ -179,6 +180,18 @@ public final class InboxCoordinator {
         return true
     }
 
+    /// «Готово» on the panel. Closes both the row and the folder it was pointing at.
+    ///
+    /// Nothing is undone and nothing is deleted: the capture and every file already dropped on
+    /// it stay where they are. This says only that no more files are coming.
+    public func doneRequested() {
+        expiry?.cancel()
+        expiry = nil
+        target = nil
+        targetExpiresAt = nil
+        hidePanel(0)
+    }
+
     /// Reports a refusal the same way regardless of which step it broke in: sound, panel, dwell.
     ///
     /// `hidePanel` collapses the whole inbox row on this dwell — it does not know there might be
@@ -191,13 +204,14 @@ public final class InboxCoordinator {
         showPanel(.failure(error.localizedDescription))
         hidePanel(failureDwell)
 
-        guard let failedTarget = target, let targetExpiresAt else { return }
+        guard let failedTarget = target, targetExpiresAt != nil else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + failureDwell) { [weak self] in
-            // `self.target` may have moved on by the time this fires — a later capture or drop
-            // superseded it and already re-announced its own state — in which case this has
-            // nothing useful to add and must not stomp on it.
-            guard let self, self.target == failedTarget else { return }
-            let remaining = targetExpiresAt.timeIntervalSinceNow
+            // Read now, not captured above: «Готово» and a later drop both change what is left
+            // on the window while this failure is being read, and a snapshot taken at the start
+            // would bring the row back for a target that is already closed — or hide it early.
+            guard let self, self.target == failedTarget,
+                  let expiresAt = self.targetExpiresAt else { return }
+            let remaining = expiresAt.timeIntervalSinceNow
             guard remaining > 0 else { return }
             self.showPanel(.captured(app: self.appName, lines: self.lines, attachments: self.attachments))
             self.hidePanel(remaining)
