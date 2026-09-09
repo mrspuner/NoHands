@@ -64,6 +64,10 @@ public final class MeetingCoordinator {
     private let onDictationBlocked: (Bool) -> Void
     private let isDictating: () -> Bool
     private let readInputDevice: () -> AudioInputDevice?
+    /// Called before the device is read, to take the system input away from a Bluetooth
+    /// microphone if there is something better. A closure rather than a dependency, for the
+    /// same reason `DictationCoordinator` reports it: the same rule, the same place to run it.
+    private let prepareInput: () -> Void
     private let readProcesses: () -> [AudioProcessMonitor.State]?
     private let makeCapture: (URL, [String], @escaping @Sendable (String) -> Void) -> any MeetingCapture
     /// The hand-off to phase 2б. Called with the folder's final name, after the rename that
@@ -176,6 +180,7 @@ public final class MeetingCoordinator {
         onDictationBlocked: @escaping (Bool) -> Void,
         isDictating: @escaping () -> Bool,
         readInputDevice: @escaping () -> AudioInputDevice? = AudioInputDevice.current,
+        prepareInput: @escaping () -> Void = {},
         readProcesses: @escaping () -> [AudioProcessMonitor.State]? = AudioProcessMonitor.current,
         makeCapture: @escaping (URL, [String], @escaping @Sendable (String) -> Void) -> any MeetingCapture = {
             MeetingAudioRecorder(folder: $0, excludedBundleIDs: $1, onFailureWhileRecording: $2)
@@ -191,6 +196,7 @@ public final class MeetingCoordinator {
         self.onDictationBlocked = onDictationBlocked
         self.isDictating = isDictating
         self.readInputDevice = readInputDevice
+        self.prepareInput = prepareInput
         self.readProcesses = readProcesses
         self.makeCapture = makeCapture
         self.onFolderReady = onFolderReady
@@ -429,6 +435,9 @@ public final class MeetingCoordinator {
 
     private func startCapture(app: MeetingMachine.MeetingApp?, at: Date) {
         do {
+            // Before the device is read, so the band written into `meeting.json` describes the
+            // microphone this recording actually runs on rather than the one it was about to.
+            prepareInput()
             let draft = try MeetingFolder.createDraft(
                 in: queue, startedAt: at, slug: app?.slug ?? Self.manualSlug
             )
