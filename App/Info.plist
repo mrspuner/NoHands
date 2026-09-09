@@ -24,5 +24,7 @@
     <string>NoHands записывает микрофон, пока вы держите клавишу fn, и превращает речь в текст.</string>
     <key>NSScreenCaptureUsageDescription</key>
     <string>Запись системного звука созвона: дорожка собеседников.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>NoHands спрашивает у браузера адрес открытой страницы, чтобы записать его во входящее.</string>
 </dict>
 </plist>

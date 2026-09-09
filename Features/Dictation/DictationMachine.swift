@@ -76,6 +76,9 @@ public struct DictationMachine: Sendable {
         case cleanupFailed(String)
         case inserted
         case insertionFailed(String)
+        /// fn+C. Not a dictation event: it rides this machine because the application has one
+        /// keyboard tap and one place where key events turn into decisions.
+        case captureDown
     }
 
     public enum Sound: Equatable, Sendable {
@@ -109,6 +112,9 @@ public struct DictationMachine: Sendable {
         /// audio file. Emitted only once cleanup has run one way or the other: earlier than
         /// that there is no text worth keeping.
         case remember(raw: String, cleaned: String?)
+        /// Read the selection and file it in the inbox. Performed by whoever the coordinator was
+        /// given, which is not this feature — dictation knows nothing about folders.
+        case capture
     }
 
     public let limits: Limits
@@ -136,6 +142,34 @@ public struct DictationMachine: Sendable {
         case (.idle, .fnDown(let at)):
             state = .recording(mode: .held, since: at, announced: false)
             return [.startRecording, .swallow(space: true, escape: true)]
+
+        // Capture never touches the microphone, so the rule that refuses dictation over a
+        // meeting does not reach it: the refusal leaves the machine idle, and this is what idle
+        // answers. In practice fn plays the refusal sound and then C files the item — the price
+        // of the key not falling away for the fifteen hours of calls in a week.
+        case (.idle, .captureDown):
+            return [.capture]
+
+        // fn was held past the threshold and a recording is running. It is an artefact of the
+        // gesture rather than something the owner asked for, so it goes exactly the way Escape
+        // sends it, and the capture happens regardless of how long the key was down — a rule
+        // that turned on 300 milliseconds would be irreproducible.
+        case (.recording, .captureDown):
+            state = .idle
+            return [
+                .discardRecording,
+                .hidePanel(after: 0),
+                .swallow(space: false, escape: false),
+                .capture,
+            ]
+
+        // A dictation past the recording stage owns the clipboard: `.inserting` borrows it and
+        // gives it back, and a capture borrowing it at the same moment would leave the owner's
+        // clipboard holding the dictated text for good. Two or three seconds of named refusal
+        // instead of a race that could only be seen by its consequences.
+        case (.stopping, .captureDown), (.transcribing, .captureDown),
+             (.cleaning, .captureDown), (.inserting, .captureDown):
+            return [.play(.error), .show(.captureRefused), .hidePanel(after: limits.failureDwell)]
 
         case (.recording(let mode, let since, let announced), .tick(let now)):
             if now.timeIntervalSince(since) >= limits.maximumRecording {

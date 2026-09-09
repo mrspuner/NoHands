@@ -1,4 +1,5 @@
 import Dictation
+import Inbox
 import Meetings
 import SwiftUI
 
@@ -17,11 +18,14 @@ struct PanelView: View {
                     .background(Surface(recording: false))
             }
             Group {
-                // Dictation first, and only then a meeting: dictation is what the owner is doing
-                // this second, it lasts seconds, and a meeting prompt it covers comes back by
-                // itself the moment it collapses.
+                // Dictation first, and only then the inbox, and only then a meeting: dictation is
+                // what the owner is doing this second; the inbox target is what they may be about
+                // to do, and it needs to be findable with a mouse; a meeting's timer is the one
+                // of the three that can wait, and it comes back by itself.
                 if model.state != nil {
                     active
+                } else if let inbox = model.inbox {
+                    InboxContent(model: model, state: inbox)
                 } else if let meeting = model.meeting {
                     MeetingContent(model: model, state: meeting)
                 } else {
@@ -99,7 +103,7 @@ struct PanelView: View {
     /// new state has to be thought about here rather than quietly getting an icon that lies.
     private var endsWithoutText: Bool {
         switch model.state {
-        case .failure, .blocked: true
+        case .failure, .blocked, .captureRefused: true
         case .recording, .transcribing, .cleaning, .inserting, nil: false
         }
     }
@@ -118,6 +122,7 @@ struct PanelView: View {
             return "вставляю без чистки: \(skipped)"
         case .failure(let message): return message
         case .blocked: return "идёт запись созвона"
+        case .captureRefused: return "диктовка ещё идёт"
         case .recording, nil: return ""
         }
     }
@@ -293,6 +298,63 @@ private struct MeetingContent: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background(Surface(recording: false))
+            .frame(maxWidth: 520)
+    }
+}
+
+/// The inbox side of the panel: one line saying what was filed, and — for as long as it is up —
+/// a target for the files that came with it.
+///
+/// Lit rather than grey, on the same rule the rest of the panel follows: what glows is what is
+/// waiting for something from the owner, and this is waiting for a drag.
+///
+/// This knowingly bends `MeetingContent.strip`'s rule against the animated surface for a
+/// long-lived row: the `.captured` row below stands for up to two minutes, not seconds, the
+/// same complaint in principle. The difference is what the row is for — a meeting's strip is
+/// just a clock nobody has to act on, while this one is a target waiting for a drag, and that
+/// is worth the redraw. Not a reason to "fix" this back to the resting surface.
+private struct InboxContent: View {
+    /// Held, not observed, exactly as `MeetingContent` holds it: the drop handler is not
+    /// published and has to be read at the moment of the drop rather than captured earlier.
+    let model: PanelModel
+    let state: InboxPanelState
+    @State private var targeted = false
+
+    var body: some View {
+        switch state {
+        case .captured(let app, let lines, let attachments):
+            row(caption(app: app, lines: lines, attachments: attachments), failed: false)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Surface.cornerRadius, style: .continuous)
+                        .strokeBorder(Color.white.opacity(targeted ? 0.5 : 0), lineWidth: 1.5)
+                )
+                .dropDestination(for: URL.self) { urls, _ in
+                    model.onInboxDrop?(urls) ?? false
+                } isTargeted: { targeted = $0 }
+        case .failure(let message):
+            row(message, failed: true)
+        }
+    }
+
+    private func caption(app: String?, lines: Int, attachments: Int) -> String {
+        var parts = ["во входящих"]
+        if let app { parts.append(app) }
+        parts.append("строк: \(lines)")
+        // No "1 файл / 2 файла / 5 файлов" branching: the panel already writes "N мин" rather
+        // than declining, and for the same reason — a counted noun's grammatical form is not
+        // worth a branch in the interface.
+        parts.append(attachments == 0 ? "перетащи файлы сюда" : "файлов: \(attachments)")
+        return parts.joined(separator: " · ")
+    }
+
+    private func row(_ text: String, failed: Bool) -> some View {
+        Text(text)
+            .font(.system(size: 12))
+            .foregroundStyle(failed ? Color.red : Color.secondary)
+            .lineLimit(2)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Surface(recording: !failed))
             .frame(maxWidth: 520)
     }
 }

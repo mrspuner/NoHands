@@ -6,9 +6,12 @@ public enum KeyEventKind: Equatable, Sendable {
     case fnUp
     case spaceDown
     case escapeDown
+    /// fn+C — the inbox hotkey. Not a dictation event at all: it is here because this is where
+    /// the application's one keyboard tap lives.
+    case captureDown
 }
 
-/// Turns a raw keyboard event into one of the four things dictation cares about.
+/// Turns a raw keyboard event into one of the five things dictation cares about.
 ///
 /// Separated from the tap so the one rule that is easy to get wrong is testable without a
 /// keyboard, a run loop or the accessibility permission.
@@ -22,6 +25,8 @@ public enum KeyEventReader {
     public static let spaceKeyCode: Int64 = 49
     /// `kVK_Escape`
     public static let escapeKeyCode: Int64 = 53
+    /// `kVK_ANSI_C`
+    public static let cKeyCode: Int64 = 8
 
     public static func kind(type: CGEventType, keyCode: Int64, flags: CGEventFlags) -> KeyEventKind? {
         switch type {
@@ -31,6 +36,12 @@ public enum KeyEventReader {
             return .spaceDown
         case .keyDown where keyCode == escapeKeyCode:
             return .escapeDown
+        // The fn flag is part of the identity of this event rather than a condition checked
+        // afterwards. Without it every letter C typed on the machine would reach the state
+        // machine — and the aliasing this type exists to filter out (arrows, the F row, Home,
+        // End, both Page keys) sets the flag on those keys' own events, never on C's.
+        case .keyDown where keyCode == cKeyCode && flags.contains(.maskSecondaryFn):
+            return .captureDown
         default:
             return nil
         }
@@ -53,6 +64,10 @@ public enum KeyEventReader {
             return flags.contains(.maskSecondaryFn) || space
         case .escapeDown:
             return escape
+        case .captureDown:
+            // Unconditional, because the kind cannot be produced without fn: passing the letter
+            // through would type a "c" into whatever the owner is reading.
+            return true
         }
     }
 }

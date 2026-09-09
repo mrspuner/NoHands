@@ -1,6 +1,7 @@
 import AppKit
 import Core
 import Dictation
+import Inbox
 import Meetings
 
 @MainActor
@@ -23,6 +24,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Owned here rather than by the coordinator: a config reload rebuilds the coordinator, and
     /// the owner's last ten dictations must not vanish with it.
     private let recent = RecentDictations()
+    /// Built once at launch and never rebuilt: it holds the folder of the last capture for two
+    /// minutes, and a config reload happening inside that window must not throw an open drop
+    /// target away. Nothing in it is configurable anyway.
+    private var inbox: InboxCoordinator?
+    /// The sound player of the current dictation coordinator, kept here so the inbox can use the
+    /// same three system sounds without a second copy of the config. Nil until the first build
+    /// finishes — and the hotkey does not exist until then either.
+    private var sounds: SoundPlayer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let menu = StatusMenu(
@@ -49,6 +58,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The panel is built before any coordinator, so the buttons on a meeting prompt are
         // pointed at whichever one exists when they are pressed rather than at one captured now.
         panel.setMeetingAnswer { [weak self] answer in self?.meetings?.answer(answer) }
+
+        // Built before any coordinator, exactly like the meeting answer above: the drop target
+        // has to answer a drag from the moment the panel is on screen, and the closure looks the
+        // coordinator up when the drop happens rather than capturing one that may be gone.
+        let inbox = InboxCoordinator(
+            showPanel: { [panel] state in panel.show(inbox: state) },
+            hidePanel: { [panel] delay in panel.hideInbox(after: delay) },
+            play: { [weak self] sound in
+                self?.sounds?.play(sound == .done ? .done : .error)
+            }
+        )
+        self.inbox = inbox
+        panel.setInboxDrop { [weak inbox] urls in inbox?.drop(urls) ?? false }
 
         // The frontmost application is read live rather than captured, so the panel can never
         // name a receiver that stopped being one. `NSWorkspace` posts on its own notification
@@ -260,6 +282,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let cleaner = DeepSeekClient(
                 model: config.model, prompt: config.prompt, timeout: config.timeoutSeconds
             )
+            let sounds = SoundPlayer(sounds: config.sounds)
+            self.sounds = sounds
             let coordinator = DictationCoordinator(
                 config: config,
                 recorder: MicrophoneRecorder(),
@@ -267,7 +291,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 cleaner: cleaner,
                 inserter: TextInserter(),
                 recent: recent,
-                sounds: SoundPlayer(sounds: config.sounds),
+                sounds: sounds,
                 showPanel: { [panel] state in panel.show(state) },
                 hidePanel: { [panel] delay in panel.hide(after: delay) },
                 onLevel: { [panel] level in
@@ -279,7 +303,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         panel.setLevel(level)
                     }
                 },
-                onNarrowbandInput: { [panel] hz in panel.setInputWarning(hz: hz) }
+                onNarrowbandInput: { [panel] hz in panel.setInputWarning(hz: hz) },
+                onCapture: { [weak self] in self?.inbox?.captureRequested() }
             )
             try coordinator.start()
             // This coordinator is new; the meeting it must not run alongside can be older than

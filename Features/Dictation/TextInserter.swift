@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Core
 import CoreGraphics
 import Foundation
 

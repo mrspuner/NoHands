@@ -69,7 +69,7 @@ public enum SummaryInsertion {
         // file that has none, and inventing one would be rewriting somebody else's file.
         if !summary.title.isEmpty, frontMatterEnd != nil,
             !front.contains(where: { $0.hasPrefix("title:") }) {
-            front.insert("title: \(MeetingMarkdown.quoted(summary.title))", at: front.count - 1)
+            front.insert("title: \(Frontmatter.quoted(summary.title))", at: front.count - 1)
         }
 
         while middle.last?.trimmingCharacters(in: .whitespaces).isEmpty == true {

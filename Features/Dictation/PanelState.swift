@@ -15,4 +15,8 @@ public enum PanelState: Equatable, Sendable {
     case failure(String)
     /// fn was pressed while a meeting is being recorded: dictation refused to start.
     case blocked
+    /// fn+C arrived while a dictation was past the recording stage. Refused rather than raced:
+    /// insertion borrows the clipboard and a capture borrowing it at the same time would lose
+    /// what was on it.
+    case captureRefused
 }
