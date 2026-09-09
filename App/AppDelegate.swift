@@ -74,6 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         self.inbox = inbox
         panel.setInboxDrop { [weak inbox] urls in inbox?.drop(urls) ?? false }
+        panel.setInboxDone { [weak inbox] in inbox?.doneRequested() }
 
         // The frontmost application is read live rather than captured, so the panel can never
         // name a receiver that stopped being one. `NSWorkspace` posts on its own notification
@@ -220,10 +221,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // dictation coordinator is rebuilt by a config reload, and a captured one would go
             // on answering for an object nobody is dictating into.
             isDictating: { [weak self] in self?.coordinator?.isDictating ?? false },
+            prepareInput: { [weak self] in self?.prepareInput() },
             // The rename in `MeetingCoordinator` is the only hand-off point into phase 2б — see
             // its own comment. Without this, a finished recording would only reach the archive on
             // the next launch's `scanAll`.
-            prepareInput: { [weak self] in self?.prepareInput() },
             onFolderReady: { url in
                 Task { await queue.enqueue(url) }
             }

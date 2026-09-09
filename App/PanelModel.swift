@@ -47,6 +47,9 @@ final class PanelModel: ObservableObject {
     /// Answers a drag dropped on the strip. Set once the inbox coordinator exists, which is
     /// after the panel does — same shape as `onMeetingAnswer` above.
     var onInboxDrop: (([URL]) -> Bool)?
+    /// Answers the «Готово» button on the inbox row. Not published, like `onInboxDrop` and
+    /// `onMeetingAnswer`: it is read at the moment of the press, never drawn.
+    var onInboxDone: (() -> Void)?
 
     func push(level: Float) {
         levels.removeFirst()

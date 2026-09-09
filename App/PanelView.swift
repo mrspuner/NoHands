@@ -323,14 +323,24 @@ private struct InboxContent: View {
     var body: some View {
         switch state {
         case .captured(let app, let lines, let attachments):
-            row(caption(app: app, lines: lines, attachments: attachments), failed: false)
-                .overlay(
-                    RoundedRectangle(cornerRadius: Surface.cornerRadius, style: .continuous)
-                        .strokeBorder(Color.white.opacity(targeted ? 0.5 : 0), lineWidth: 1.5)
-                )
-                .dropDestination(for: URL.self) { urls, _ in
-                    model.onInboxDrop?(urls) ?? false
-                } isTargeted: { targeted = $0 }
+            HStack(spacing: 10) {
+                Text(caption(app: app, lines: lines, attachments: attachments))
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                PromptButton(title: "Готово", prominent: false) { model.onInboxDone?() }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Surface(recording: true))
+            .frame(maxWidth: 520)
+            .overlay(
+                RoundedRectangle(cornerRadius: Surface.cornerRadius, style: .continuous)
+                    .strokeBorder(Color.white.opacity(targeted ? 0.5 : 0), lineWidth: 1.5)
+            )
+            .dropDestination(for: URL.self) { urls, _ in
+                model.onInboxDrop?(urls) ?? false
+            } isTargeted: { targeted = $0 }
         case .failure(let message):
             row(message, failed: true)
         }

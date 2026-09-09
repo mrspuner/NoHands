@@ -159,6 +159,10 @@ final class PanelWindow {
         model.onInboxDrop = handler
     }
 
+    func setInboxDone(_ handler: @escaping () -> Void) {
+        model.onInboxDone = handler
+    }
+
     func show(notice: PanelNotice) {
         pendingNoticeHide?.cancel()
         pendingNoticeHide = nil
