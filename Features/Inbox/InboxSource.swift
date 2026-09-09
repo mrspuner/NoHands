@@ -14,8 +14,21 @@ public struct InboxSource: Equatable, Sendable {
         self.url = url
     }
 
+    /// The folder name of this capture.
+    ///
+    /// A browser is asked what page it is on, and the first label of that host names the folder:
+    /// Tracker and Messenger are both Safari, and `-safari` for either of them said only
+    /// "a browser". `www` is skipped because it names nothing.
+    ///
+    /// Everything else — and any address that will not parse — falls back to the bundle
+    /// identifier, which is what named every folder before.
     public var slug: String {
-        InboxFolder.slug(forBundleID: bundleID ?? "")
+        if let url, let host = URLComponents(string: url)?.host {
+            let labels = host.split(separator: ".").map(String.init)
+            let first = labels.first == "www" ? labels.dropFirst().first : labels.first
+            if let first, !first.isEmpty { return first.lowercased() }
+        }
+        return InboxFolder.slug(forBundleID: bundleID ?? "")
     }
 }
 
