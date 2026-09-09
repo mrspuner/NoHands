@@ -1,11 +1,11 @@
 import Foundation
 
-/// The one line the panel says when a recording has been through the pipeline.
+/// One line the panel says about something that has already happened.
 ///
-/// The wording lives here rather than in the `App` target for the same reason every other
-/// sentence in this feature does: it is the part that can be tested, and the panel's job is to
-/// draw it.
-public struct MeetingNotice: Equatable, Sendable {
+/// Not only about meetings, despite living in this module: a switched input device reports
+/// itself the same way. Kept here rather than moved to `Core` because `App` — the only place
+/// that draws it — already depends on this module, and `Core` has no notion of a panel.
+public struct PanelNotice: Equatable, Sendable {
     public var text: String
     /// Red text instead of secondary. The backing stays grey either way — only something
     /// waiting for an answer glows, and this asks nothing.
@@ -21,14 +21,14 @@ public struct MeetingNotice: Equatable, Sendable {
     /// needs a number to pass to `hideNotice(after:)`.
     public static let dwell: TimeInterval = MeetingMachine.noticeDwell
 
-    public static func forOutcome(_ outcome: MeetingQueue.Outcome) -> MeetingNotice {
+    public static func forOutcome(_ outcome: MeetingQueue.Outcome) -> PanelNotice {
         if let failure = outcome.failure {
-            return MeetingNotice(text: "Не расшифровано: \(failure)", isFailure: true)
+            return PanelNotice(text: "Не расшифровано: \(failure)", isFailure: true)
         }
         // `minutes` is set on every path that has no failure — the two are written together in
         // `MeetingQueue.run`. The fallback exists because the type cannot say so, not because a
         // meeting of zero minutes is a thing this can report.
-        return MeetingNotice(text: "Расшифровано, \(Self.length(outcome.minutes ?? 0))", isFailure: false)
+        return PanelNotice(text: "Расшифровано, \(Self.length(outcome.minutes ?? 0))", isFailure: false)
     }
 
     /// Same rule as `MeetingContent.length` in `PanelView`, restated here because `App` depends
@@ -47,10 +47,10 @@ public struct MeetingNotice: Equatable, Sendable {
     /// The summary arrives a couple of minutes after the transcription notice, as a second
     /// notice rather than a rewrite of the first: the two are different events with different
     /// ways of failing, and one merged line would be wrong half the time.
-    public static func forSummary(_ outcome: MeetingSummarizer.Outcome) -> MeetingNotice {
+    public static func forSummary(_ outcome: MeetingSummarizer.Outcome) -> PanelNotice {
         if let failure = outcome.failure {
-            return MeetingNotice(text: "Конспект не сделан: \(failure)", isFailure: true)
+            return PanelNotice(text: "Конспект не сделан: \(failure)", isFailure: true)
         }
-        return MeetingNotice(text: "Конспект готов", isFailure: false)
+        return PanelNotice(text: "Конспект готов", isFailure: false)
     }
 }

@@ -64,6 +64,10 @@ public final class MeetingCoordinator {
     private let onDictationBlocked: (Bool) -> Void
     private let isDictating: () -> Bool
     private let readInputDevice: () -> AudioInputDevice?
+    /// Called before the device is read, to take the system input away from a Bluetooth
+    /// microphone if there is something better. A closure rather than a dependency, for the
+    /// same reason `DictationCoordinator` reports it: the same rule, the same place to run it.
+    private let prepareInput: () -> Void
     private let readProcesses: () -> [AudioProcessMonitor.State]?
     private let makeCapture: (URL, [String], @escaping @Sendable (String) -> Void) -> any MeetingCapture
     /// The hand-off to phase 2б. Called with the folder's final name, after the rename that
@@ -80,7 +84,7 @@ public final class MeetingCoordinator {
     private var captureTask: Task<Void, Never>?
     /// What closing a capture leaves for whoever decides the folder's fate. Two fields rather
     /// than one string: a failure is an `Error` and stays English, while a silent track is a
-    /// sentence for a person — the same split `MeetingNotice` already makes.
+    /// sentence for a person — the same split `PanelNotice` already makes.
     private struct Closed {
         var failure: String?
         var microphoneSilentSeconds: TimeInterval
@@ -176,6 +180,7 @@ public final class MeetingCoordinator {
         onDictationBlocked: @escaping (Bool) -> Void,
         isDictating: @escaping () -> Bool,
         readInputDevice: @escaping () -> AudioInputDevice? = AudioInputDevice.current,
+        prepareInput: @escaping () -> Void = {},
         readProcesses: @escaping () -> [AudioProcessMonitor.State]? = AudioProcessMonitor.current,
         makeCapture: @escaping (URL, [String], @escaping @Sendable (String) -> Void) -> any MeetingCapture = {
             MeetingAudioRecorder(folder: $0, excludedBundleIDs: $1, onFailureWhileRecording: $2)
@@ -191,6 +196,7 @@ public final class MeetingCoordinator {
         self.onDictationBlocked = onDictationBlocked
         self.isDictating = isDictating
         self.readInputDevice = readInputDevice
+        self.prepareInput = prepareInput
         self.readProcesses = readProcesses
         self.makeCapture = makeCapture
         self.onFolderReady = onFolderReady
@@ -429,6 +435,9 @@ public final class MeetingCoordinator {
 
     private func startCapture(app: MeetingMachine.MeetingApp?, at: Date) {
         do {
+            // Before the device is read, so the band written into `meeting.json` describes the
+            // microphone this recording actually runs on rather than the one it was about to.
+            prepareInput()
             let draft = try MeetingFolder.createDraft(
                 in: queue, startedAt: at, slug: app?.slug ?? Self.manualSlug
             )
@@ -593,7 +602,7 @@ public final class MeetingCoordinator {
             var failures: [String] = []
             if let closed = await closing?.value {
                 if let failure = closed.failure { failures.append(failure) }
-                // Interface text, so Russian — the rule `MeetingNotice` follows. Said only when
+                // Interface text, so Russian — the rule `PanelNotice` follows. Said only when
                 // the silence outlasted the threshold: a recording that lost its last ten
                 // seconds of microphone lost nothing worth a red line.
                 //
@@ -604,7 +613,7 @@ public final class MeetingCoordinator {
                 // AirPods going into their case, or a hardware mute switch, produce exact digital
                 // zero. Ten seconds of that would have reported a whole good meeting as empty.
                 //
-                // `MeetingNotice.length` and not a bare `ElapsedTime.minutes(...) мин`: the gate
+                // `PanelNotice.length` and not a bare `ElapsedTime.minutes(...) мин`: the gate
                 // above is ten seconds, but rounding to the nearest minute takes anything under
                 // thirty down to zero, and "0 мин" would claim no silence and a lost track in the
                 // same sentence.
@@ -612,7 +621,7 @@ public final class MeetingCoordinator {
                     failures.append(
                         closed.microphoneSawAudio
                             ? "Микрофон замолчал в конце — "
-                                + MeetingNotice.length(ElapsedTime.minutes(closed.microphoneSilentSeconds))
+                                + PanelNotice.length(ElapsedTime.minutes(closed.microphoneSilentSeconds))
                                 + " тишины, ваша дорожка неполная"
                             : "Микрофон молчал всю запись — ваша дорожка пустая"
                     )

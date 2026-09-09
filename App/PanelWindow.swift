@@ -36,10 +36,17 @@ final class PanelWindow {
     /// Its own dwell timer, a third one: a transcription notice lives by its own clock, and a
     /// shared timer would let the end of a dictation cut it off halfway.
     private var pendingNoticeHide: DispatchWorkItem?
-    /// A fourth dwell timer. The inbox target stands for two minutes while a dictation lasts
+    /// A fourth dwell timer. The inbox target stands for thirty seconds while a dictation lasts
     /// seconds and a meeting prompt half a minute; one shared timer would let any of them cut
     /// the others short.
     private var pendingInboxHide: DispatchWorkItem?
+    /// A notice `resize(forNotice:)` found nowhere to grow into — a meeting prompt or the inbox
+    /// target had the mouse when it arrived — kept here with when that happened instead of being
+    /// lost under the dismiss timer `hideNotice(after:)` would otherwise still be running. Shown
+    /// once the panel frees up, in `updateAcceptsClicks()` below — the same place that notices
+    /// the busy state end — and dropped there instead if it sat long enough to be stale. See the
+    /// decisions log for 2026-09-09.
+    private var deferredNotice: (notice: PanelNotice, arrivedAt: Date)?
 
     init() {
         panel = Panel(
@@ -159,7 +166,11 @@ final class PanelWindow {
         model.onInboxDrop = handler
     }
 
-    func show(notice: MeetingNotice) {
+    func setInboxDone(_ handler: @escaping () -> Void) {
+        model.onInboxDone = handler
+    }
+
+    func show(notice: PanelNotice) {
         pendingNoticeHide?.cancel()
         pendingNoticeHide = nil
         model.notice = notice
@@ -168,6 +179,12 @@ final class PanelWindow {
     }
 
     func hideNotice(after delay: TimeInterval) {
+        // A notice waiting in `deferredNotice` has not actually been shown yet — the panel was
+        // busy when `show(notice:)` set it. Dismissing it on this clock, the one every caller
+        // starts right after `show(notice:)`, would clear it before `updateAcceptsClicks()` ever
+        // gets to show it; that is where its dismiss gets scheduled instead, for the same delay,
+        // once the notice is actually on screen.
+        guard deferredNotice == nil else { return }
         pendingNoticeHide?.cancel()
         let work = DispatchWorkItem { [weak self] in
             self?.model.notice = nil
@@ -185,8 +202,25 @@ final class PanelWindow {
     ///
     /// Never while dictation is on top of it: the prompt is then not what is on screen, and a
     /// window swallowing clicks over something the owner cannot even see is the worst of both.
+    /// Also where a deferred notice gets its second chance: this runs on every transition into
+    /// or out of a busy panel, so "no longer busy" is caught here rather than needing a clock of
+    /// its own. The moment a prompt is answered or the inbox row closes, whatever notice was
+    /// waiting either goes up now, in full, or — if it sat long enough to be stale — is dropped
+    /// without ever having shown a frame.
     private func updateAcceptsClicks() {
         panel.ignoresMouseEvents = !acceptsClicksNow
+        guard !acceptsClicksNow, let deferred = deferredNotice else { return }
+        deferredNotice = nil
+        guard Date().timeIntervalSince(deferred.arrivedAt) < Self.deferredNoticeStaleAfter else {
+            // Stale: dropped instead of shown late. Nothing ever cleared `model.notice` while it
+            // waited, so it has to be cleared here — otherwise the `resize(forNotice:)` call
+            // every caller makes right after this one would show it anyway, now that the panel
+            // is free.
+            model.notice = nil
+            return
+        }
+        model.notice = deferred.notice
+        hideNotice(after: PanelNotice.dwell)
     }
 
     /// Whether a click — or a drag — on the panel right now reaches its content.
@@ -194,7 +228,7 @@ final class PanelWindow {
     /// The inbox target needs the mouse for the same reason a meeting prompt does, and gets it
     /// on the same terms: never while dictation is on top of it, because then the target is not
     /// what is on screen. It deliberately does not grow the window: see the decisions log for
-    /// 2026-09-08 — a 560×96 rectangle taking the mouse for two minutes would sit exactly over
+    /// 2026-09-08 — a 560×96 rectangle taking the mouse for thirty seconds would sit exactly over
     /// the mute and leave buttons of a full-screen call.
     private var acceptsClicksNow: Bool {
         guard model.state == nil else { return false }
@@ -231,6 +265,10 @@ final class PanelWindow {
     /// on screen keeps that footprint what it was.
     private static let restingHeight: CGFloat = 56
     private static let noticeHeight: CGFloat = 96
+    /// How long a deferred notice may wait before it is dropped instead of shown late — longer
+    /// than the longest prompt on this panel, the two-minute auto-resolve on a stop, save or
+    /// orphan prompt, so a notice merely waiting behind an ordinary one still gets through.
+    private static let deferredNoticeStaleAfter: TimeInterval = 120
 
     /// Growth is further conditional on the panel not currently accepting clicks. A notice
     /// arriving while a meeting prompt is up is reachable on an ordinary launch — an orphan draft
@@ -241,7 +279,21 @@ final class PanelWindow {
     /// visible either way — `model.notice` is set regardless — and only the window's height
     /// depends on whether something else is using the mouse.
     private func resize(forNotice showing: Bool) {
-        let height = (showing && !acceptsClicksNow) ? Self.noticeHeight : Self.restingHeight
+        let busy = acceptsClicksNow
+        if showing, busy, let notice = model.notice {
+            // The row this notice needs is exactly the one the panel cannot grow into right now
+            // — see `acceptsClicksNow` above. Remembered here instead of running out under
+            // `hideNotice(after:)`'s timer, which itself now declines to start while this is
+            // set. Left alone if it is already the notice being remembered, so a busy spell that
+            // triggers more than one resize does not keep pushing its arrival time forward.
+            let alreadyDeferred = deferredNotice.map { $0.notice == notice } ?? false
+            if !alreadyDeferred {
+                pendingNoticeHide?.cancel()
+                pendingNoticeHide = nil
+                deferredNotice = (notice, Date())
+            }
+        }
+        let height = (showing && !busy) ? Self.noticeHeight : Self.restingHeight
         guard panel.frame.height != height else { return }
         panel.setContentSize(NSSize(width: panel.frame.width, height: height))
         position()

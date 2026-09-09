@@ -32,6 +32,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// same three system sounds without a second copy of the config. Nil until the first build
     /// finishes — and the hotkey does not exist until then either.
     private var sounds: SoundPlayer?
+    /// One guard for both recorders: its memory of what the owner chose by hand is about the
+    /// machine, not about which of the two is recording.
+    private let inputGuard = InputDeviceGuard()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let menu = StatusMenu(
@@ -71,6 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         self.inbox = inbox
         panel.setInboxDrop { [weak inbox] urls in inbox?.drop(urls) ?? false }
+        panel.setInboxDone { [weak inbox] in inbox?.doneRequested() }
 
         // The frontmost application is read live rather than captured, so the panel can never
         // name a receiver that stopped being one. `NSWorkspace` posts on its own notification
@@ -170,8 +174,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 makeRunner: makeRunner,
                 report: { [panel] outcome in
                     Task { @MainActor in
-                        panel.show(notice: MeetingNotice.forSummary(outcome))
-                        panel.hideNotice(after: MeetingNotice.dwell)
+                        panel.show(notice: PanelNotice.forSummary(outcome))
+                        panel.hideNotice(after: PanelNotice.dwell)
                     }
                 }
             )
@@ -191,8 +195,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 makeTranscriber: makeTranscriber,
                 report: { [panel] outcome in
                     Task { @MainActor in
-                        panel.show(notice: MeetingNotice.forOutcome(outcome))
-                        panel.hideNotice(after: MeetingNotice.dwell)
+                        panel.show(notice: PanelNotice.forOutcome(outcome))
+                        panel.hideNotice(after: PanelNotice.dwell)
                     }
                     // A meeting that failed has no file in the archive to summarise; one that
                     // succeeded does, and `scanArchive` finds it without being told the path.
@@ -217,6 +221,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // dictation coordinator is rebuilt by a config reload, and a captured one would go
             // on answering for an object nobody is dictating into.
             isDictating: { [weak self] in self?.coordinator?.isDictating ?? false },
+            prepareInput: { [weak self] in self?.prepareInput() },
             // The rename in `MeetingCoordinator` is the only hand-off point into phase 2б — see
             // its own comment. Without this, a finished recording would only reach the archive on
             // the next launch's `scanAll`.
@@ -259,6 +264,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The menu has one status line and, on a bad day, two things to say on it.
     private static func status(_ dictation: String, _ meetings: String?) -> String {
         [dictation, meetings].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    /// Takes the system input away from a Bluetooth microphone before a recording starts, and
+    /// says so. Silent when nothing changed and when the owner's own choice was left alone —
+    /// a notice for "everything is as you left it" would be noise on every dictation.
+    private func prepareInput() {
+        switch inputGuard.prepare() {
+        case .switched(let name):
+            panel.show(notice: PanelNotice(text: "Вход переключён на \(name)", isFailure: false))
+            panel.hideNotice(after: PanelNotice.dwell)
+        case .failed:
+            panel.show(notice: PanelNotice(
+                text: "Не удалось увести вход с блютус-микрофона", isFailure: true
+            ))
+            panel.hideNotice(after: PanelNotice.dwell)
+        case .unchanged, .yielded:
+            break
+        }
     }
 
     private func buildCoordinator(menu: StatusMenu, meetingsNote: String?) async {
@@ -304,6 +327,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 },
                 onNarrowbandInput: { [panel] hz in panel.setInputWarning(hz: hz) },
+                prepareInput: { [weak self] in self?.prepareInput() },
                 onCapture: { [weak self] in self?.inbox?.captureRequested() }
             )
             try coordinator.start()

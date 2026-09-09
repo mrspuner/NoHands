@@ -191,6 +191,10 @@ private final class Harness {
     /// same reason as `processes`: the warning and `meeting.json` both come from this, and the
     /// machine running the tests has whatever microphone it has.
     var inputDevice: AudioInputDevice?
+    /// Order matters here, not just the count: the band written into `meeting.json` has to
+    /// describe the device the recording will run on, which it only does if the input is fixed
+    /// before it is read.
+    private(set) var inputEvents: [String] = []
     /// What the next `poll` reads. `nil` is a failed system call, `[]` is nobody holding a
     /// device — the distinction several tests below exist for.
     var processes: [AudioProcessMonitor.State]? = []
@@ -222,7 +226,11 @@ private final class Harness {
             onMicrophoneSilent: { [weak self] in self?.microphoneSilent.append($0) },
             onDictationBlocked: { [weak self] in self?.blocked.append($0) },
             isDictating: { [weak self] in self?.dictating ?? false },
-            readInputDevice: { [weak self] in self?.inputDevice },
+            readInputDevice: { [weak self] in
+                self?.inputEvents.append("read")
+                return self?.inputDevice
+            },
+            prepareInput: { [weak self] in self?.inputEvents.append("prepare") },
             readProcesses: { [weak self] in
                 guard let self else { return [] }
                 return processes
@@ -501,6 +509,19 @@ private func isFailure(_ state: MeetingPanelState?) -> Bool {
     #expect(harness.captures.count == 1)
     #expect(harness.captures[0].started)
     #expect(harness.blocked == [true])
+}
+
+// Task 7: the band written into `meeting.json` has to describe the device the recording will
+// run on, which it only does if the input is fixed before it is read.
+@Test @MainActor func theInputIsFixedBeforeItsBandIsRead() async throws {
+    let harness = try Harness()
+    harness.processes = [telemost]
+
+    harness.coordinator.startPressed(at: noon)
+    await harness.coordinator.settle()
+
+    #expect(harness.inputEvents.first == "prepare")
+    #expect(harness.inputEvents.contains("read"))
 }
 
 // Decision of this task, and the one the leading dot exists for: the rename is the hand-off to

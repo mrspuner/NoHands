@@ -42,7 +42,7 @@ public enum MeetingErrorFile {
     /// English, like every other `errorDescription` in this feature — `MeetingQueue.Failure`
     /// included, which is what normally ends up in this file. This is diagnostic text about a
     /// failed processing attempt, not the panel's own wording; the panel's wording lives in
-    /// `MeetingNotice` and stays Russian.
+    /// `PanelNotice` and stays Russian.
     public static let unreadableReason = "The error file cannot be read — the reason for the previous failure is lost"
 
     /// Written atomically. A crash halfway through an ordinary write leaves a truncated file,
