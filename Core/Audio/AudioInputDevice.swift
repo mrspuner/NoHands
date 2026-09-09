@@ -160,6 +160,11 @@ public struct AudioInputDevice: Sendable {
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
+        // A failed read gets `.other` too, same as a transport this application does not name.
+        // For `InputDeviceGuard` that means the device is simply never treated as Bluetooth: no
+        // switch is attempted, no notice is shown, and if it really was a Bluetooth microphone
+        // the owner sees the degradation only as the narrowband warning dictation and meetings
+        // already print, not as a named cause.
         guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &value) == noErr else {
             return .other
         }
@@ -178,7 +183,9 @@ public struct AudioInputDevice: Sendable {
         guard AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &size) == noErr,
               size > 0
         else { return 0 }
-        let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: 16)
+        let raw = UnsafeMutableRawPointer.allocate(
+            byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment
+        )
         defer { raw.deallocate() }
         guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, raw) == noErr else {
             return 0

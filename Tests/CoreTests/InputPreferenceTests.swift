@@ -55,7 +55,9 @@ private func device(
 }
 
 @Test func bluetoothIsNeverAReplacement() {
-    #expect(InputPreference.replacement(among: [device("AirPods", .bluetooth, rate: 24000)]) == nil)
+    // Full-band on purpose: at 24000 the narrowband filter alone would already reject it, and
+    // this test is about the transport filter specifically.
+    #expect(InputPreference.replacement(among: [device("AirPods", .bluetooth, rate: 48000)]) == nil)
 }
 
 @Test func anEmptyListHasNoReplacement() {

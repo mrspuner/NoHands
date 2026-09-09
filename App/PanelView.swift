@@ -309,13 +309,15 @@ private struct MeetingContent: View {
 /// waiting for something from the owner, and this is waiting for a drag.
 ///
 /// This knowingly bends `MeetingContent.strip`'s rule against the animated surface for a
-/// long-lived row: the `.captured` row below stands for up to two minutes, not seconds, the
+/// long-lived row: the `.captured` row below stands for up to thirty seconds, not seconds, the
 /// same complaint in principle. The difference is what the row is for — a meeting's strip is
 /// just a clock nobody has to act on, while this one is a target waiting for a drag, and that
 /// is worth the redraw. Not a reason to "fix" this back to the resting surface.
 private struct InboxContent: View {
-    /// Held, not observed, exactly as `MeetingContent` holds it: the drop handler is not
-    /// published and has to be read at the moment of the drop rather than captured earlier.
+    /// Held, not observed. Everything read out of the model here — `onInboxDone` and
+    /// `onInboxDrop` — is a plain closure, not a `@Published` one, and both are read at the
+    /// moment of the press or the drop rather than captured into this view earlier. There is
+    /// nothing published to miss, so there is nothing here for `@ObservedObject` to buy.
     let model: PanelModel
     let state: InboxPanelState
     @State private var targeted = false

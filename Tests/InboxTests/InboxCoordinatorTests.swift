@@ -289,12 +289,13 @@ private final class Harness {
     #expect(harness.coordinator.drop([root.appendingPathComponent("whatever.txt")]) == false)
 }
 
-// Ten minutes, not two: the timer stopped being the way this row ends and became the guard
-// against a row nobody closed. It cannot be infinite — a strip that takes the mouse sits over
-// the mute button of a full-screen call.
+// Thirty seconds, not ten minutes: the timer stopped being the way this row ends and became the
+// guard against a row nobody closed. It cannot be long — the row draws over the meeting layer
+// beneath it, and a wide window here would sit through a start prompt and a stop prompt with
+// nothing left to answer either one.
 @MainActor
-@Test func theDropWindowIsTenMinutes() {
-    #expect(InboxCoordinator.dropWindow == 600)
+@Test func theDropWindowIsThirtySeconds() {
+    #expect(InboxCoordinator.dropWindow == 30)
 }
 
 // A drop still buys another full window: files arrive in batches, and the second batch must not
@@ -305,7 +306,7 @@ private final class Harness {
     // The window is passed explicitly rather than left at the harness default of 120: this test
     // is about the drop re-arming whatever window it was given, and the harness default is not
     // the constant.
-    let harness = Harness(root: root, dropWindow: 600)
+    let harness = Harness(root: root, dropWindow: 30)
     harness.coordinator.captureRequested()
     await harness.coordinator.settle()
 
@@ -313,15 +314,15 @@ private final class Harness {
     try Data("x".utf8).write(to: file)
     #expect(harness.coordinator.drop([file]) == true)
 
-    #expect(harness.hidden.last == 600)
+    #expect(harness.hidden.last == 30)
 }
 
 // A refusal used to close the whole inbox row: `reportFailure` re-arms `hidePanel` for its own
 // short dwell, and `PanelWindow.hideInbox` cancels whatever hide was pending — including the
-// two-minute one a successful capture had just armed. The spec promises two minutes and `target`
-// still agrees; only the panel disagreed, and the owner could no longer see anywhere to drop a
-// file even though `target` was still open. Once the failure has been read, the row has to come
-// back with whatever is left of its own window.
+// thirty-second one a successful capture had just armed. The spec promises thirty seconds and
+// `target` still agrees; only the panel disagreed, and the owner could no longer see anywhere to
+// drop a file even though `target` was still open. Once the failure has been read, the row has
+// to come back with whatever is left of its own window.
 @MainActor
 @Test func aFailureDuringTheDropWindowLeavesTheTargetReachableAfterItsDwell() async throws {
     let root = try temporaryRoot()

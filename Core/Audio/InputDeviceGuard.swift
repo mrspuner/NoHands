@@ -63,6 +63,14 @@ public final class InputDeviceGuard {
             return .unchanged
         }
         guard setDefault(replacement.uid) else { return .failed }
+        // CoreAudio returning success is not proof the default actually moved. Dictation reads
+        // the device again right after `prepare()`, for the narrowband warning, and the two
+        // would disagree if this trusted the return code alone: the panel would say both "Вход
+        // переключён на …" and "узкая полоса" about the same still-Bluetooth microphone in the
+        // same breath. Re-reading the default here is what keeps that from happening.
+        guard let switchedTo = self.current(), switchedTo.uid == replacement.uid else {
+            return .failed
+        }
         switchedAwayFrom = current.uid
         return .switched(name: replacement.name)
     }

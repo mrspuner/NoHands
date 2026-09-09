@@ -230,7 +230,7 @@ private final class Harness {
                 self?.inputEvents.append("read")
                 return self?.inputDevice
             },
-            prepareInput: { [unowned self] in self.inputEvents.append("prepare") },
+            prepareInput: { [weak self] in self?.inputEvents.append("prepare") },
             readProcesses: { [weak self] in
                 guard let self else { return [] }
                 return processes

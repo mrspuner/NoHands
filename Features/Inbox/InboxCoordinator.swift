@@ -12,11 +12,14 @@ public final class InboxCoordinator {
         case error
     }
 
-    /// How long the strip stays a target when nobody closes it. Ten minutes, and it is a
+    /// How long the strip stays a target when nobody closes it. Thirty seconds, and it is a
     /// backstop rather than the way this ends: the owner closes the row with «Готово» the moment
-    /// everything is brought over. It cannot be infinite — the strip takes the mouse while it is
-    /// up, and in a full-screen call it sits exactly over the mute and leave buttons.
-    public static let dropWindow: TimeInterval = 600
+    /// everything is brought over. It cannot be long — the row draws over the meeting layer
+    /// beneath it, so a wide window here is a start-of-call or end-of-call prompt with nothing
+    /// left to answer it: fn+C at the start of a meeting used to be able to swallow both the
+    /// start prompt and the stop prompt whole, for the ten minutes this used to be. Thirty
+    /// seconds keeps this a backstop rather than a second timer competing with those two.
+    public static let dropWindow: TimeInterval = 30
     /// A refusal is read, not answered.
     public static let failureDwell: TimeInterval = 5
 
@@ -195,7 +198,7 @@ public final class InboxCoordinator {
     /// Reports a refusal the same way regardless of which step it broke in: sound, panel, dwell.
     ///
     /// `hidePanel` collapses the whole inbox row on this dwell — it does not know there might be
-    /// a drop target underneath still good for another two minutes. `target` and
+    /// a drop target underneath still good for another thirty seconds. `target` and
     /// `targetExpiresAt` are untouched here, so once the failure has been read, the row is worth
     /// bringing back with whatever time is actually left on the window a successful capture or
     /// drop already promised.

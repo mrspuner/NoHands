@@ -14,6 +14,10 @@ private final class Harness {
     var devices: [AudioInputDevice] = [airpods, iphone]
     var current: AudioInputDevice? = airpods
     var refuse = false
+    /// CoreAudio reports success but the default does not actually move — distinct from
+    /// `refuse`, which is the write itself failing. `setDefault` still returns `true` and still
+    /// records the write; only `current` stays put.
+    var writeSucceedsWithoutTakingEffect = false
     private(set) var writes: [String] = []
     var guardian: InputDeviceGuard!
 
@@ -24,6 +28,7 @@ private final class Harness {
             setDefault: { [unowned self] uid in
                 self.writes.append(uid)
                 guard !self.refuse else { return false }
+                guard !self.writeSucceedsWithoutTakingEffect else { return true }
                 self.current = self.devices.first { $0.uid == uid }
                 return true
             }
@@ -102,4 +107,15 @@ private final class Harness {
     harness.current = nil
     #expect(harness.guardian.prepare() == .unchanged)
     #expect(harness.writes.isEmpty)
+}
+
+// CoreAudio's `noErr` is not proof the default moved. Without the re-read this would report
+// `.switched`, and the panel would say "Вход переключён на …" in the same breath as "узкая
+// полоса" about the microphone that switch claimed to have left.
+@MainActor
+@Test func aWriteThatDoesNotTakeEffectIsReportedAsFailed() {
+    let harness = Harness()
+    harness.writeSucceedsWithoutTakingEffect = true
+    #expect(harness.guardian.prepare() == .failed)
+    #expect(harness.writes == ["iphone"])
 }
