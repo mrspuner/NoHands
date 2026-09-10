@@ -44,3 +44,38 @@ import Testing
     ]
     #expect(VoiceSegment.from(library).isEmpty)
 }
+
+// DiarizationError.from(_:) maps FluidAudio errors to our enum, preserving the distinction
+// between "no speech on this track" and "the model itself is broken".
+@Test func noSpeechDetectedMapsToNoSpeechCase() {
+    let fluidError: any Error = OfflineDiarizationError.noSpeechDetected
+    let mapped = DiarizationError.from(fluidError)
+    #expect(mapped == .noSpeech)
+}
+
+@Test func otherOfflineDiarizationErrorsMapsToModelUnavailable() {
+    let fluidError: any Error = OfflineDiarizationError.modelNotLoaded("segmentation")
+    let mapped = DiarizationError.from(fluidError)
+    #expect(mapped == .modelUnavailable("Model not loaded: segmentation"))
+}
+
+@Test func unrelatedErrorsMapsToModelUnavailable() {
+    struct CustomError: LocalizedError {
+        var errorDescription: String? { "Custom failure" }
+    }
+    let error: any Error = CustomError()
+    let mapped = DiarizationError.from(error)
+    #expect(mapped == .modelUnavailable("Custom failure"))
+}
+
+@Test func alreadyMappedErrorPassesThroughUnchanged() {
+    let original = DiarizationError.noSpeech
+    let mapped = DiarizationError.from(original)
+    #expect(mapped == original)
+}
+
+@Test func alreadyMappedModelUnavailablePassesThroughUnchanged() {
+    let original = DiarizationError.modelUnavailable("test reason")
+    let mapped = DiarizationError.from(original)
+    #expect(mapped == original)
+}

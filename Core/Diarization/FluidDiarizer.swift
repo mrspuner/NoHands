@@ -13,6 +13,10 @@ import Foundation
 /// on one meeting 0.6 gives four speakers, 0.65 gives seven, 0.8 gives six. Splitting is
 /// undone afterwards, by `VoiceClustering`, with a threshold that can actually be tuned.
 public actor FluidDiarizer: Diarizing {
+    // `nonisolated(unsafe)`: the manager is a plain class, not an actor. It is safe to access
+    // unguarded because all model loading happens once in `load()` before any call to `segments(of:)`,
+    // and the models themselves are immutable once loaded. Nothing in this actor mutates the manager
+    // after initialization, so concurrent calls to `segments(of:)` read a stable object.
     private nonisolated(unsafe) let manager: OfflineDiarizerManager
 
     private init(manager: OfflineDiarizerManager) {
@@ -25,7 +29,7 @@ public actor FluidDiarizer: Diarizing {
         do {
             try await manager.prepareModels()
         } catch {
-            throw DiarizationError.modelUnavailable(error.localizedDescription)
+            throw DiarizationError.from(error)
         }
         return FluidDiarizer(manager: manager)
     }
@@ -35,7 +39,7 @@ public actor FluidDiarizer: Diarizing {
             let result = try await manager.process(audio)
             return VoiceSegment.from(result.segments)
         } catch {
-            throw DiarizationError.modelUnavailable(error.localizedDescription)
+            throw DiarizationError.from(error)
         }
     }
 }
