@@ -115,10 +115,13 @@ public enum MeetingMarkdown {
         return whole < 1 ? "меньше минуты" : "\(whole) мин"
     }
 
+    // Task 5 replaces this with real labelling, numbering, and `participants`; here `.voice`
+    // renders the same word the old single-interlocutor case used to, so a meeting with one
+    // interlocutor produces a byte-identical file.
     private static func label(_ speaker: Utterance.Speaker) -> String {
         switch speaker {
         case .me: return "Я"
-        case .others: return "Собеседник"
+        case .voice: return "Собеседник"
         }
     }
 

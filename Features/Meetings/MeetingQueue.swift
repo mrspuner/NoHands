@@ -236,9 +236,11 @@ public actor MeetingQueue {
         // again — see the comment on `states` above about why the raw/compressed distinction is
         // decided once, from the whole folder's shape.
         if tracks.contains(system) {
+            // Diarization is task 5's job; until then the whole system track is one nameless
+            // voice, exactly what the old single-interlocutor case used to mean.
             theirs = Utterance.split(
                 words: try await transcriber.transcribeTimed(audio: system),
-                speaker: .others,
+                speaker: .voice("v1"),
                 gap: config.phraseGapSeconds,
                 maxLength: config.maxPhraseSeconds
             )

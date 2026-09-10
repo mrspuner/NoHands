@@ -29,7 +29,11 @@ public enum MeetingTranscript {
             // side starting at the same instant would need a further rule, but that case cannot
             // arise: `Utterance.split` produces disjoint spans within one track, one after the
             // other, so no two utterances on the same side ever share a start time.
-            return left.speaker == .others && right.speaker == .me
+            //
+            // The same deterministic tie-break as before, now that the other side is many
+            // voices rather than one: whoever is not the owner goes first.
+            if case .voice = left.speaker, right.speaker == .me { return true }
+            return false
         }
     }
 

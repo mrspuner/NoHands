@@ -14,7 +14,7 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
 @Test func theFileCarriesFrontMatterAndATranscript() {
     let rendered = MeetingMarkdown.render(
         transcript: [
-            Utterance(speaker: .others, start: 3, end: 6, text: "привет"),
+            Utterance(speaker: .voice("v1"), start: 3, end: 6, text: "привет"),
             Utterance(speaker: .me, start: 11, end: 13, text: "привет и тебе"),
         ],
         startedAt: started,
@@ -64,7 +64,7 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
 // реплики «Я» приходится ему.
 @Test func aSilentMicrophoneIsExplainedInTheFrontMatter() {
     let rendered = MeetingMarkdown.render(
-        transcript: [Utterance(speaker: .others, start: 0, end: 1, text: "раз")],
+        transcript: [Utterance(speaker: .voice("v1"), start: 0, end: 1, text: "раз")],
         startedAt: started, durationSeconds: 5580, appName: "Телемост",
         trailingMicrophoneSilenceSeconds: 600,
         microphoneSawAudio: true
@@ -78,7 +78,7 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
 // артефактов врал тот, который переживает всё остальное.
 @Test func aTrackThatNeverCarriedAudioIsCalledEmptyRatherThanIncomplete() {
     let rendered = MeetingMarkdown.render(
-        transcript: [Utterance(speaker: .others, start: 0, end: 1, text: "раз")],
+        transcript: [Utterance(speaker: .voice("v1"), start: 0, end: 1, text: "раз")],
         startedAt: started, durationSeconds: 5580, appName: "Телемост",
         trailingMicrophoneSilenceSeconds: 5580,
         microphoneSawAudio: false
@@ -91,7 +91,7 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
 // дорожку пустой или неполной значило бы угадать — то есть повторить ту же ошибку в новом месте.
 @Test func anUnknownFlagClaimsNeitherEmptyNorIncomplete() {
     let rendered = MeetingMarkdown.render(
-        transcript: [Utterance(speaker: .others, start: 0, end: 1, text: "раз")],
+        transcript: [Utterance(speaker: .voice("v1"), start: 0, end: 1, text: "раз")],
         startedAt: started, durationSeconds: 5580, appName: "Телемост",
         trailingMicrophoneSilenceSeconds: 600,
         microphoneSawAudio: nil

@@ -1,14 +1,15 @@
 import Foundation
 
 /// One continuous stretch of speech by one side of the conversation.
-///
-/// Two speakers and no more, because phase 2б has no way to tell one interlocutor from another
-/// — that is 2г's job. What it does know for free is which track a word came from, and that is
-/// exactly the difference between the owner and everyone else.
 public struct Utterance: Equatable, Sendable {
-    public enum Speaker: String, Equatable, Sendable, CaseIterable {
+    /// Who said it: the owner, or one of the voices this meeting found on the other track.
+    ///
+    /// The voice carries an identity, not a label. What it is called in the file — `Настя`,
+    /// `Собеседник 2` — is decided at render time by `SpeakerLabels`, because the owner edits
+    /// those names by hand and one name can even cover two voices.
+    public enum Speaker: Equatable, Hashable, Sendable {
         case me
-        case others
+        case voice(String)
     }
 
     public var speaker: Speaker
@@ -56,6 +57,50 @@ public struct Utterance: Equatable, Sendable {
                 if word.start - last.end > gap || word.end - first.start > maxLength { flush() }
             }
             current.append(word)
+        }
+        flush()
+        return utterances
+    }
+
+    /// The same two rules as above — a silence longer than `gap`, a ceiling of `maxLength` —
+    /// plus a third: a change of voice ends the utterance. Without it two people would share a
+    /// line whenever they spoke without a pause between them, and the archive would attribute
+    /// one person's words to another. That is the failure phase 2б already paid for once, when
+    /// leaked speech was merged into the owner's own replies.
+    public static func split(
+        assigned: [AssignedWord],
+        gap: TimeInterval,
+        maxLength: TimeInterval
+    ) -> [Utterance] {
+        var utterances: [Utterance] = []
+        var current: [TimedWord] = []
+        var currentVoice: String?
+
+        func flush() {
+            guard let first = current.first, let last = current.last, let voice = currentVoice else {
+                current = []
+                return
+            }
+            utterances.append(
+                Utterance(
+                    speaker: .voice(voice),
+                    start: first.start,
+                    end: last.end,
+                    text: current.map(\.text).joined(separator: " ")
+                )
+            )
+            current = []
+        }
+
+        for item in assigned {
+            if let last = current.last, let first = current.first {
+                let broken = item.word.start - last.end > gap
+                    || item.word.end - first.start > maxLength
+                    || item.voice != currentVoice
+                if broken { flush() }
+            }
+            currentVoice = item.voice
+            current.append(item.word)
         }
         flush()
         return utterances
