@@ -29,6 +29,18 @@ public struct StoredPrint: Equatable, Sendable, Codable {
                 forKey: .vector, in: container, debugDescription: "vector is not base64"
             )
         }
+        // `bindMemory` rounds `count / stride` down rather than failing, so a byte count that is
+        // not a multiple of four would otherwise hand back a short, silently wrong vector instead
+        // of an error. Checked explicitly because this file cannot be regenerated: a corrupt
+        // vector here can only come from a hand edit or a bad write, once the audio behind it is
+        // already gone.
+        let stride = MemoryLayout<Float32>.size
+        guard data.count % stride == 0 else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .vector, in: container,
+                debugDescription: "vector byte count \(data.count) is not a multiple of \(stride)"
+            )
+        }
         vector = data.withUnsafeBytes { Array($0.bindMemory(to: Float32.self)) }
     }
 

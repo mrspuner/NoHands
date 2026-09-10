@@ -11,8 +11,9 @@ public actor VoiceStore {
 
     public static var defaultURL: URL {
         // The path is spelled out here rather than taken from `MeetingFolder`, which lives in
-        // `Meetings` — a module that depends on this one. `MeetingsConfig.configFileURL` repeats
-        // the config path for the same reason.
+        // `Meetings` — a module that depends on this one, not the other way round.
+        // `MeetingFolder.queueURL`/`archiveURL` spell out the same `~/Meetings` path directly
+        // for the identical reason.
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Meetings")
             .appendingPathComponent(".voices.json")
