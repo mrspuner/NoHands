@@ -21,3 +21,23 @@ import Testing
 @Test func controlCharactersAreDropped() {
     #expect(Frontmatter.quoted("a\nb\tc") == "\"abc\"")
 }
+
+@Test func aPlainNameStaysUnquotedInAList() {
+    #expect(Frontmatter.listValue("Настя") == "Настя")
+}
+
+// A comma would be read as a second list item, and a bracket or quote would break the `[...]`
+// syntax itself — this is the value a name the owner typed becomes inside `participants:`.
+@Test func aNameWithListSyntaxIsQuoted() {
+    #expect(Frontmatter.listValue("Настя, она же Настасья") == Frontmatter.quoted("Настя, она же Настасья"))
+    #expect(Frontmatter.listValue("Собеседник [2]") == Frontmatter.quoted("Собеседник [2]"))
+    #expect(Frontmatter.listValue("Со\"бес\"едник") == Frontmatter.quoted("Со\"бес\"едник"))
+}
+
+// A leading or trailing space would be invisible in the rendered list but change the value on
+// re-parse, and an empty string is not a name at all.
+@Test func edgeValuesAreQuotedRatherThanLeftBare() {
+    #expect(Frontmatter.listValue(" Настя") == Frontmatter.quoted(" Настя"))
+    #expect(Frontmatter.listValue("Настя ") == Frontmatter.quoted("Настя "))
+    #expect(Frontmatter.listValue("") == Frontmatter.quoted(""))
+}

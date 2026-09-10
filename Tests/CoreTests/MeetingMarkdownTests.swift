@@ -21,7 +21,9 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
         durationSeconds: 254,
         appName: "Телемост",
         trailingMicrophoneSilenceSeconds: nil,
-        microphoneSawAudio: nil
+        microphoneSawAudio: nil,
+        labels: nil,
+        diarizationFailure: nil
     )
     #expect(rendered.hasPrefix("---\n"))
     #expect(rendered.contains("duration: 4m\n"))
@@ -39,7 +41,9 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
         transcript: [Utterance(speaker: .me, start: 0, end: 1, text: "раз")],
         startedAt: started, durationSeconds: 60, appName: "Телемост",
         trailingMicrophoneSilenceSeconds: nil,
-        microphoneSawAudio: nil
+        microphoneSawAudio: nil,
+        labels: nil,
+        diarizationFailure: nil
     )
     #expect(!rendered.contains("participants"))
 }
@@ -52,7 +56,9 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
         transcript: [Utterance(speaker: .me, start: 0, end: 1, text: "раз")],
         startedAt: started, durationSeconds: 60, appName: "Телемост",
         trailingMicrophoneSilenceSeconds: nil,
-        microphoneSawAudio: nil
+        microphoneSawAudio: nil,
+        labels: nil,
+        diarizationFailure: nil
     )
     #expect(!rendered.contains("Саммари"))
     #expect(!rendered.contains("Решения"))
@@ -67,7 +73,9 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
         transcript: [Utterance(speaker: .voice("v1"), start: 0, end: 1, text: "раз")],
         startedAt: started, durationSeconds: 5580, appName: "Телемост",
         trailingMicrophoneSilenceSeconds: 600,
-        microphoneSawAudio: true
+        microphoneSawAudio: true,
+        labels: nil,
+        diarizationFailure: nil
     )
     #expect(rendered.contains(#"microphone: "замолчал в конце — 10 мин тишины, дорожка неполная""#))
 }
@@ -81,7 +89,9 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
         transcript: [Utterance(speaker: .voice("v1"), start: 0, end: 1, text: "раз")],
         startedAt: started, durationSeconds: 5580, appName: "Телемост",
         trailingMicrophoneSilenceSeconds: 5580,
-        microphoneSawAudio: false
+        microphoneSawAudio: false,
+        labels: nil,
+        diarizationFailure: nil
     )
     #expect(rendered.contains(#"microphone: "молчал всю запись — дорожка пустая""#))
     #expect(!rendered.contains("неполная"))
@@ -94,7 +104,9 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
         transcript: [Utterance(speaker: .voice("v1"), start: 0, end: 1, text: "раз")],
         startedAt: started, durationSeconds: 5580, appName: "Телемост",
         trailingMicrophoneSilenceSeconds: 600,
-        microphoneSawAudio: nil
+        microphoneSawAudio: nil,
+        labels: nil,
+        diarizationFailure: nil
     )
     #expect(rendered.contains(#"microphone: "тишина — 10 мин, полнота дорожки неизвестна""#))
     #expect(!rendered.contains("пустая"))
@@ -108,7 +120,9 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
         transcript: [Utterance(speaker: .me, start: 0, end: 1, text: "раз")],
         startedAt: started, durationSeconds: 5580, appName: "Телемост",
         trailingMicrophoneSilenceSeconds: nil,
-        microphoneSawAudio: true
+        microphoneSawAudio: true,
+        labels: nil,
+        diarizationFailure: nil
     )
     #expect(!rendered.contains("microphone:"))
 }
@@ -121,7 +135,9 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
         transcript: [Utterance(speaker: .me, start: 0, end: 1, text: "раз")],
         startedAt: started, durationSeconds: 5580, appName: nil,
         trailingMicrophoneSilenceSeconds: 15,
-        microphoneSawAudio: true
+        microphoneSawAudio: true,
+        labels: nil,
+        diarizationFailure: nil
     )
     #expect(rendered.contains(#"microphone: "замолчал в конце — меньше минуты тишины, дорожка неполная""#))
     #expect(!rendered.contains("0 мин"))
@@ -134,7 +150,9 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
         startedAt: started, durationSeconds: 60,
         appName: "Zoom: \"Meetings\"\nfake: value",
         trailingMicrophoneSilenceSeconds: nil,
-        microphoneSawAudio: nil
+        microphoneSawAudio: nil,
+        labels: nil,
+        diarizationFailure: nil
     )
     // The injected text survives as data inside the quoted value, and that is fine — what must
     // not happen is it becoming a key of its own, which is exactly what the unescaped newline
@@ -150,7 +168,9 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
         transcript: [Utterance(speaker: .me, start: 0, end: 1, text: "раз")],
         startedAt: started, durationSeconds: 60, appName: nil,
         trailingMicrophoneSilenceSeconds: nil,
-        microphoneSawAudio: nil
+        microphoneSawAudio: nil,
+        labels: nil,
+        diarizationFailure: nil
     )
     #expect(!rendered.contains("app:"))
 }
@@ -162,7 +182,9 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
         transcript: [Utterance(speaker: .me, start: 0, end: 1, text: "раз")],
         startedAt: started, durationSeconds: 20, appName: nil,
         trailingMicrophoneSilenceSeconds: nil,
-        microphoneSawAudio: nil
+        microphoneSawAudio: nil,
+        labels: nil,
+        diarizationFailure: nil
     )
     #expect(rendered.contains("duration: 1m\n"))
 }
@@ -172,7 +194,71 @@ private let started = Date(timeIntervalSince1970: 1_788_500_000)  // a fixed mom
         transcript: [Utterance(speaker: .me, start: 0, end: 1, text: "раз")],
         startedAt: started, durationSeconds: 4320, appName: nil,
         trailingMicrophoneSilenceSeconds: nil,
-        microphoneSawAudio: nil
+        microphoneSawAudio: nil,
+        labels: nil,
+        diarizationFailure: nil
     )
     #expect(rendered.contains("duration: 72m\n"))
+}
+
+@Test func participantsAreWrittenWhenVoicesAreKnown() {
+    let transcript = [
+        Utterance(speaker: .voice("v1"), start: 3, end: 6, text: "привет"),
+        Utterance(speaker: .me, start: 11, end: 13, text: "привет и тебе"),
+        Utterance(speaker: .voice("v2"), start: 15, end: 18, text: "и вам"),
+    ]
+    let rendered = MeetingMarkdown.render(
+        transcript: transcript,
+        startedAt: started,
+        durationSeconds: 254,
+        appName: "Телемост",
+        trailingMicrophoneSilenceSeconds: nil,
+        microphoneSawAudio: nil,
+        labels: SpeakerLabels.make(transcript: transcript, names: ["v1": "Настя"]),
+        diarizationFailure: nil
+    )
+    #expect(rendered.contains("participants: [Я, Настя, Собеседник 2]\n"))
+    #expect(rendered.contains("[00:00:03] Настя: привет\n"))
+    #expect(rendered.contains("[00:00:15] Собеседник 2: и вам\n"))
+}
+
+// A name with a comma or a bracket would break the list for anything that re-reads the file,
+// and this value comes from whatever the owner typed.
+@Test func awkwardNamesAreQuotedInTheList() {
+    let transcript = [Utterance(speaker: .voice("v1"), start: 0, end: 1, text: "…")]
+    let rendered = MeetingMarkdown.render(
+        transcript: transcript,
+        startedAt: started, durationSeconds: 60, appName: nil,
+        trailingMicrophoneSilenceSeconds: nil, microphoneSawAudio: nil,
+        labels: SpeakerLabels.make(transcript: transcript, names: ["v1": "Настя, она же Настасья"]),
+        diarizationFailure: nil
+    )
+    #expect(rendered.contains("participants: [\"Настя, она же Настасья\"]\n"))
+}
+
+// A refusal is named in the file that outlives everything, exactly as a refused cleanup is
+// named on the panel: the silence about it would be the defect.
+@Test func aRefusedDiarizationIsNamedAndClaimsNoParticipants() {
+    let rendered = MeetingMarkdown.render(
+        transcript: [Utterance(speaker: .voice("v1"), start: 0, end: 1, text: "…")],
+        startedAt: started, durationSeconds: 60, appName: nil,
+        trailingMicrophoneSilenceSeconds: nil, microphoneSawAudio: nil,
+        labels: nil,
+        diarizationFailure: "модель диаризации недоступна"
+    )
+    #expect(!rendered.contains("participants:"))
+    #expect(rendered.contains("speakers: \"не размечено — модель диаризации недоступна\"\n"))
+    #expect(rendered.contains("[00:00:00] Собеседник: …\n"))
+}
+
+@Test func withoutLabelsAndWithoutFailureTheFileIsAsPhase2bWroteIt() {
+    let rendered = MeetingMarkdown.render(
+        transcript: [Utterance(speaker: .voice("v1"), start: 0, end: 1, text: "…")],
+        startedAt: started, durationSeconds: 60, appName: nil,
+        trailingMicrophoneSilenceSeconds: nil, microphoneSawAudio: nil,
+        labels: nil, diarizationFailure: nil
+    )
+    #expect(!rendered.contains("participants:"))
+    #expect(!rendered.contains("speakers:"))
+    #expect(rendered.contains("[00:00:00] Собеседник: …\n"))
 }

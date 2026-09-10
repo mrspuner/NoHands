@@ -305,7 +305,12 @@ public actor MeetingQueue {
             // says. No threshold of its own, and no default — `nil`, a folder recorded before
             // this was measured, is a third answer the renderer needs to see rather than a
             // missing value to fill in here.
-            microphoneSawAudio: metadata.microphoneSawAudio
+            microphoneSawAudio: metadata.microphoneSawAudio,
+            // Task 6 fills these in from the diarizer's output. Until then this queue keeps
+            // writing the file exactly as phase 2б did — one unnamed «Собеседник», no
+            // `participants` line.
+            labels: nil,
+            diarizationFailure: nil
         )
         try Data(markdown.utf8).write(to: transcript)
 

@@ -20,4 +20,14 @@ public enum Frontmatter {
             .replacingOccurrences(of: "\"", with: "\\\"")
         return "\"\(escaped)\""
     }
+
+    /// A value inside a `[a, b]` list. Quoted only when it has to be: a plain name reads better
+    /// unquoted, and a name with a comma, a bracket or a quote in it would otherwise break the
+    /// list for everything that re-reads the file — including this application's own pass over
+    /// the archive.
+    public static func listValue(_ value: String) -> String {
+        let plain = value.rangeOfCharacter(from: CharacterSet(charactersIn: ",[]\"\\:#")) == nil
+            && !value.hasPrefix(" ") && !value.hasSuffix(" ") && !value.isEmpty
+        return plain ? value : quoted(value)
+    }
 }
