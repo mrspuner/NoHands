@@ -39,6 +39,14 @@ nohands meeting summarize <файл встречи.md>
     Печатает по каждому решению долю совпадения цитаты и таймкод — инструмент
     подбора порога quoteMatchRatio. Первый запуск дольше: модель грузится 15 с.
     Не запускать одновременно с приложением: две модели в память не поместятся.
+
+nohands meeting diarize <папка встречи> [--threshold 0.NN] [--write]
+    Размечает голоса на дорожке собеседников заново. Читает сжатые дорожки (.m4a)
+    так же, как сырые (.wav) — можно разбирать любую встречу архива, а не только
+    ту, чьи дорожки ещё не сжаты. По умолчанию только печатает число голосов,
+    их речь в секундах и косинус между каждой парой — инструмент подбора порога
+    voiceMatchThreshold. --write переписывает транскрипт файла и базу отпечатков;
+    без него архив не трогается.
 """
 
 func fail(_ message: String) -> Never {
@@ -109,6 +117,8 @@ struct NoHands {
                     try await runMeetingLevels(parsed.path)
                 case .summarize:
                     try await runMeetingSummarize(parsed.path)
+                case .diarize:
+                    try await runMeetingDiarize(parsed.path, threshold: parsed.threshold, write: parsed.write)
                 }
             default:
                 fail("Неизвестная команда: \(command)\n\n\(usage)")

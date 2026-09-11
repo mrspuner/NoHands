@@ -155,3 +155,127 @@ func runMeetingSummarize(_ file: URL) async throws {
     try Data(updated.utf8).write(to: file, options: .atomic)
     note("записано: \(file.path)")
 }
+
+/// `nohands meeting diarize` — labels the voices on the interlocutor track.
+///
+/// Reads compressed tracks too: both Parakeet and the diarizer open the file through
+/// `AVAudioFile`. That is what makes this a tuning tool at all — any meeting in the archive can
+/// be labelled, not only the one whose raw tracks have not been deleted yet.
+///
+/// Prints only, by default. Tuning a threshold against an archive the tool itself rewrites is
+/// impossible: the first bad attempt would destroy the very thing being compared against.
+func runMeetingDiarize(_ folder: URL, threshold: Double?, write: Bool) async throws {
+    var config = try MeetingsConfig.loadOrCreate()
+    if let threshold { config.voiceMatchThreshold = threshold }
+    let language = (try? DictationConfig.loadOrCreate())?.language
+
+    let system = trackURL(in: folder, named: MeetingAudioRecorder.systemFileName)
+    guard let system else {
+        fail("В папке нет дорожки собеседников — ни system.wav, ни system.m4a")
+    }
+
+    let diarizer = try await FluidDiarizer.load()
+    let voices = VoiceClustering.voices(
+        from: try await diarizer.segments(of: system),
+        threshold: Float(config.voiceMatchThreshold)
+    )
+    note("порог: \(config.voiceMatchThreshold), голосов: \(voices.count)")
+
+    let store = VoiceStore()
+    var book = try await store.book()
+    for voice in voices {
+        let known = book.match(voice.print, threshold: Float(config.voiceMatchThreshold))
+        let name = known.flatMap(\.name) ?? (known == nil ? "новый голос" : "без имени")
+        note(
+            String(
+                format: "  %@: %.0f с речи, %d сегментов — %@",
+                voice.id, voice.speechSeconds, voice.segments.count, name
+            )
+        )
+    }
+    // Cosines between every pair of this meeting's voices: the number the threshold is
+    // actually chosen from.
+    for (index, left) in voices.enumerated() {
+        for right in voices[(index + 1)...] {
+            note(
+                String(
+                    format: "  %@ ~ %@: %.3f", left.id, right.id,
+                    VoicePrint.cosine(left.print, right.print)
+                )
+            )
+        }
+    }
+
+    guard write else {
+        note("ничего не записано — добавьте --write, чтобы переписать транскрипт и базу")
+        return
+    }
+
+    let transcriber = try await ParakeetTranscriber.load(language: language)
+    let words = try await transcriber.transcribeTimed(audio: system)
+    let resolution = MeetingVoices.resolve(
+        voices: voices, meeting: folder.lastPathComponent, book: &book, config: config
+    )
+    let theirs = Utterance.split(
+        assigned: VoiceAssignment.assign(words: words, to: voices),
+        gap: config.phraseGapSeconds, maxLength: config.maxPhraseSeconds
+    )
+
+    let microphone = trackURL(in: folder, named: MeetingAudioRecorder.microphoneFileName)
+    var mine: [Utterance] = []
+    if let microphone {
+        let all = Utterance.split(
+            words: try await transcriber.transcribeTimed(audio: microphone),
+            speaker: .me, gap: config.phraseGapSeconds, maxLength: config.maxPhraseSeconds
+        )
+        mine = try PhraseLevel.passing(all, thresholdDBFS: Float(config.micThresholdDBFS)) {
+            try PhraseLevel.peakDBFS(of: microphone, from: $0.start, to: $0.end)
+        }
+    }
+
+    let metadata = try MeetingMetadata.read(
+        from: folder.appendingPathComponent(MeetingMetadata.fileName)
+    )
+    let merged = MeetingTranscript.merge(
+        mine: mine, theirs: theirs,
+        microphoneStartedAt: metadata.microphoneStartedAt,
+        systemStartedAt: metadata.systemStartedAt
+    )
+    let labels = SpeakerLabels.make(transcript: merged, names: resolution.names)
+
+    let file = MeetingFolder.archiveURL.appendingPathComponent(folder.lastPathComponent + ".md")
+    let existing = try String(contentsOf: file, encoding: .utf8)
+    let updated = try TranscriptSection.replace(
+        in: existing,
+        transcript: merged,
+        labels: labels,
+        named: file.lastPathComponent
+    )
+    try Data(updated.utf8).write(to: file, options: .atomic)
+
+    // The same rows the queue writes, by the same rule: positions come from the file's own
+    // header, not from the diarizer's voice list — otherwise the archive pass would read an
+    // untouched file as a rename.
+    book.record(
+        MeetingLabels(
+            file: file.lastPathComponent,
+            labels: labels.order.enumerated().map { position, voice in
+                MeetingLabels.Label(
+                    position: position + 1,
+                    voiceId: resolution.identities[voice],
+                    renderedName: labels.label(for: .voice(voice))
+                )
+            }
+        )
+    )
+    try await store.save(book)
+    note("переписано: \(file.lastPathComponent), участников \(labels.participants.count)")
+}
+
+/// The raw track, or the compressed one when the raw copy is already gone.
+private func trackURL(in folder: URL, named name: String) -> URL? {
+    let raw = folder.appendingPathComponent(name)
+    if FileManager.default.fileExists(atPath: raw.path) { return raw }
+    let compressed = raw.deletingPathExtension().appendingPathExtension("m4a")
+    return FileManager.default.fileExists(atPath: compressed.path) ? compressed : nil
+}

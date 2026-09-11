@@ -36,3 +36,26 @@ import Testing
         try MeetingArguments.parse(["meeting", "process"])
     }
 }
+
+@Test func diarizeIsParsed() throws {
+    let arguments = try MeetingArguments.parse(["meeting", "diarize", "/tmp/встреча"])
+    #expect(arguments.subcommand == .diarize)
+    #expect(arguments.threshold == nil)
+    #expect(arguments.write == false)
+}
+
+@Test func theThresholdAndTheWriteFlagAreParsed() throws {
+    let arguments = try MeetingArguments.parse(
+        ["meeting", "diarize", "/tmp/встреча", "--threshold", "0.75", "--write"]
+    )
+    #expect(arguments.threshold == 0.75)
+    #expect(arguments.write)
+}
+
+// A threshold that is not a number would otherwise silently become the default, and the whole
+// point of the command is to see what a particular number does.
+@Test func aBadThresholdIsRefused() {
+    #expect(throws: MeetingArguments.ParseError.self) {
+        try MeetingArguments.parse(["meeting", "diarize", "/tmp/встреча", "--threshold", "почти"])
+    }
+}
