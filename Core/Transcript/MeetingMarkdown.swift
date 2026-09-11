@@ -55,14 +55,6 @@ public enum MeetingMarkdown {
         lines.append("started: \(format(startedAt, as: "HH:mm"))")
         lines.append("duration: \(minutes(durationSeconds))m")
         if let appName { lines.append("app: \(Frontmatter.quoted(appName))") }
-        if let silence = trailingMicrophoneSilenceSeconds, silence > 0 {
-            // Quoted and escaped like `app`, though nothing here comes from outside: the value is
-            // a Russian sentence with a colon's worth of punctuation in it, and the front matter
-            // has one rule for values rather than one per key.
-            lines.append(
-                "microphone: \(Frontmatter.quoted(microphone(silence, sawAudio: microphoneSawAudio)))"
-            )
-        }
         // Written only when the voices are actually known. A list on a meeting where diarization
         // failed would claim knowledge the file does not have — the same rule that kept
         // `participants` out of phase 2б entirely.
@@ -72,6 +64,14 @@ public enum MeetingMarkdown {
         }
         if let diarizationFailure {
             lines.append("speakers: \(Frontmatter.quoted("не размечено — \(diarizationFailure)"))")
+        }
+        if let silence = trailingMicrophoneSilenceSeconds, silence > 0 {
+            // Quoted and escaped like `app`, though nothing here comes from outside: the value is
+            // a Russian sentence with a colon's worth of punctuation in it, and the front matter
+            // has one rule for values rather than one per key.
+            lines.append(
+                "microphone: \(Frontmatter.quoted(microphone(silence, sawAudio: microphoneSawAudio)))"
+            )
         }
         lines.append("---")
         lines.append("")
