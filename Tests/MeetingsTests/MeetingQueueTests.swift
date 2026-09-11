@@ -10,9 +10,17 @@ private struct StubTranscriber: TimedTranscriber {
     /// Text, not `any Error`: a field of type `any Error` is not `Sendable`, and Swift 6 would
     /// refuse to accept this `TimedTranscriber` stub.
     var failureMessage: String?
+    /// Runs right before the microphone track's words are returned — the queue transcribes the
+    /// interlocutors' track, runs diarization, and only afterwards transcribes this one, so a
+    /// side effect landed here lets a test put a write inside the window between diarization and
+    /// the queue's own label-building, exactly where a concurrent naming pass would land one.
+    var onMicrophoneTranscribed: (@Sendable () async throws -> Void)?
 
     func transcribeTimed(audio url: URL) async throws -> [TimedWord] {
         if let failureMessage { throw TranscriptionError.modelUnavailable(failureMessage) }
+        if url.lastPathComponent == "mic.wav", let onMicrophoneTranscribed {
+            try await onMicrophoneTranscribed()
+        }
         return words[url.lastPathComponent] ?? []
     }
 }
@@ -592,6 +600,54 @@ private struct NoSpeechDiarizer: Diarizing {
     #expect(text.contains("] Настя: привет"))
     // One person, not two: the second meeting joined the voice it recognised.
     #expect(try await store.book().voices.count == 1)
+}
+
+// The book is read for names as late as `process` can manage — right before the label a reader
+// will actually see is decided, after both tracks are transcribed — precisely so that a name a
+// naming pass writes while this meeting is still being transcribed is not silently missed. Here
+// the write lands from inside the microphone track's own transcription: strictly after
+// diarization has already produced `voices`, and strictly before the label-building step that
+// follows both tracks. Before this fix the book was read right after diarization, well before
+// the microphone track's transcription even started, so a write landing here would have been
+// invisible to it.
+@Test func aNameWrittenWhileTheMeetingIsStillProcessingIsPickedUp() async throws {
+    let fixture = try makeMeetingFolder()
+    defer { try? FileManager.default.removeItem(at: fixture.archive) }
+    let store = VoiceStore(url: fixture.archive.appendingPathComponent(".voices.json"))
+
+    // The voice is already in the book, matching the diarizer's embedding below, but unnamed —
+    // exactly what a not-yet-run naming pass leaves behind.
+    var seed = VoiceBook.empty
+    let voiceId = seed.remember(
+        VoicePrint(vector: [1, 0]), meeting: "previous", seconds: 60, as: nil, maxPrints: 10
+    )
+    try await store.save(seed)
+
+    let diarizer = FakeDiarizer(found: [
+        VoiceSegment(cluster: "S1", start: 0, end: 40, embedding: [1, 0])
+    ])
+    let transcriber = StubTranscriber(
+        words: [
+            "system.wav": [word("привет", 3)],
+            "mic.wav": [word("здравствуйте", 11)],
+        ],
+        onMicrophoneTranscribed: {
+            try await store.mutate { book in book.rename(voiceId, to: "Настя") }
+        }
+    )
+    let box = OutcomeBox()
+    let queue = makeQueue(
+        fixture, transcriber: transcriber, diarizer: diarizer, store: store
+    ) { box.append($0) }
+
+    await queue.enqueue(fixture.folder)
+
+    let text = try String(
+        contentsOf: fixture.archive.appendingPathComponent("2026-09-04-1053-telemost.md"),
+        encoding: .utf8
+    )
+    #expect(text.contains("] Настя: привет"))
+    #expect(box.all.first?.failure == nil)
 }
 
 /// Collects outcomes: `report` is called from an actor, and the check happens outside it.

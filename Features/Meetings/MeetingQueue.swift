@@ -269,13 +269,6 @@ public actor MeetingQueue {
         // exactly as phase 2б's single nameless voice did.
         var voices: [MeetingVoice] = []
         var diarizationOutcome: DiarizationOutcome = .none
-        // Names and cross-meeting identities, bundled as `MeetingVoices` already returns them
-        // rather than split into two locals carried separately to the two places that read them.
-        var resolution: MeetingVoices.Resolution?
-        // Held until the markdown is safely written: the book is saved once, at the end, so a
-        // failure between the two never leaves fingerprints recorded for a meeting that has no
-        // file.
-        var updatedBook: VoiceBook?
 
         // Reuses `tracks`, computed above, instead of asking the file system the same question
         // again — see the comment on `states` above about why the raw/compressed distinction is
@@ -305,30 +298,10 @@ public actor MeetingQueue {
                         diarizationOutcome = .failure(error.localizedDescription)
                     }
                 }
-
-                // Separated from the diarizer's own do/catch above: splitting the voices within
-                // one meeting needs no book at all, only the clustering just computed. The book
-                // supplies exclusively names and cross-meeting memory, so a book that will not
-                // parse must cost only those — never the split diarization already found. A
-                // meeting labelled «Собеседник 1 / Собеседник 2» with no names is exactly the
-                // truth in that case. The owner still learns the book is broken, through Task 7's
-                // archive pass reporting it against every later meeting — not through this file,
-                // which would otherwise blame diarization for a storage fault.
-                if !voices.isEmpty {
-                    do {
-                        var book = try await voiceStore.book()
-                        resolution = MeetingVoices.resolve(
-                            voices: voices,
-                            meeting: folder.lastPathComponent,
-                            book: &book,
-                            config: config
-                        )
-                        updatedBook = book
-                    } catch {
-                        resolution = nil
-                        updatedBook = nil
-                    }
-                }
+                // The book itself is read later, as close as this function can manage to the
+                // point where a name actually matters — see the comment above
+                // `SpeakerLabels.make` below for why, and for what that read does and does not
+                // touch.
             }
             theirs = Utterance.split(
                 assigned: VoiceAssignment.assign(words: words, to: voices),
@@ -384,9 +357,28 @@ public actor MeetingQueue {
         // entries returns an empty `order`, which the two `!labels.order.isEmpty` guards below
         // already treat as "nothing to say" — so neither is checked again here.
         if case .none = diarizationOutcome, config.diarizationEnabled, !voices.isEmpty {
-            diarizationOutcome = .labels(
-                SpeakerLabels.make(transcript: merged, names: resolution?.names ?? [:])
-            )
+            // Read as late as this function can manage — right before the name a reader will
+            // actually see is decided, and after both tracks are already transcribed — so the
+            // window in which a rename landed elsewhere and was missed is as small as it can be
+            // made. Against a throwaway copy: this read must not itself change anything, because
+            // the real update, below, once the file is safely written, resolves again against
+            // whatever the book holds at that later moment rather than against this snapshot.
+            var names: [String: String] = [:]
+            do {
+                var throwaway = try await voiceStore.book()
+                names = MeetingVoices.resolve(
+                    voices: voices,
+                    meeting: folder.lastPathComponent,
+                    book: &throwaway,
+                    config: config
+                ).names
+            } catch {
+                // Same rule as the diarizer's own do/catch above: a book that will not parse
+                // costs only names and cross-meeting memory, never the split diarization already
+                // found. A meeting labelled «Собеседник 1 / Собеседник 2» with no names is
+                // exactly the truth in that case.
+            }
+            diarizationOutcome = .labels(SpeakerLabels.make(transcript: merged, names: names))
         }
 
         let duration = try tracks.map { try AudioDuration.seconds(of: $0) }.max() ?? 0
@@ -432,16 +424,39 @@ public actor MeetingQueue {
         // to a neighbour has no line in the transcript and no position in the header. Numbering
         // rows from the diarizer's list would shift every position after it by one, and the
         // archive pass would then read an untouched file as a rename.
-        if var book = updatedBook, let labels, !labels.order.isEmpty {
-            let rows = labels.order.enumerated().map { position, voice in
-                MeetingLabels.Label(
-                    position: position + 1,
-                    voiceId: resolution?.identities[voice],
-                    renderedName: labels.label(for: .voice(voice))
-                )
+        //
+        // Resolved a second time here rather than reusing the names read above, and inside one
+        // `mutate` call rather than a separate read and save: this is the only point at which the
+        // book is actually changed, and it has to land on whatever the book holds right now, not
+        // on the snapshot the names above were read from — a naming pass that ran while this
+        // meeting was transcribing must not have its own write silently overwritten by a save of
+        // stale state. `renderedName` still comes from `labels` regardless of what this second
+        // resolve finds, so the row always agrees with the file this meeting actually wrote, even
+        // if the book moved between the two resolves.
+        if config.diarizationEnabled, !voices.isEmpty, let labels, !labels.order.isEmpty {
+            do {
+                try await voiceStore.mutate { book in
+                    let resolution = MeetingVoices.resolve(
+                        voices: voices,
+                        meeting: folder.lastPathComponent,
+                        book: &book,
+                        config: config
+                    )
+                    let rows = labels.order.enumerated().map { position, voice in
+                        MeetingLabels.Label(
+                            position: position + 1,
+                            voiceId: resolution.identities[voice],
+                            renderedName: labels.label(for: .voice(voice))
+                        )
+                    }
+                    book.record(MeetingLabels(file: transcript.lastPathComponent, labels: rows))
+                }
+            } catch {
+                // Never fatal to the meeting, for the same reason the diarizer's own failure
+                // isn't: the file above already exists and is correct. A broken book costs this
+                // meeting's fingerprints, not the meeting itself — the archive pass reports the
+                // broken book against later meetings instead of this one.
             }
-            book.record(MeetingLabels(file: transcript.lastPathComponent, labels: rows))
-            try? await voiceStore.save(book)
         }
 
         // Compress everything before deleting anything. Interleaving the two would mean a

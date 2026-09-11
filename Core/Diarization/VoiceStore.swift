@@ -41,4 +41,25 @@ public actor VoiceStore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(book).write(to: url, options: .atomic)
     }
+
+    /// Reads the book, lets `body` change it, and saves the result — with no suspension point
+    /// anywhere in between, so nothing else running on this actor can interleave a read or a
+    /// write of its own inside the span.
+    ///
+    /// This is the fix for a defect `book()`/`save(_:)` as two separate calls could not close:
+    /// each call by itself is serialized by the actor, but a caller doing "read, change, save"
+    /// across two calls is not — a second writer's save landing in that gap is silently
+    /// discarded by this caller's own save, or the other way round. Two writers share one
+    /// `VoiceStore` instance for exactly this reason; only a genuinely atomic read-modify-write
+    /// makes that sharing worth anything.
+    ///
+    /// - Throws: whatever `book()` throws — a corrupt book still refuses rather than being
+    ///   replaced, see `book()` — or whatever `body` throws. Either way, nothing is saved.
+    @discardableResult
+    public func mutate<T>(_ body: (inout VoiceBook) throws -> T) throws -> T {
+        var book = try book()
+        let result = try body(&book)
+        try save(book)
+        return result
+    }
 }
