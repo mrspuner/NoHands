@@ -381,3 +381,83 @@ private final class NamingBox: @unchecked Sendable {
     #expect(try await archive.store.book().name(of: archive.voices[0]) == nil)
     #expect(box.all.first?.failure != nil)
 }
+
+// A swap is its own inverse: reapplying the same mapping to text that already carries the new
+// names swaps them straight back. Every other rename shape is idempotent here for free — the old
+// label is simply absent from the text on a second pass — which is exactly why this shape is the
+// one worth pinning: a regression that makes the pass reconsider a file it has already finished
+// would surface here first.
+@Test func aSwapAppliedTwiceInARowIsStable() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("sn-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let file = root.appendingPathComponent("2026-09-09-0941-telemost.md")
+    let text = """
+        ---
+        date: 2026-09-09
+        participants: [Пётр, Настя]
+        ---
+
+        ## Транскрипт
+        [00:00:03] Настя: привет
+        [00:00:20] Пётр: и тебе
+
+        """
+    try Data(text.utf8).write(to: file)
+
+    let store = VoiceStore(url: root.appendingPathComponent(".voices.json"))
+    var book = VoiceBook.empty
+    let v1 = book.remember(VoicePrint(vector: [1, 0]), meeting: "m", seconds: 120, as: nil, maxPrints: 10)
+    let v2 = book.remember(VoicePrint(vector: [0, 1]), meeting: "m", seconds: 120, as: nil, maxPrints: 10)
+    book.rename(v1, to: "Настя")
+    book.rename(v2, to: "Пётр")
+    book.record(
+        MeetingLabels(
+            file: file.lastPathComponent,
+            labels: [
+                MeetingLabels.Label(position: 1, voiceId: v1, renderedName: "Настя"),
+                MeetingLabels.Label(position: 2, voiceId: v2, renderedName: "Пётр"),
+            ]
+        )
+    )
+    try await store.save(book)
+
+    await SpeakerNaming(archive: root, store: store) { _ in }.scanArchive()
+    let afterFirstPass = try Data(contentsOf: file)
+    let bookAfterFirstPass = try await store.book()
+
+    // A second pass, over the same archive, with nothing changed by hand in between — the
+    // ordinary case of the pass simply running again, at the next launch or the next meeting.
+    await SpeakerNaming(archive: root, store: store) { _ in }.scanArchive()
+
+    #expect(try Data(contentsOf: file) == afterFirstPass)
+    #expect(try await store.book() == bookAfterFirstPass)
+}
+
+// Saving after every file rather than once at the end (Finding A) is what keeps an already
+// renamed file's row durable regardless of what happens to any other file in the same pass —
+// but a save can still fail on its own, and that failure must not vanish. `chflags`'s
+// user-immutable bit blocks both a direct write and the temp-file rename `.atomic` performs
+// underneath, without needing elevated privileges — a reliable way to force `VoiceStore.save`
+// to throw without racing real timing.
+@Test func aFailedBookSaveIsReportedRatherThanSwallowed() async throws {
+    let archive = try await makeArchive(
+        header: "participants: [Я, Настя]",
+        replies: ["[00:00:03] Собеседник 1: привет", "[00:00:11] Я: привет и тебе"],
+        labelNames: ["Собеседник 1"]
+    )
+    let bookPath = archive.root.appendingPathComponent(".voices.json").path
+    try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: bookPath)
+    defer {
+        try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: bookPath)
+        try? FileManager.default.removeItem(at: archive.root)
+    }
+    let box = NamingBox()
+
+    await naming(archive, box).scanArchive()
+
+    // The transcript write has nothing to do with the book file, so it still succeeds.
+    let text = try String(contentsOf: archive.file, encoding: .utf8)
+    #expect(text.contains("[00:00:03] Настя: привет"))
+    #expect(box.all.first?.failure != nil)
+}

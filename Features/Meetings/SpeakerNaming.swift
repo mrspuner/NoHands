@@ -56,7 +56,6 @@ public actor SpeakerNaming {
             return
         }
 
-        var changed = false
         for file in files() {
             guard let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
             // Somebody else's note in this Obsidian folder has no row in the book at all, and is
@@ -175,16 +174,36 @@ public actor SpeakerNaming {
             do {
                 try Data(updated.utf8).write(to: file, options: .atomic)
                 book = fileBook
-                changed = true
-                report(Outcome(file: file.lastPathComponent, named: named, failure: nil))
             } catch {
                 report(
                     Outcome(file: file.lastPathComponent, named: [], failure: error.localizedDescription)
                 )
+                continue
+            }
+
+            // Saved right after this one file, rather than once for the whole pass: a swap is
+            // its own inverse, so a book that falls behind an already-renamed file does not just
+            // sit stale — the next pass rebuilds the very same mapping and applies it to text
+            // that already shows the new names, swapping them straight back. Saving file by file
+            // keeps every already-written file's row durable before the next one is even read,
+            // so an interruption anywhere in the pass leaves a consistent prefix behind rather
+            // than a whole pass whose bookkeeping never landed.
+            do {
+                try await store.save(book)
+                report(Outcome(file: file.lastPathComponent, named: named, failure: nil))
+            } catch {
+                // The label changed on disk, but the book does not know it — the same divergence
+                // Finding A guards against, arriving through a live failure instead of a lost
+                // one. Named here rather than swallowed, because nothing else will ever say so.
+                report(
+                    Outcome(
+                        file: file.lastPathComponent, named: [],
+                        failure: "Метка переименована в файле, но книга голосов не сохранена: "
+                            + error.localizedDescription
+                    )
+                )
             }
         }
-
-        if changed { try? await store.save(book) }
     }
 
     /// A typed name that would break the very thing it is meant to fix — checked against every
