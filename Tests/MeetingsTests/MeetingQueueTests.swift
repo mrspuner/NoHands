@@ -89,12 +89,13 @@ private func makeQueue(
     level: @escaping @Sendable (URL, TimeInterval, TimeInterval) throws -> Float = { _, _, _ in 0 },
     diarizer: any Diarizing = FakeDiarizer(),
     store: VoiceStore? = nil,
+    config: MeetingsConfig = .default,
     outcomes: @escaping @Sendable (MeetingQueue.Outcome) -> Void
 ) -> MeetingQueue {
     MeetingQueue(
         queue: fixture.queue,
         archive: fixture.archive,
-        config: .default,
+        config: config,
         makeTranscriber: { transcriber },
         makeDiarizer: { diarizer },
         voiceStore: store ?? VoiceStore(url: fixture.archive.appendingPathComponent(".voices.json")),
@@ -351,6 +352,112 @@ private func makeQueue(
     #expect(book.labels(for: "2026-09-04-1053-telemost.md")?.labels.count == 2)
 }
 
+// A regression that swaps `labels.order.enumerated()` for `voices.enumerated()` at the book-row
+// site would leave `twoVoicesEndUpInTheHeaderAndInTheLabels` green, because there every voice has
+// a line in the transcript and the two collections coincide. Here only S1 ever speaks: the header
+// and the book must agree on one voice, not two.
+@Test func meetingRowsComeFromTheHeaderNotFromTheDiarizersVoiceList() async throws {
+    let fixture = try makeMeetingFolder()
+    defer { try? FileManager.default.removeItem(at: fixture.archive) }
+    let transcriber = StubTranscriber(words: [
+        "system.wav": [word("привет", 0), word("здравствуйте", 3)],
+        "mic.wav": [],
+    ])
+    let diarizer = FakeDiarizer(found: [
+        VoiceSegment(cluster: "S1", start: 0, end: 40, embedding: [1, 0]),
+        VoiceSegment(cluster: "S2", start: 45, end: 90, embedding: [0, 1]),
+    ])
+    let store = VoiceStore(url: fixture.archive.appendingPathComponent(".voices.json"))
+    let box = OutcomeBox()
+    let queue = makeQueue(
+        fixture, transcriber: transcriber, diarizer: diarizer, store: store
+    ) { box.append($0) }
+
+    await queue.enqueue(fixture.folder)
+
+    let text = try String(
+        contentsOf: fixture.archive.appendingPathComponent("2026-09-04-1053-telemost.md"),
+        encoding: .utf8
+    )
+    // Both words fall inside S1's span, so S2 never appears in the transcript — a single unnamed
+    // voice keeps the bare word, exactly as `SpeakerLabels.label` documents.
+    #expect(text.contains("participants: [Собеседник]\n"))
+
+    let book = try await store.book()
+    // Both voices were long enough to remember — the clustering found two people.
+    #expect(book.voices.count == 2)
+    // But only one of them has a line in this file, so only one row belongs to it.
+    #expect(book.labels(for: "2026-09-04-1053-telemost.md")?.labels.count == 1)
+}
+
+// `FakeDiarizer()` defaults to `found: []` — a successful run that simply separated nobody, not
+// a refusal. Every pre-existing test above that used the default silently took this path, which
+// is why a bug here would not have broken the suite: the meeting must come out exactly as phase
+// 2б wrote it, because nothing about the voices was in fact learned.
+@Test func anEmptyDiarizationResultProducesThePhase2bFile() async throws {
+    let fixture = try makeMeetingFolder()
+    defer { try? FileManager.default.removeItem(at: fixture.archive) }
+    let transcriber = StubTranscriber(words: [
+        "system.wav": [word("привет", 3)],
+        "mic.wav": [word("здравствуйте", 11)],
+    ])
+    let store = VoiceStore(url: fixture.archive.appendingPathComponent(".voices.json"))
+    let box = OutcomeBox()
+    let queue = makeQueue(
+        fixture, transcriber: transcriber, diarizer: FakeDiarizer(), store: store
+    ) { box.append($0) }
+
+    await queue.enqueue(fixture.folder)
+
+    let text = try String(
+        contentsOf: fixture.archive.appendingPathComponent("2026-09-04-1053-telemost.md"),
+        encoding: .utf8
+    )
+    #expect(!text.contains("participants:"))
+    #expect(!text.contains("speakers:"))
+    #expect(text.contains("] Собеседник: привет"))
+    #expect(text.contains("] Я: здравствуйте"))
+    #expect(box.all.first?.failure == nil)
+
+    let book = try await store.book()
+    #expect(book.voices.isEmpty)
+    #expect(book.labels(for: "2026-09-04-1053-telemost.md") == nil)
+}
+
+// Removing `config.diarizationEnabled` from the header-building condition would leave this test
+// green too if `voices` were still populated from a diarizer call the switch is meant to skip —
+// so the diarizer here does find voices, and the assertion is that they never reach the file.
+@Test func diarizationDisabledWritesThePhase2bFileEvenWithVoicesAvailable() async throws {
+    let fixture = try makeMeetingFolder()
+    defer { try? FileManager.default.removeItem(at: fixture.archive) }
+    let transcriber = StubTranscriber(words: [
+        "system.wav": [word("привет", 0), word("здравствуйте", 50)],
+        "mic.wav": [],
+    ])
+    let diarizer = FakeDiarizer(found: [
+        VoiceSegment(cluster: "S1", start: 0, end: 40, embedding: [1, 0]),
+        VoiceSegment(cluster: "S2", start: 45, end: 90, embedding: [0, 1]),
+    ])
+    var config = MeetingsConfig.default
+    config.diarizationEnabled = false
+    let box = OutcomeBox()
+    let queue = makeQueue(
+        fixture, transcriber: transcriber, diarizer: diarizer, config: config
+    ) { box.append($0) }
+
+    await queue.enqueue(fixture.folder)
+
+    let text = try String(
+        contentsOf: fixture.archive.appendingPathComponent("2026-09-04-1053-telemost.md"),
+        encoding: .utf8
+    )
+    #expect(!text.contains("participants:"))
+    #expect(!text.contains("speakers:"))
+    #expect(text.contains("] Собеседник: привет"))
+    #expect(text.contains("] Собеседник: здравствуйте"))
+    #expect(box.all.first?.failure == nil)
+}
+
 // The whole reason the failure is caught inside the step: a thrown error here would mark the
 // folder failed, and the retry would find the tracks compressed and refuse for ever. A missing
 // 21 MB model must not cost a meeting.
@@ -385,6 +492,41 @@ private func makeQueue(
     }
 }
 
+// A book that will not parse costs only names and cross-meeting memory, never the split
+// diarization already produced on this one meeting — that split needs no book at all. The owner
+// still learns the book is broken, through Task 7's archive pass, not through a `speakers:` line
+// here that would wrongly blame diarization for a storage fault in a file that outlives the audio
+// by years.
+@Test func aCorruptBookNeverCostsTheSplitAlreadyFound() async throws {
+    let fixture = try makeMeetingFolder()
+    defer { try? FileManager.default.removeItem(at: fixture.archive) }
+    let transcriber = StubTranscriber(words: [
+        "system.wav": [word("привет", 0), word("здравствуйте", 50)],
+        "mic.wav": [],
+    ])
+    let diarizer = FakeDiarizer(found: [
+        VoiceSegment(cluster: "S1", start: 0, end: 40, embedding: [1, 0]),
+        VoiceSegment(cluster: "S2", start: 45, end: 90, embedding: [0, 1]),
+    ])
+    let storeURL = fixture.archive.appendingPathComponent(".voices.json")
+    try Data("не json".utf8).write(to: storeURL)
+    let store = VoiceStore(url: storeURL)
+    let box = OutcomeBox()
+    let queue = makeQueue(
+        fixture, transcriber: transcriber, diarizer: diarizer, store: store
+    ) { box.append($0) }
+
+    await queue.enqueue(fixture.folder)
+
+    let text = try String(
+        contentsOf: fixture.archive.appendingPathComponent("2026-09-04-1053-telemost.md"),
+        encoding: .utf8
+    )
+    #expect(text.contains("participants: [Собеседник 1, Собеседник 2]\n"))
+    #expect(!text.contains("speakers:"))
+    #expect(box.all.first?.failure == nil)
+}
+
 /// A track with no speech at all is a legitimate outcome — the interlocutors said nothing while
 /// the owner talked — not a broken model, so the file must say so in plain words rather than in
 /// the diarizer's own vocabulary for the case.
@@ -407,7 +549,7 @@ private struct NoSpeechDiarizer: Diarizing {
         contentsOf: fixture.archive.appendingPathComponent("2026-09-04-1053-telemost.md"),
         encoding: .utf8
     )
-    #expect(text.contains(#"speakers: "не размечено — на дорожке собеседников не найдено речи""#))
+    #expect(text.contains(#"speakers: "не размечено — диаризация не нашла речи на дорожке собеседников""#))
     #expect(!text.contains("participants:"))
     #expect(box.all.first?.failure == nil)
 }

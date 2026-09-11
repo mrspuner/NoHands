@@ -263,9 +263,15 @@ public actor MeetingQueue {
         let transcriber = try await resolveTranscriber()
 
         var theirs: [Utterance] = []
+        // Hoisted above the `if tracks.contains(system)` block that fills it in, because the
+        // label-building step below needs to know whether diarization actually found anyone —
+        // an empty result is a legitimate "nobody was separated", not a failure, and must read
+        // exactly as phase 2б's single nameless voice did.
+        var voices: [MeetingVoice] = []
         var diarizationOutcome: DiarizationOutcome = .none
-        var resolvedNames: [String: String] = [:]
-        var identities: [String: String] = [:]
+        // Names and cross-meeting identities, bundled as `MeetingVoices` already returns them
+        // rather than split into two locals carried separately to the two places that read them.
+        var resolution: MeetingVoices.Resolution?
         // Held until the markdown is safely written: the book is saved once, at the end, so a
         // failure between the two never leaves fingerprints recorded for a meeting that has no
         // file.
@@ -276,7 +282,6 @@ public actor MeetingQueue {
         // decided once, from the whole folder's shape.
         if tracks.contains(system) {
             let words = try await transcriber.transcribeTimed(audio: system)
-            var voices: [MeetingVoice] = []
             if config.diarizationEnabled {
                 do {
                     let diarizer = try await resolveDiarizer()
@@ -284,34 +289,45 @@ public actor MeetingQueue {
                         from: try await diarizer.segments(of: system),
                         threshold: Float(config.voiceMatchThreshold)
                     )
-                    var book = try await voiceStore.book()
-                    let resolution = MeetingVoices.resolve(
-                        voices: voices,
-                        meeting: folder.lastPathComponent,
-                        book: &book,
-                        config: config
-                    )
-                    resolvedNames = resolution.names
-                    identities = resolution.identities
-                    updatedBook = book
                 } catch {
                     // Never fatal to the meeting. A thrown error here would mark the folder
                     // failed, and its retry would find the tracks compressed and refuse for
-                    // ever — the meeting would be lost over a missing 21 MB model. A book that
-                    // does not parse arrives here too, and is likewise named rather than
-                    // overwritten.
+                    // ever — the meeting would be lost over a missing 21 MB model.
                     //
                     // `.noSpeech` is not a defect: the interlocutors' track can be legitimately
-                    // silent while the owner talked, and the file says so in the same words a
-                    // reader of the archive would use, rather than the model's own name for
-                    // itself.
+                    // silent while the owner talked. The sentence names the diarizer's own
+                    // finding rather than asserting a fact about the track — a claim that could
+                    // otherwise sit, permanently, directly above lines Parakeet did transcribe
+                    // on that same track.
                     if let diarizationError = error as? DiarizationError, diarizationError == .noSpeech {
-                        diarizationOutcome = .failure("на дорожке собеседников не найдено речи")
+                        diarizationOutcome = .failure("диаризация не нашла речи на дорожке собеседников")
                     } else {
                         diarizationOutcome = .failure(error.localizedDescription)
                     }
-                    voices = []
-                    updatedBook = nil
+                }
+
+                // Separated from the diarizer's own do/catch above: splitting the voices within
+                // one meeting needs no book at all, only the clustering just computed. The book
+                // supplies exclusively names and cross-meeting memory, so a book that will not
+                // parse must cost only those — never the split diarization already found. A
+                // meeting labelled «Собеседник 1 / Собеседник 2» with no names is exactly the
+                // truth in that case. The owner still learns the book is broken, through Task 7's
+                // archive pass reporting it against every later meeting — not through this file,
+                // which would otherwise blame diarization for a storage fault.
+                if !voices.isEmpty {
+                    do {
+                        var book = try await voiceStore.book()
+                        resolution = MeetingVoices.resolve(
+                            voices: voices,
+                            meeting: folder.lastPathComponent,
+                            book: &book,
+                            config: config
+                        )
+                        updatedBook = book
+                    } catch {
+                        resolution = nil
+                        updatedBook = nil
+                    }
                 }
             }
             theirs = Utterance.split(
@@ -360,9 +376,17 @@ public actor MeetingQueue {
         // Built from the merged transcript rather than from `voices`, because the order in the
         // header must be the order the reader meets people in the file — and that is decided by
         // the merge, which interleaves both tracks.
-        if case .none = diarizationOutcome, config.diarizationEnabled, !merged.isEmpty,
-            merged.contains(where: { if case .voice = $0.speaker { return true } else { return false } }) {
-            diarizationOutcome = .labels(SpeakerLabels.make(transcript: merged, names: resolvedNames))
+        //
+        // `!voices.isEmpty` is the guard that matters: an empty result is diarization succeeding
+        // at finding nobody, and must produce the same file phase 2б wrote — no `participants:`,
+        // replies read as plain «Собеседник». `merged` cannot be empty here (the guard above
+        // already threw otherwise), and `SpeakerLabels.make` on a transcript with no `.voice`
+        // entries returns an empty `order`, which the two `!labels.order.isEmpty` guards below
+        // already treat as "nothing to say" — so neither is checked again here.
+        if case .none = diarizationOutcome, config.diarizationEnabled, !voices.isEmpty {
+            diarizationOutcome = .labels(
+                SpeakerLabels.make(transcript: merged, names: resolution?.names ?? [:])
+            )
         }
 
         let duration = try tracks.map { try AudioDuration.seconds(of: $0) }.max() ?? 0
@@ -412,7 +436,7 @@ public actor MeetingQueue {
             let rows = labels.order.enumerated().map { position, voice in
                 MeetingLabels.Label(
                     position: position + 1,
-                    voiceId: identities[voice],
+                    voiceId: resolution?.identities[voice],
                     renderedName: labels.label(for: .voice(voice))
                 )
             }
@@ -466,6 +490,9 @@ public actor MeetingQueue {
     }
 
     private func resolveDiarizer() async throws -> any Diarizing {
+        // A failed load is not cached — same as `resolveTranscriber` — so the next folder in the
+        // drain retries it, which is what lets a transient failure (a model download that timed
+        // out, say) recover on its own without restarting the queue.
         if let diarizer { return diarizer }
         let made = try await makeDiarizer()
         diarizer = made
