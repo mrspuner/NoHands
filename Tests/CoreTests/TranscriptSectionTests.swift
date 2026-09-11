@@ -57,3 +57,69 @@ participants: [Я, Собеседник]
     #expect(updated.contains("date: 2026-09-01\n"))
     #expect(updated.contains("participants: [Собеседник]\n"))
 }
+
+// `labels: nil` is what the caller passes when the diarizer itself found no real voices — a
+// `SpeakerLabels` built from `VoiceAssignment`'s placeholder fallback would have a non-empty
+// `order` (`["v1"]`) even though nothing was actually diarized, and that is exactly the false
+// claim this parameter exists to refuse. No `participants:` line here to begin with, and none
+// should appear — but the transcript itself is still rewritten.
+@Test func noParticipantsLineIsAddedWhenThereAreNoRealVoices() throws {
+    let old = "---\ndate: 2026-09-01\n---\n\n## Транскрипт\n[00:00:01] Собеседник: раз\n"
+    let transcript = [Utterance(speaker: .voice("v1"), start: 1, end: 2, text: "два")]
+    let updated = try TranscriptSection.replace(
+        in: old, transcript: transcript, labels: nil, named: "тест.md"
+    )
+    #expect(!updated.contains("participants:"))
+    #expect(updated.contains("[00:00:01] Собеседник: два\n"))
+    #expect(!updated.contains("[00:00:01] Собеседник: раз\n"))
+}
+
+// The overwrite branch had no emptiness guard at all: a file already carrying a correct
+// `participants:` line from an earlier good run, re-diarized into finding no real voices, must
+// not have that line downgraded. That would be a permanent loss of knowledge from the archive —
+// strictly worse than the missing-line case above, which only ever under-claims.
+@Test func anExistingParticipantsLineSurvivesWhenThereAreNoRealVoices() throws {
+    let old = "---\ndate: 2026-09-09\nparticipants: [Я, Настя]\n---\n\n"
+        + "## Транскрипт\n[00:00:03] Настя: привет\n"
+    let transcript = [Utterance(speaker: .me, start: 1, end: 2, text: "привет заново")]
+    let updated = try TranscriptSection.replace(
+        in: old, transcript: transcript, labels: nil, named: "тест.md"
+    )
+    #expect(updated.contains("participants: [Я, Настя]\n"))
+    #expect(updated.contains("[00:00:01] Я: привет заново\n"))
+    #expect(!updated.contains("[00:00:03] Настя: привет\n"))
+}
+
+@Test func applyingReplaceTwiceIsIdempotent() throws {
+    let transcript = [
+        Utterance(speaker: .voice("v1"), start: 3, end: 5, text: "привет"),
+        Utterance(speaker: .voice("v2"), start: 7, end: 9, text: "и вам"),
+    ]
+    let labels = SpeakerLabels.make(transcript: transcript, names: [:])
+    let once = try TranscriptSection.replace(
+        in: file, transcript: transcript, labels: labels, named: "тест.md"
+    )
+    let twice = try TranscriptSection.replace(
+        in: once, transcript: transcript, labels: labels, named: "тест.md"
+    )
+    #expect(once == twice)
+    // No duplicated heading and no accumulated blank lines — either would still leave `once ==
+    // twice` false, but naming the failure mode here makes a broken run diagnosable at a glance.
+    #expect(twice.components(separatedBy: TranscriptIndex.heading).count == 2)
+    #expect(!twice.contains("\n\n\n"))
+}
+
+// `## Транскрипт` as the very first line: nothing above it to preserve, and nowhere sensible to
+// insert a `participants:` line — the front-matter-insertion branch requires a `---` first line,
+// which this file does not have.
+@Test func aFileWithNoFrontMatterKeepsTheHeadingFirst() throws {
+    let old = "## Транскрипт\n[00:00:01] Собеседник: раз\n"
+    let transcript = [Utterance(speaker: .voice("v1"), start: 1, end: 2, text: "два")]
+    let updated = try TranscriptSection.replace(
+        in: old, transcript: transcript,
+        labels: SpeakerLabels.make(transcript: transcript, names: [:]), named: "тест.md"
+    )
+    #expect(updated.hasPrefix("## Транскрипт"))
+    #expect(!updated.contains("participants:"))
+    #expect(updated.contains("[00:00:01] Собеседник: два\n"))
+}

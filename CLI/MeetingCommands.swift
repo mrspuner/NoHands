@@ -241,7 +241,15 @@ func runMeetingDiarize(_ folder: URL, threshold: Double?, write: Bool) async thr
         microphoneStartedAt: metadata.microphoneStartedAt,
         systemStartedAt: metadata.systemStartedAt
     )
-    let labels = SpeakerLabels.make(transcript: merged, names: resolution.names)
+    // `nil`, not an empty `SpeakerLabels`, when the diarizer itself found no real voices.
+    // `VoiceAssignment.assign` falls back to a placeholder "v1" voice for every word when
+    // `voices` is empty, so a `SpeakerLabels` built from `merged` would report a non-empty
+    // `order` even though nothing was actually diarized — exactly the false "we know who this
+    // is" claim `TranscriptSection.replace` must not turn into a `participants:` line, per
+    // `MeetingMarkdown.render`'s own distinction between "no diarization info" and "diarized,
+    // found nobody".
+    let labels: SpeakerLabels? = voices.isEmpty
+        ? nil : SpeakerLabels.make(transcript: merged, names: resolution.names)
 
     let file = MeetingFolder.archiveURL.appendingPathComponent(folder.lastPathComponent + ".md")
     let existing = try String(contentsOf: file, encoding: .utf8)
@@ -255,21 +263,28 @@ func runMeetingDiarize(_ folder: URL, threshold: Double?, write: Bool) async thr
 
     // The same rows the queue writes, by the same rule: positions come from the file's own
     // header, not from the diarizer's voice list — otherwise the archive pass would read an
-    // untouched file as a rename.
-    book.record(
-        MeetingLabels(
-            file: file.lastPathComponent,
-            labels: labels.order.enumerated().map { position, voice in
-                MeetingLabels.Label(
-                    position: position + 1,
-                    voiceId: resolution.identities[voice],
-                    renderedName: labels.label(for: .voice(voice))
-                )
-            }
+    // untouched file as a rename. Guarded the same way the queue guards its own call: no real
+    // voices means no meeting row either — a row for nobody is not knowledge worth keeping, and
+    // the queue never writes one in this case.
+    if let labels, !labels.order.isEmpty {
+        book.record(
+            MeetingLabels(
+                file: file.lastPathComponent,
+                labels: labels.order.enumerated().map { position, voice in
+                    MeetingLabels.Label(
+                        position: position + 1,
+                        voiceId: resolution.identities[voice],
+                        renderedName: labels.label(for: .voice(voice))
+                    )
+                }
+            )
         )
-    )
+    }
+    // Saved unconditionally regardless of the guard above: `MeetingVoices.resolve` can still
+    // have updated an existing voice's stored prints even when this run's labels are refused,
+    // and those updates must not be lost along with the meeting row.
     try await store.save(book)
-    note("переписано: \(file.lastPathComponent), участников \(labels.participants.count)")
+    note("переписано: \(file.lastPathComponent), участников \(labels?.participants.count ?? 0)")
 }
 
 /// The raw track, or the compressed one when the raw copy is already gone.
