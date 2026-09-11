@@ -51,3 +51,25 @@ import Testing
     #expect(bad.text == "Конспект не сделан: uv not found at /x")
     #expect(bad.isFailure)
 }
+
+@Test func theNamingNoticeNamesWhoWasNamed() {
+    let good = PanelNotice.forNaming(
+        SpeakerNaming.Outcome(file: "a.md", named: ["Настя"], failure: nil)
+    )
+    #expect(good.text == "Названо: Настя")
+    #expect(!good.isFailure)
+
+    let bad = PanelNotice.forNaming(
+        SpeakerNaming.Outcome(file: "", named: [], failure: "Книга голосов не читается")
+    )
+    #expect(bad.text == "Имя не сохранено: Книга голосов не читается")
+    #expect(bad.isFailure)
+}
+
+// A merge renames two rows to the same name, and the notice should say it once.
+@Test func theNamingNoticeDeduplicatesRepeatedNames() {
+    let notice = PanelNotice.forNaming(
+        SpeakerNaming.Outcome(file: "a.md", named: ["Настя", "Настя"], failure: nil)
+    )
+    #expect(notice.text == "Названо: Настя")
+}

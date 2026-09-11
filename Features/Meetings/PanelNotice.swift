@@ -53,4 +53,18 @@ public struct PanelNotice: Equatable, Sendable {
         }
         return PanelNotice(text: "Конспект готов", isFailure: false)
     }
+
+    /// `SpeakerNaming`'s outcome. A failure here is the one place a broken voice book ever
+    /// reaches the owner — the meeting pipeline deliberately stays silent about it rather than
+    /// risk overwriting it, so this notice is what tells the owner the book needs attention.
+    public static func forNaming(_ outcome: SpeakerNaming.Outcome) -> PanelNotice {
+        if let failure = outcome.failure {
+            return PanelNotice(text: "Имя не сохранено: \(failure)", isFailure: true)
+        }
+        // Deduplicated rather than joined as-is: renaming two rows to the same name, the way a
+        // split voice is repaired, would otherwise say "Названо: Настя, Настя".
+        var seen = Set<String>()
+        let unique = outcome.named.filter { seen.insert($0).inserted }
+        return PanelNotice(text: "Названо: \(unique.joined(separator: ", "))", isFailure: false)
+    }
 }

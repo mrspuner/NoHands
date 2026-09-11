@@ -15,6 +15,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Same "build once, `update` in place" rule as `meetingQueue`, and for the same reason: two
     /// summarizers over the same archive would race each other's writes.
     private var meetingSummarizer: MeetingSummarizer?
+    /// Built once and never rebuilt, same as `meetingSummarizer`: two passes over the same
+    /// archive would read a file before the other had written it. No config to `update` here —
+    /// `SpeakerNaming` reads only the header the owner typed and the book itself.
+    private var speakerNaming: SpeakerNaming?
     /// Unlike `meetingQueue`, this one *is* recreated every time `rebuildMeetings` runs, as a
     /// side effect of that method always rebuilding this whole block rather than only at launch.
     /// The old timer is invalidated first, so a reload never leaves two of them sweeping.
@@ -179,6 +183,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard let summarizer = meetingSummarizer else { return nil }
 
+        if speakerNaming == nil {
+            speakerNaming = SpeakerNaming(
+                report: { [panel] outcome in
+                    Task { @MainActor in
+                        panel.show(notice: PanelNotice.forNaming(outcome))
+                        panel.hideNotice(after: PanelNotice.dwell)
+                    }
+                }
+            )
+        }
+        guard let speakerNaming else { return nil }
+
         // Built once and afterwards only re-configured. «Перечитать конфиг» is the single reload
         // path for every setting in this application, and a backlog drain can run for hours, so
         // replacing the actor here would routinely leave two of them working the same folder —
@@ -199,8 +215,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     // A meeting that failed has no file in the archive to summarise; one that
                     // succeeded does, and `scanArchive` finds it without being told the path.
+                    // Naming runs after: the summary writes above the transcript heading, this
+                    // only touches reply labels, and the order between the two is otherwise free.
                     if outcome.failure == nil {
-                        Task { await summarizer.scanArchive() }
+                        Task {
+                            await summarizer.scanArchive()
+                            await speakerNaming.scanArchive()
+                        }
                     }
                 }
             )
@@ -245,6 +266,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await queue.sweep()
             await queue.scanAll()
             await summarizer.scanArchive()
+            await speakerNaming.scanArchive()
         }
         // The machine is always on, so a once-a-day timer is all the scheduler this needs.
         let timer = Timer.scheduledTimer(withTimeInterval: 86400, repeats: true) { _ in
