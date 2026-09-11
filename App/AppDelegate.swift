@@ -184,12 +184,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // replacing the actor here would routinely leave two of them working the same folder —
         // see `MeetingQueue.config` for what that costs. `startBuild`'s task guard exists for the
         // same reason on the dictation side.
+        let makeDiarizer: @Sendable () async throws -> any Diarizing = { try await FluidDiarizer.load() }
         if let existing = meetingQueue {
-            await existing.update(config: config, makeTranscriber: makeTranscriber)
+            await existing.update(config: config, makeTranscriber: makeTranscriber, makeDiarizer: makeDiarizer)
         } else {
             meetingQueue = MeetingQueue(
                 config: config,
                 makeTranscriber: makeTranscriber,
+                makeDiarizer: makeDiarizer,
                 report: { [panel] outcome in
                     Task { @MainActor in
                         panel.show(notice: PanelNotice.forOutcome(outcome))

@@ -39,6 +39,7 @@ func runMeetingProcess(_ folder: URL) async throws {
         archive: folder.deletingLastPathComponent().deletingLastPathComponent(),
         config: config,
         makeTranscriber: { try await ParakeetTranscriber.load(language: language) },
+        makeDiarizer: { try await FluidDiarizer.load() },
         report: { outcome in
             if let failure = outcome.failure {
                 note("не вышло: \(failure)")
