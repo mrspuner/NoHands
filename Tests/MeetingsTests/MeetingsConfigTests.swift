@@ -212,3 +212,13 @@ import Testing
     #expect(config.micThresholdDBFS == -35)
     #expect(config.voiceMatchThreshold == 0.7)
 }
+
+@Test func theTurnBudgetHasAMeasuredDefault() {
+    #expect(MeetingsConfig.default.summaryChunkTurns == 25)
+}
+
+@Test func aFileWithoutTheTurnBudgetStillReads() throws {
+    let config = try MeetingsConfig.decode(Data(#"{"summaryChunkSeconds": 600}"#.utf8))
+    #expect(config.summaryChunkSeconds == 600)
+    #expect(config.summaryChunkTurns == 25)
+}

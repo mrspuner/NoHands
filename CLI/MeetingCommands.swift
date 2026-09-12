@@ -111,11 +111,12 @@ func runMeetingSummarize(_ file: URL) async throws {
     let chunks = TranscriptChunks.split(
         index,
         maxSeconds: config.summaryChunkSeconds,
-        maxCharacters: Int(Double(config.summaryContextTokens) * MLXSummaryRunner.charactersPerToken)
+        maxCharacters: Int(Double(config.summaryContextTokens) * MLXSummaryRunner.charactersPerToken),
+        maxTurns: config.summaryChunkTurns
     )
     note("кусков: \(chunks.count)")
     let started = Date()
-    let summary = try await runner.summarize(chunks: chunks)
+    let summary = try await runner.summarize(chunks: chunks.map(\.text))
     note("ответ за \(Int(Date().timeIntervalSince(started))) с")
 
     let checked = QuoteMatch.check(

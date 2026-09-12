@@ -103,6 +103,17 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
     /// this machine on 2026-09-07 and produced the best summary of that day, while the
     /// sixty-eight-minute one took ten gigabytes and was killed by the system.
     public var summaryChunkSeconds: Double
+    /// How many speaker turns one chunk of the transcript may hold before it is closed.
+    ///
+    /// The size of a chunk is a property of the meeting, not one number for all of them.
+    /// Measured on 2026-09-11: a sixteen-minute meeting whose single chunk held 59 turns produced
+    /// one point out of thirteen, while the same meeting in three chunks of 22, 13 and 25 turns
+    /// produced five. Chunks that worked elsewhere in the archive hold 12–29.
+    ///
+    /// The number is deliberately on the safe side: until phase 2г every interlocutor was one
+    /// «Собеседник», so turns in the archive are undercounted and the real budget is likely
+    /// larger. Calibrating it needs meetings with the voices told apart.
+    public var summaryChunkTurns: Int
 
     /// Whether speakers are separated at all. A switch, like `summaryEnabled`: if the step gets
     /// in the way, the archive must keep filling with transcripts.
@@ -165,6 +176,7 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         summaryContextTokens: 28_000,
         quoteMatchRatio: 0.4,
         summaryChunkSeconds: 900,
+        summaryChunkTurns: 25,
         diarizationEnabled: true,
         voiceMatchThreshold: 0.7,
         minVoicePrintSeconds: 30,
@@ -190,6 +202,7 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         summaryContextTokens: Int = 28_000,
         quoteMatchRatio: Double = 0.4,
         summaryChunkSeconds: Double = 900,
+        summaryChunkTurns: Int = 25,
         diarizationEnabled: Bool = true,
         voiceMatchThreshold: Double = 0.7,
         minVoicePrintSeconds: Double = 30,
@@ -213,6 +226,7 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         self.summaryContextTokens = summaryContextTokens
         self.quoteMatchRatio = quoteMatchRatio
         self.summaryChunkSeconds = summaryChunkSeconds
+        self.summaryChunkTurns = summaryChunkTurns
         self.diarizationEnabled = diarizationEnabled
         self.voiceMatchThreshold = voiceMatchThreshold
         self.minVoicePrintSeconds = minVoicePrintSeconds
@@ -257,6 +271,8 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
             ?? fallback.quoteMatchRatio
         summaryChunkSeconds = try container.decodeIfPresent(Double.self, forKey: .summaryChunkSeconds)
             ?? fallback.summaryChunkSeconds
+        summaryChunkTurns = try container.decodeIfPresent(Int.self, forKey: .summaryChunkTurns)
+            ?? fallback.summaryChunkTurns
         diarizationEnabled = try container.decodeIfPresent(Bool.self, forKey: .diarizationEnabled)
             ?? fallback.diarizationEnabled
         voiceMatchThreshold = try container.decodeIfPresent(Double.self, forKey: .voiceMatchThreshold)
