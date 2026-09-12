@@ -104,14 +104,14 @@ public actor SpeakerNaming {
         // that very same "nothing to do" conclusion would still cost this file a `VoiceStore`
         // read and `mutate`'s own unconditional save of a byte-identical book — on every pass,
         // for every meeting whose name is already settled, which is most of the archive most of
-        // the time, since passes run at launch and after every meeting. `mightRename` mirrors the
-        // exact condition `rename` uses to decide there is nothing to apply — see the comment
-        // there — so `false` here is not a guess, it is a claim that `rename`, run this instant
-        // against this same book state, would return `nil` too, without a report. A header whose
-        // length does not even match is deliberately left to the transaction below rather than
-        // characterised here — a length mismatch is a refusal the owner needs told about, and
-        // reporting it from a copy of the book that might be a moment stale is not worth saving
-        // one read over.
+        // the time, since passes run at launch and after every meeting. `mightRename` shares the
+        // one predicate `rename` itself uses to decide there is anything to apply — see
+        // `isChange` — so `false` here is not a guess, it is a claim that `rename`, run this
+        // instant against this same book state, would return `nil` too, without a report. A
+        // header whose length does not even match is deliberately left to the transaction below
+        // rather than characterised here — a length mismatch is a refusal the owner needs told
+        // about, and reporting it from a copy of the book that might be a moment stale is not
+        // worth saving one read over.
         guard Self.mightRename(known: known, listed: listed) else { return }
 
         do {
@@ -139,6 +139,17 @@ public actor SpeakerNaming {
         }
     }
 
+    /// Whether a typed name is an actual change from what the book already calls this position —
+    /// the one condition both the cheap pre-check below and the real rename logic must agree on.
+    /// Pulled out to a single place rather than left as two copies of the same expression: two
+    /// copies kept in step only by a comment are exactly the shape `docs/DECISIONS.md` already
+    /// has a journal entry about (2026-09-08, «Держим, но не наблюдаем») — true when written,
+    /// silently false the moment the code beside it moves, and nothing here would notice, because
+    /// the two copies agreeing is exactly what every test exercises.
+    private static func isChange(typed: String, from label: MeetingLabels.Label) -> Bool {
+        typed != label.renderedName && !typed.isEmpty
+    }
+
     /// Whether `rename`, given a book shaped like `known` and this exact header, could possibly
     /// do or say anything at all. `false` means every position's typed name already equals what
     /// the book remembers for it — precisely the condition under which `rename`'s own `renamed`
@@ -148,19 +159,13 @@ public actor SpeakerNaming {
     /// Deliberately narrow: a header whose length does not match `known.labels.count` answers
     /// `true` here without trying to characterise the mismatch — that refusal, and the two
     /// per-position refusals inside `rename` (`invalidName`, the duplicate-label check), are all
-    /// only ever reachable at a position where the typed name differs from `renderedName` in the
-    /// first place, so a `false` answer here rules them out along with an actual rename. If this
-    /// and `rename`'s own `renamed` loop below ever disagree about that condition, this function
-    /// would start silently skipping files that still needed work — keep the two in step.
+    /// only ever reachable at a position where `isChange` is true in the first place, so a
+    /// `false` answer here rules them out along with an actual rename.
     private static func mightRename(known: MeetingLabels, listed: [String]) -> Bool {
         let voices = listed.first == "Я" ? Array(listed.dropFirst()) : listed
         guard voices.count == known.labels.count else { return true }
         let sortedKnown = known.labels.sorted { $0.position < $1.position }
-        for (index, label) in sortedKnown.enumerated() {
-            let typed = voices[index]
-            if typed != label.renderedName, !typed.isEmpty { return true }
-        }
-        return false
+        return zip(sortedKnown, voices).contains { label, typed in isChange(typed: typed, from: label) }
     }
 
     /// The whole per-file decision, run once inside the caller's `VoiceStore.mutate`.
@@ -214,14 +219,14 @@ public actor SpeakerNaming {
         }
 
         // The whole set of renames this file needs, computed once — see `ParticipantsLine
-        // .rename` for why applying them one at a time over a running copy would alias. The
-        // condition below — `typed != label.renderedName && !typed.isEmpty` — is exactly what
-        // `mightRename` above tests before this transaction is even opened; keep the two in step.
+        // .rename` for why applying them one at a time over a running copy would alias. Uses the
+        // same `isChange` the pre-check above already ran against the peek, so the two can never
+        // disagree about which positions are worth touching.
         var mapping: [String: String] = [:]
         var renamed: [MeetingLabels.Label] = []
         for (index, label) in sortedKnown.enumerated() {
             let typed = voices[index]
-            guard typed != label.renderedName, !typed.isEmpty else { continue }
+            guard isChange(typed: typed, from: label) else { continue }
             mapping[label.renderedName] = typed
             renamed.append(label)
         }
