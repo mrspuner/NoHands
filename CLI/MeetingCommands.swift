@@ -182,9 +182,12 @@ func runMeetingDiarize(_ folder: URL, threshold: Double?, write: Bool) async thr
     note("порог: \(config.voiceMatchThreshold), голосов: \(voices.count)")
 
     let store = VoiceStore()
-    var book = try await store.book()
+    // Read-only, for the preview printed below regardless of `--write`. Never threaded into the
+    // write path further down: the actual update has to land on whatever the book holds at the
+    // moment it is made, not on this snapshot — see the comment beside `store.mutate` below.
+    let peek = try await store.book()
     for voice in voices {
-        let known = book.match(voice.print, threshold: Float(config.voiceMatchThreshold))
+        let known = peek.match(voice.print, threshold: Float(config.voiceMatchThreshold))
         let name = known.flatMap(\.name) ?? (known == nil ? "новый голос" : "без имени")
         note(
             String(
@@ -211,11 +214,28 @@ func runMeetingDiarize(_ folder: URL, threshold: Double?, write: Bool) async thr
         return
     }
 
+    // `VoiceStore.mutate` exists precisely because a read-change-save spanning suspension points
+    // loses whichever write lands in the gap — see its own doc comment. This command is the
+    // widest such gap in the application: two model loads and two transcriptions sit between the
+    // book read below and the save at the end, normally while the application itself is running
+    // and can write the same book at any moment. Same warning the neighbouring commands already
+    // print for the queue, said here for the book instead.
+    note(
+        "Не запускайте эту команду, пока работает приложение: оно может писать ту же книгу"
+            + " голосов."
+    )
+
     let transcriber = try await ParakeetTranscriber.load(language: language)
     let words = try await transcriber.transcribeTimed(audio: system)
-    let resolution = MeetingVoices.resolve(
-        voices: voices, meeting: folder.lastPathComponent, book: &book, config: config
-    )
+    // A throwaway copy, read fresh here rather than reusing `peek` above: this is only to name
+    // this meeting's voices for the file about to be written, and must not itself change
+    // anything — the real update, inside `store.mutate` below, once the file is safely written,
+    // resolves again against whatever the book holds at that later moment. Mirrors
+    // `MeetingQueue.process`'s own early, throwaway resolve for the identical reason.
+    var throwaway = try await store.book()
+    let names = MeetingVoices.resolve(
+        voices: voices, meeting: folder.lastPathComponent, book: &throwaway, config: config
+    ).names
     let theirs = Utterance.split(
         assigned: VoiceAssignment.assign(words: words, to: voices),
         gap: config.phraseGapSeconds, maxLength: config.maxPhraseSeconds
@@ -241,6 +261,18 @@ func runMeetingDiarize(_ folder: URL, threshold: Double?, write: Bool) async thr
         microphoneStartedAt: metadata.microphoneStartedAt,
         systemStartedAt: metadata.systemStartedAt
     )
+    // Same guard `MeetingQueue.process` throws `Failure.nothingRecognised` for. Without it an
+    // empty re-transcription would still reach `TranscriptSection.replace` below, which would
+    // replace the file's whole transcript body with nothing while — because `labels` would be
+    // `nil` or empty too — deliberately leaving any existing `participants:` line standing, so
+    // the header would permanently name participants who no longer have a single line in the
+    // file.
+    guard !merged.isEmpty else {
+        fail(
+            "Повторная расшифровка не нашла ни одного слова ни на дорожке собеседников, ни на"
+                + " дорожке микрофона — файл не тронут"
+        )
+    }
     // `nil`, not an empty `SpeakerLabels`, when the diarizer itself found no real voices.
     // `VoiceAssignment.assign` falls back to a placeholder "v1" voice for every word when
     // `voices` is empty, so a `SpeakerLabels` built from `merged` would report a non-empty
@@ -249,7 +281,7 @@ func runMeetingDiarize(_ folder: URL, threshold: Double?, write: Bool) async thr
     // `MeetingMarkdown.render`'s own distinction between "no diarization info" and "diarized,
     // found nobody".
     let labels: SpeakerLabels? = voices.isEmpty
-        ? nil : SpeakerLabels.make(transcript: merged, names: resolution.names)
+        ? nil : SpeakerLabels.make(transcript: merged, names: names)
 
     let file = MeetingFolder.archiveURL.appendingPathComponent(folder.lastPathComponent + ".md")
     let existing = try String(contentsOf: file, encoding: .utf8)
@@ -266,7 +298,20 @@ func runMeetingDiarize(_ folder: URL, threshold: Double?, write: Bool) async thr
     // untouched file as a rename. Guarded the same way the queue guards its own call: no real
     // voices means no meeting row either — a row for nobody is not knowledge worth keeping, and
     // the queue never writes one in this case.
-    if let labels, !labels.order.isEmpty {
+    //
+    // Resolved a second time here rather than reusing `names` read above, and inside one
+    // `mutate` call rather than a separate read and save — the same shape
+    // `MeetingQueue.process` uses, for the same reason: this is the only point at which the book
+    // is actually changed, and it has to land on whatever the book holds right now, not on
+    // `throwaway`'s snapshot from before the transcriptions ran. The resolve itself runs
+    // unconditionally, even when `labels` ends up refused below: it can still have updated an
+    // existing voice's stored prints, and those updates must not be lost along with the meeting
+    // row.
+    try await store.mutate { book in
+        let resolution = MeetingVoices.resolve(
+            voices: voices, meeting: folder.lastPathComponent, book: &book, config: config
+        )
+        guard let labels, !labels.order.isEmpty else { return }
         book.record(
             MeetingLabels(
                 file: file.lastPathComponent,
@@ -280,10 +325,6 @@ func runMeetingDiarize(_ folder: URL, threshold: Double?, write: Bool) async thr
             )
         )
     }
-    // Saved unconditionally regardless of the guard above: `MeetingVoices.resolve` can still
-    // have updated an existing voice's stored prints even when this run's labels are refused,
-    // and those updates must not be lost along with the meeting row.
-    try await store.save(book)
     note("переписано: \(file.lastPathComponent), участников \(labels?.participants.count ?? 0)")
 }
 

@@ -123,3 +123,42 @@ participants: [Я, Собеседник]
     #expect(!updated.contains("participants:"))
     #expect(updated.contains("[00:00:01] Собеседник: два\n"))
 }
+
+// A meeting whose diarization failed carries a stale `speakers:` line. `diarize --write`
+// succeeding later must retract that claim rather than leave it standing beside the new
+// `participants:` — a file asserting both is a signal that reached only half its consumers, the
+// exact shape `docs/DECISIONS.md` warns about for 2026-09-08.
+@Test func aStaleSpeakersLineIsRemovedWhenDiarizationSucceeds() throws {
+    let old = "---\ndate: 2026-09-09\n"
+        + "speakers: \"не размечено — модель диаризации недоступна\"\n---\n\n"
+        + "## Транскрипт\n[00:00:01] Собеседник: раз\n"
+    let transcript = [Utterance(speaker: .voice("v1"), start: 1, end: 2, text: "раз")]
+    let updated = try TranscriptSection.replace(
+        in: old, transcript: transcript,
+        labels: SpeakerLabels.make(transcript: transcript, names: [:]), named: "тест.md"
+    )
+    #expect(updated.contains("participants: [Собеседник]\n"))
+    #expect(!updated.contains("speakers:"))
+}
+
+// `MeetingMarkdown.render` always writes `participants:` before `microphone:`. Inserting it
+// after here, on a re-diarize, would make the file visibly different from one written fresh in
+// one pass — the two paths must agree on where the line goes, not only on its content.
+@Test func participantsIsInsertedBeforeMicrophoneRatherThanAfter() throws {
+    let old = "---\ndate: 2026-09-09\n"
+        + "microphone: \"молчал всю запись — дорожка пустая\"\n---\n\n"
+        + "## Транскрипт\n[00:00:01] Собеседник: раз\n"
+    let transcript = [Utterance(speaker: .voice("v1"), start: 1, end: 2, text: "раз")]
+    let updated = try TranscriptSection.replace(
+        in: old, transcript: transcript,
+        labels: SpeakerLabels.make(transcript: transcript, names: [:]), named: "тест.md"
+    )
+    let lines = updated.components(separatedBy: "\n")
+    guard let participantsIndex = lines.firstIndex(where: { $0.hasPrefix("participants:") }),
+        let microphoneIndex = lines.firstIndex(where: { $0.hasPrefix("microphone:") })
+    else {
+        Issue.record("both lines were expected in the output")
+        return
+    }
+    #expect(participantsIndex < microphoneIndex)
+}

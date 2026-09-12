@@ -42,6 +42,13 @@ public enum TranscriptSection {
 
         var head = Array(lines[...heading])
         if let labels, !labels.order.isEmpty {
+            // A `speakers:` line only ever means diarization failed — see
+            // `MeetingMarkdown.render`. Once diarization has succeeded, that claim is stale, and
+            // leaving it standing beside the new `participants:` would assert both "we know who
+            // this is" and "не размечено" at once, permanently — the file has no reader left who
+            // can tell which half is true.
+            head.removeAll { $0.trimmingCharacters(in: .whitespaces).hasPrefix("speakers:") }
+
             let participants = ParticipantsLine.key + " ["
                 + labels.participants.map(Frontmatter.listValue).joined(separator: ", ") + "]"
             if let index = head.firstIndex(where: {
@@ -52,7 +59,13 @@ public enum TranscriptSection {
                 let close = head.dropFirst().firstIndex(where: {
                     $0.trimmingCharacters(in: .whitespaces) == "---"
                 }) {
-                head.insert(participants, at: close)
+                // The same position `MeetingMarkdown.render` puts this line in — after
+                // everything else the header carries and before `microphone:` — so a
+                // re-diarized file is not visibly different from one written in a single pass.
+                let insertAt = head[..<close].firstIndex {
+                    $0.trimmingCharacters(in: .whitespaces).hasPrefix("microphone:")
+                } ?? close
+                head.insert(participants, at: insertAt)
             }
         }
 

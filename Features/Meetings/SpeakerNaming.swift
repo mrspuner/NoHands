@@ -218,6 +218,29 @@ public actor SpeakerNaming {
             )
         }
 
+        // The same mistake from the other side. `MeetingVoices.resolve` matches each of this
+        // meeting's voices against the book independently, so two positions that never merged
+        // with each other — cosine below the threshold, still two distinct rendered labels —
+        // can each separately land at or above threshold against the very same book voice: an
+        // ordinary outcome in the grey zone, not a clustering bug. The renderedName-keyed guard
+        // above cannot see that collision, because the two labels differ; only the shared
+        // `voiceId` shows it. Typing two different real names for them here would apply both
+        // through the vacate-then-assign loop below onto the one voice the book actually holds,
+        // and the second rename would silently overwrite the first — fusing two people's
+        // fingerprints under whichever name landed last.
+        var typedByVoiceId: [String: Set<String>] = [:]
+        for (index, label) in sortedKnown.enumerated() {
+            guard let voiceId = label.voiceId else { continue }
+            typedByVoiceId[voiceId, default: []].insert(voices[index])
+        }
+        guard !typedByVoiceId.values.contains(where: { $0.count > 1 }) else {
+            return Outcome(
+                file: file.lastPathComponent, named: [],
+                failure: "Две позиции с одной и той же меткой получили разные имена —"
+                    + " разделить уже слитый голос это приложение не умеет"
+            )
+        }
+
         // The whole set of renames this file needs, computed once — see `ParticipantsLine
         // .rename` for why applying them one at a time over a running copy would alias. Uses the
         // same `isChange` the pre-check above already ran against the peek, so the two can never
@@ -292,7 +315,7 @@ public actor SpeakerNaming {
     private static func invalidName(among labels: [MeetingLabels.Label], typed: [String]) -> String? {
         for (index, label) in labels.enumerated() {
             let name = typed[index]
-            guard name != label.renderedName, !name.isEmpty else { continue }
+            guard isChange(typed: name, from: label) else { continue }
             if name.contains(":") {
                 return "Имя «\(name)» с двоеточием — метка с ним не разберётся при следующем проходе"
             }

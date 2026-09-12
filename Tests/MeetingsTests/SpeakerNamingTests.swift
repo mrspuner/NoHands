@@ -257,6 +257,59 @@ private final class NamingBox: @unchecked Sendable {
     #expect(box.all.first?.failure != nil)
 }
 
+// The same refusal from the other side. `MeetingVoices.resolve` matches each of a meeting's
+// voices against the book independently, so two clusters that never merged with each other —
+// cosine below the threshold, still two distinct rows — can each separately land at or above
+// threshold against the very same book voice: an ordinary outcome in the grey zone, not a bug in
+// clustering. Their rows then carry the same `voiceId` but two different `renderedName`s
+// ("Собеседник 1", "Собеседник 2"), so the renderedName-keyed guard above never sees a
+// collision. Typing two different real names for the two positions must still be refused: naming
+// them separately would silently fuse two people's fingerprints under whichever name the second
+// rename applies last.
+@Test func twoPositionsSharingAVoiceIdGivenDifferentNamesAreRefused() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("sn-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let file = root.appendingPathComponent("2026-09-09-0941-telemost.md")
+    let text = """
+        ---
+        date: 2026-09-09
+        participants: [Иван, Мария]
+        ---
+
+        ## Транскрипт
+        [00:00:03] Собеседник 1: привет
+        [00:00:20] Собеседник 2: и вам
+
+        """
+    try Data(text.utf8).write(to: file)
+
+    let store = VoiceStore(url: root.appendingPathComponent(".voices.json"))
+    var book = VoiceBook.empty
+    let shared = book.remember(
+        VoicePrint(vector: [1, 0]), meeting: "m", seconds: 120, as: nil, maxPrints: 10
+    )
+    book.record(
+        MeetingLabels(
+            file: file.lastPathComponent,
+            labels: [
+                MeetingLabels.Label(position: 1, voiceId: shared, renderedName: "Собеседник 1"),
+                MeetingLabels.Label(position: 2, voiceId: shared, renderedName: "Собеседник 2"),
+            ]
+        )
+    )
+    try await store.save(book)
+    let fileBefore = try Data(contentsOf: file)
+    let bookBefore = try await store.book()
+    let box = NamingBox()
+
+    await SpeakerNaming(archive: root, store: store) { box.append($0) }.scanArchive()
+
+    #expect(try Data(contentsOf: file) == fileBefore)
+    #expect(try await store.book() == bookBefore)
+    #expect(box.all.first?.failure != nil)
+}
+
 // `twoRowsWithOneNameMergeTheVoices` proves what `VoiceBook.rename` itself does on a merge; this
 // proves the *pass* actually re-reads the survivor into its rows rather than keeping the id each
 // row started with — a naive `voiceId: label.voiceId` would leave one row pointing at an id that

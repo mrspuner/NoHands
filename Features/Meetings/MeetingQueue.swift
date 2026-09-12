@@ -453,9 +453,12 @@ public actor MeetingQueue {
                 }
             } catch {
                 // Never fatal to the meeting, for the same reason the diarizer's own failure
-                // isn't: the file above already exists and is correct. A broken book costs this
-                // meeting's fingerprints, not the meeting itself — the archive pass reports the
-                // broken book against later meetings instead of this one.
+                // isn't: the file above already exists and is correct. But the cost is not only
+                // this meeting's fingerprints — it is the meeting row too. Without a row,
+                // `SpeakerNaming` reads this file as a stranger's note and skips it in silence
+                // forever, even once the book is repaired, so the `participants:` line it already
+                // carries can never be acted on. Recovery is `nohands meeting diarize --write` on
+                // this folder, and only within the seven-day window the raw audio survives.
             }
         }
 
