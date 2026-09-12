@@ -461,3 +461,121 @@ private final class NamingBox: @unchecked Sendable {
     #expect(text.contains("[00:00:03] Настя: привет"))
     #expect(box.all.first?.failure != nil)
 }
+
+/// Blocks the thread running `scanArchive` — synchronously, from inside its own `report`
+/// callback — until a genuinely separate `VoiceStore.mutate` call has actually completed and
+/// been persisted. `report` is not `async`, so this is the only way to guarantee the write lands
+/// at a specific point in the pass rather than racing it: without the block, nothing would say
+/// whether the write happened before or after the next file was read, and the test would only
+/// sometimes exercise the defect.
+private final class ConcurrentWriteGate: @unchecked Sendable {
+    private let semaphore = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var _voiceId: String?
+
+    var voiceId: String? {
+        lock.lock(); defer { lock.unlock() }
+        return _voiceId
+    }
+
+    private func setVoiceId(_ id: String?) {
+        lock.lock(); defer { lock.unlock() }
+        _voiceId = id
+    }
+
+    /// Fires a `VoiceStore.mutate` call on a separate `Task` — the store is a different actor,
+    /// so this genuinely goes through the same machinery a concurrent `MeetingQueue` write
+    /// would — and blocks the caller until it has completed and been saved.
+    func fire(on store: VoiceStore, meeting: String) {
+        Task {
+            let id = try? await store.mutate { book in
+                book.remember(
+                    VoicePrint(vector: [0, 0, 1]), meeting: meeting, seconds: 60, as: nil, maxPrints: 10
+                )
+            }
+            self.setVoiceId(id)
+            self.semaphore.signal()
+        }
+        // A generous ceiling, not the expected duration: a single in-memory `mutate` call on an
+        // uncontended actor finishes in microseconds. This only guards against the test hanging
+        // forever if something is badly wrong, the same role `MLXSummaryRunner`'s own timeout
+        // plays around a much slower operation.
+        if semaphore.wait(timeout: .now() + 5) == .timedOut {
+            Issue.record("concurrent VoiceStore.mutate did not complete in time")
+        }
+    }
+}
+
+// `AppDelegate` fires the archive pass with a bare, un-awaited `Task` from the queue's own report
+// callback, while the queue itself moves straight on to the next pending folder — so this pass
+// routinely runs alongside a different meeting being recorded into the very same book. The old
+// pass read the book once, before the loop, and threaded that one copy's mutations from file to
+// file; a change landing anywhere after that single read — even one committed by a completely
+// unrelated actor, atomically, in between two of this pass's own files — was invisible to it, and
+// the second file's own save would silently overwrite it. Each file reading the book fresh, right
+// before its own `mutate`, is what closes that: this pins the property directly rather than
+// through cross-file bookkeeping this same pass produced on its own.
+@Test func aChangeThatLandsBetweenFilesIsNotOverwrittenByAStaleSave() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("sn-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    // Named so `files()`'s sort puts `first` ahead of `second` — both need an actual rename, so
+    // both trigger their own `store.mutate`.
+    let first = root.appendingPathComponent("2026-09-09-0900-telemost.md")
+    let second = root.appendingPathComponent("2026-09-09-1000-telemost.md")
+    for (file, typed) in [(first, "Настя"), (second, "Пётр")] {
+        let text = """
+            ---
+            date: 2026-09-09
+            participants: [Я, \(typed)]
+            ---
+
+            ## Транскрипт
+            [00:00:03] Собеседник 1: привет
+
+            """
+        try Data(text.utf8).write(to: file)
+    }
+
+    let store = VoiceStore(url: root.appendingPathComponent(".voices.json"))
+    var book = VoiceBook.empty
+    let v1 = book.remember(VoicePrint(vector: [1, 0, 0]), meeting: "m1", seconds: 120, as: nil, maxPrints: 10)
+    let v2 = book.remember(VoicePrint(vector: [0, 1, 0]), meeting: "m2", seconds: 120, as: nil, maxPrints: 10)
+    book.record(
+        MeetingLabels(
+            file: first.lastPathComponent,
+            labels: [MeetingLabels.Label(position: 1, voiceId: v1, renderedName: "Собеседник 1")]
+        )
+    )
+    book.record(
+        MeetingLabels(
+            file: second.lastPathComponent,
+            labels: [MeetingLabels.Label(position: 1, voiceId: v2, renderedName: "Собеседник 1")]
+        )
+    )
+    try await store.save(book)
+
+    let gate = ConcurrentWriteGate()
+    let box = NamingBox()
+
+    await SpeakerNaming(archive: root, store: store) { outcome in
+        box.append(outcome)
+        // Fired the instant `first` is done — after its own `mutate` (read, rename, save) has
+        // already completed — and before the loop moves on to `second`, so the write lands
+        // exactly in the gap between the two files' own transactions.
+        if outcome.file == first.lastPathComponent {
+            gate.fire(on: store, meeting: "concurrent-meeting")
+        }
+    }.scanArchive()
+
+    let concurrentId = try #require(gate.voiceId)
+    let finalBook = try await store.book()
+    // Both files still got their own rename — the point of this test is not that they failed.
+    #expect(finalBook.name(of: v1) == "Настя")
+    #expect(finalBook.name(of: v2) == "Пётр")
+    // The concurrent write must survive `second`'s own save. The old, pass-wide book snapshot
+    // could not see it — it was read before the write happened — so `second`'s save, built from
+    // that stale copy, would silently erase it.
+    #expect(finalBook.voices.contains { $0.id == concurrentId })
+}

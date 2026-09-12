@@ -47,7 +47,13 @@ public actor SpeakerNaming {
         scanning = true
         defer { scanning = false }
 
-        guard var book = try? await store.book() else {
+        // A read purely to catch a book that will not parse, once, before a single file is
+        // touched — its result is discarded rather than threaded into the loop below. Every
+        // per-file `mutate` further down reads the book fresh on its own, so a book that stays
+        // broken for the whole pass would otherwise have every one of those reads independently
+        // rediscover the same fault and report it once per meeting in the archive, instead of
+        // once for the whole pass the way this used to read.
+        guard (try? await store.book()) != nil else {
             // A book that does not parse is not overwritten and not guessed at — see
             // `VoiceStore.book`. Nothing here can proceed without it, and this pass is the
             // channel by which the owner learns it: the meeting pipeline stays silent about a
@@ -58,152 +64,180 @@ public actor SpeakerNaming {
 
         for file in files() {
             guard let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
-            // Somebody else's note in this Obsidian folder has no row in the book at all, and is
-            // skipped without a word — same rule `MeetingSummarizer` applies to the heading.
-            guard let known = book.labels(for: file.lastPathComponent), !known.labels.isEmpty else {
-                continue
-            }
-            // Unlike a stray note, a file the book *does* know always had a header written by
-            // this application. A header here that no longer parses is the owner having broken
-            // it while editing, and he gets no other channel to hear that from.
-            guard let listed = ParticipantsLine.parse(text) else {
-                report(
-                    Outcome(
-                        file: file.lastPathComponent, named: [],
-                        failure: "Строка participants не читается — шапка правлена мимо формата"
-                    )
-                )
-                continue
-            }
-
-            // The header lists the owner first when he spoke; the labels never include him.
-            let voices = listed.first == "Я" ? Array(listed.dropFirst()) : listed
-            guard voices.count == known.labels.count else {
-                report(
-                    Outcome(
-                        file: file.lastPathComponent, named: [],
-                        failure: "В шапке \(voices.count) участников, а размечено \(known.labels.count) —"
-                            + " строка правится, а не переписывается целиком"
-                    )
-                )
-                continue
-            }
-
-            let sortedKnown = known.labels.sorted { $0.position < $1.position }
-
-            if let reason = Self.invalidName(among: sortedKnown, typed: voices) {
-                report(Outcome(file: file.lastPathComponent, named: [], failure: reason))
-                continue
-            }
-
-            // An "unsupported split": two positions the book already treats as one voice — they
-            // share a rendered label, which only happens once they have already been merged —
-            // asked to become two different names again. There is no way to tell, at the level of
-            // fingerprints, which print belonged to which of the two any more, so this is refused
-            // rather than guessed at.
-            var typedByRenderedName: [String: Set<String>] = [:]
-            for (index, label) in sortedKnown.enumerated() {
-                typedByRenderedName[label.renderedName, default: []].insert(voices[index])
-            }
-            guard !typedByRenderedName.values.contains(where: { $0.count > 1 }) else {
-                report(
-                    Outcome(
-                        file: file.lastPathComponent, named: [],
-                        failure: "Две позиции с одной и той же меткой получили разные имена —"
-                            + " разделить уже слитый голос это приложение не умеет"
-                    )
-                )
-                continue
-            }
-
-            // The whole set of renames this file needs, computed once — see `ParticipantsLine
-            // .rename` for why applying them one at a time over a running copy would alias.
-            var mapping: [String: String] = [:]
-            var renamed: [MeetingLabels.Label] = []
-            for (index, label) in sortedKnown.enumerated() {
-                let typed = voices[index]
-                guard typed != label.renderedName, !typed.isEmpty else { continue }
-                mapping[label.renderedName] = typed
-                renamed.append(label)
-            }
-            guard !renamed.isEmpty else { continue }
-
-            // Applied to a scratch copy of the book, committed into `book` only once this file's
-            // write below has actually succeeded. A book taught a name ahead of a write that then
-            // fails would claim a name for a file whose transcript still shows the old label —
-            // and since the row's `renderedName` would already match, the next pass would see no
-            // change and never touch that file again to fix it.
-            var fileBook = book
-
-            // Vacate every renamed voice to a name unique to this pass before assigning any real
-            // target. Assigning targets straight away is what corrupts a plain swap: renaming the
-            // first voice to the name the second voice currently holds merges the two — mixing
-            // one person's fingerprints into another's — before the second voice's own rename is
-            // even considered. Once every renamed voice has been moved off its old name, a name
-            // still held by somebody when the second pass below runs is a genuine collision —
-            // either a deliberate convergence within this same batch (two positions renamed to
-            // the same name, which is how a split voice is repaired) or a match with a voice
-            // outside this file entirely — and only then does a merge belong.
-            for label in renamed {
-                guard let voiceId = label.voiceId else { continue }
-                fileBook.rename(voiceId, to: "speaker-naming-scratch-\(UUID().uuidString)")
-            }
-            for label in renamed {
-                guard let voiceId = label.voiceId, let target = mapping[label.renderedName] else { continue }
-                fileBook.rename(voiceId, to: target)
-            }
-
-            let updated = ParticipantsLine.rename(in: text, mapping: mapping)
-            let named = renamed.map { mapping[$0.renderedName] ?? $0.renderedName }
-
-            // The rows are rewritten with what the file now shows, so the next pass sees no
-            // change. The vacate-then-assign above may have merged voices, so identities are
-            // re-read from `fileBook` rather than reused: an absorbed id no longer names a voice
-            // at all.
-            let rows = sortedKnown.map { label -> MeetingLabels.Label in
-                let newName = mapping[label.renderedName] ?? label.renderedName
-                let voiceId = label.voiceId.map { id in
-                    fileBook.voices.contains { $0.id == id }
-                        ? id
-                        : (fileBook.voices.first { $0.name == newName }?.id ?? id)
-                }
-                return MeetingLabels.Label(position: label.position, voiceId: voiceId, renderedName: newName)
-            }
-            fileBook.record(MeetingLabels(file: file.lastPathComponent, labels: rows))
-
-            do {
-                try Data(updated.utf8).write(to: file, options: .atomic)
-                book = fileBook
-            } catch {
-                report(
-                    Outcome(file: file.lastPathComponent, named: [], failure: error.localizedDescription)
-                )
-                continue
-            }
-
-            // Saved right after this one file, rather than once for the whole pass: a swap is
-            // its own inverse, so a book that falls behind an already-renamed file does not just
-            // sit stale — the next pass rebuilds the very same mapping and applies it to text
-            // that already shows the new names, swapping them straight back. Saving file by file
-            // keeps every already-written file's row durable before the next one is even read,
-            // so an interruption anywhere in the pass leaves a consistent prefix behind rather
-            // than a whole pass whose bookkeeping never landed.
-            do {
-                try await store.save(book)
-                report(Outcome(file: file.lastPathComponent, named: named, failure: nil))
-            } catch {
-                // The label changed on disk, but the book does not know it — the same divergence
-                // Finding A guards against, arriving through a live failure instead of a lost
-                // one. Named here rather than swallowed, because nothing else will ever say so.
-                report(
-                    Outcome(
-                        file: file.lastPathComponent, named: [],
-                        failure: "Метка переименована в файле, но книга голосов не сохранена: "
-                            + error.localizedDescription
-                    )
-                )
-            }
+            await processOne(file: file, text: text)
         }
+    }
+
+    /// One file's whole decision — read, refuse or compute, write, record — made inside a single
+    /// `VoiceStore.mutate` call, so it can never be undone by a save another writer makes while
+    /// this file is being handled, and can never undo a save another writer already made before
+    /// it. The book is not threaded from file to file any more: each file reads it fresh, right
+    /// here, which is what makes a change that lands between two files of the same pass visible
+    /// to the second one instead of overwritten by whatever the first one started from.
+    private func processOne(file: URL, text: String) async {
+        // Somebody else's note in this Obsidian folder has no row in the book at all, and is
+        // skipped without a word — same rule `MeetingSummarizer` applies to the heading. A plain
+        // read rather than the `mutate` below: this is a cheap filter for whether the file is
+        // worth opening a transaction over at all, not the decision itself. The decision reads
+        // the book again, fresh, inside `mutate`, so a rename landing on this exact file between
+        // this check and that read is still seen, not raced against.
+        guard let peek = try? await store.book(),
+            let known = peek.labels(for: file.lastPathComponent), !known.labels.isEmpty
+        else { return }
+
+        // Unlike a stray note, a file the book *does* know always had a header written by this
+        // application. A header here that no longer parses is the owner having broken it while
+        // editing, and he gets no other channel to hear that from. Text-only, so it does not need
+        // the book and does not need to be inside the transaction below.
+        guard let listed = ParticipantsLine.parse(text) else {
+            report(
+                Outcome(
+                    file: file.lastPathComponent, named: [],
+                    failure: "Строка participants не читается — шапка правлена мимо формата"
+                )
+            )
+            return
+        }
+
+        do {
+            let outcome = try await store.mutate { book in
+                Self.rename(in: &book, file: file, text: text, listed: listed)
+            }
+            if let outcome { report(outcome) }
+        } catch {
+            // Everything that can go wrong with the file itself is caught inside `rename` below
+            // and turned into a returned `Outcome`, never a throw — so the only way `mutate`
+            // itself throws is its own machinery: the read at its start failing (the book broke
+            // between the pass-level check above and this file — nothing but `save` ever writes
+            // to it, and `save` never writes anything invalid, so this is not reachable from
+            // inside this application) or, the reachable case, its save at the end failing after
+            // `rename` already rewrote the file on disk. The label changed on disk, but the book
+            // does not know it — the same divergence Finding A guarded against, arriving through
+            // a live failure instead of a lost one.
+            report(
+                Outcome(
+                    file: file.lastPathComponent, named: [],
+                    failure: "Метка переименована в файле, но книга голосов не сохранена: "
+                        + error.localizedDescription
+                )
+            )
+        }
+    }
+
+    /// The whole per-file decision, run once inside the caller's `VoiceStore.mutate`.
+    ///
+    /// - Returns: `nil` when there is nothing to report — the header already matches what the
+    ///   book remembers, or the row vanished between the caller's cheap peek and this read (the
+    ///   file became a stranger's note in the meantime, or another pass already resolved it). An
+    ///   `Outcome` otherwise, success or refusal alike.
+    ///
+    /// Every refusal returns before `book` is touched at all, and the file write below is the
+    /// last thing that can fail — both leave `book` exactly as `mutate` read it, so its own save
+    /// afterwards persists that unchanged copy rather than anything this call computed.
+    private static func rename(
+        in book: inout VoiceBook, file: URL, text: String, listed: [String]
+    ) -> Outcome? {
+        guard let known = book.labels(for: file.lastPathComponent), !known.labels.isEmpty else {
+            return nil
+        }
+
+        // The header lists the owner first when he spoke; the labels never include him.
+        let voices = listed.first == "Я" ? Array(listed.dropFirst()) : listed
+        guard voices.count == known.labels.count else {
+            return Outcome(
+                file: file.lastPathComponent, named: [],
+                failure: "В шапке \(voices.count) участников, а размечено \(known.labels.count) —"
+                    + " строка правится, а не переписывается целиком"
+            )
+        }
+
+        let sortedKnown = known.labels.sorted { $0.position < $1.position }
+
+        if let reason = invalidName(among: sortedKnown, typed: voices) {
+            return Outcome(file: file.lastPathComponent, named: [], failure: reason)
+        }
+
+        // An "unsupported split": two positions the book already treats as one voice — they
+        // share a rendered label, which only happens once they have already been merged — asked
+        // to become two different names again. There is no way to tell, at the level of
+        // fingerprints, which print belonged to which of the two any more, so this is refused
+        // rather than guessed at.
+        var typedByRenderedName: [String: Set<String>] = [:]
+        for (index, label) in sortedKnown.enumerated() {
+            typedByRenderedName[label.renderedName, default: []].insert(voices[index])
+        }
+        guard !typedByRenderedName.values.contains(where: { $0.count > 1 }) else {
+            return Outcome(
+                file: file.lastPathComponent, named: [],
+                failure: "Две позиции с одной и той же меткой получили разные имена —"
+                    + " разделить уже слитый голос это приложение не умеет"
+            )
+        }
+
+        // The whole set of renames this file needs, computed once — see `ParticipantsLine
+        // .rename` for why applying them one at a time over a running copy would alias.
+        var mapping: [String: String] = [:]
+        var renamed: [MeetingLabels.Label] = []
+        for (index, label) in sortedKnown.enumerated() {
+            let typed = voices[index]
+            guard typed != label.renderedName, !typed.isEmpty else { continue }
+            mapping[label.renderedName] = typed
+            renamed.append(label)
+        }
+        guard !renamed.isEmpty else { return nil }
+
+        // Applied to a scratch copy of the book, committed into `book` only once this file's
+        // write below has actually succeeded. A book taught a name ahead of a write that then
+        // fails would claim a name for a file whose transcript still shows the old label — and
+        // since the row's `renderedName` would already match, the next pass would see no change
+        // and never touch that file again to fix it.
+        var fileBook = book
+
+        // Vacate every renamed voice to a name unique to this pass before assigning any real
+        // target. Assigning targets straight away is what corrupts a plain swap: renaming the
+        // first voice to the name the second voice currently holds merges the two — mixing one
+        // person's fingerprints into another's — before the second voice's own rename is even
+        // considered. Once every renamed voice has been moved off its old name, a name still
+        // held by somebody when the second pass below runs is a genuine collision — either a
+        // deliberate convergence within this same batch (two positions renamed to the same name,
+        // which is how a split voice is repaired) or a match with a voice outside this file
+        // entirely — and only then does a merge belong.
+        for label in renamed {
+            guard let voiceId = label.voiceId else { continue }
+            fileBook.rename(voiceId, to: "speaker-naming-scratch-\(UUID().uuidString)")
+        }
+        for label in renamed {
+            guard let voiceId = label.voiceId, let target = mapping[label.renderedName] else { continue }
+            fileBook.rename(voiceId, to: target)
+        }
+
+        let updated = ParticipantsLine.rename(in: text, mapping: mapping)
+        let named = renamed.map { mapping[$0.renderedName] ?? $0.renderedName }
+
+        // The rows are rewritten with what the file now shows, so the next pass sees no change.
+        // The vacate-then-assign above may have merged voices, so identities are re-read from
+        // `fileBook` rather than reused: an absorbed id no longer names a voice at all.
+        let rows = sortedKnown.map { label -> MeetingLabels.Label in
+            let newName = mapping[label.renderedName] ?? label.renderedName
+            let voiceId = label.voiceId.map { id in
+                fileBook.voices.contains { $0.id == id }
+                    ? id
+                    : (fileBook.voices.first { $0.name == newName }?.id ?? id)
+            }
+            return MeetingLabels.Label(position: label.position, voiceId: voiceId, renderedName: newName)
+        }
+        fileBook.record(MeetingLabels(file: file.lastPathComponent, labels: rows))
+
+        do {
+            try Data(updated.utf8).write(to: file, options: .atomic)
+        } catch {
+            // `book` (the real, inout one) was never touched above — only the scratch `fileBook`
+            // was — so returning here without assigning it leaves `book` exactly as `mutate`
+            // read it, and its own save persists that unchanged copy.
+            return Outcome(file: file.lastPathComponent, named: [], failure: error.localizedDescription)
+        }
+        book = fileBook
+        return Outcome(file: file.lastPathComponent, named: named, failure: nil)
     }
 
     /// A typed name that would break the very thing it is meant to fix — checked against every
