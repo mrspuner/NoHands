@@ -98,6 +98,30 @@ private final class NamingBox: @unchecked Sendable {
     #expect(box.all.isEmpty)
 }
 
+// `mightRename` lets an already-settled file skip the transaction entirely — and with it the
+// `VoiceStore.mutate` call that would otherwise unconditionally save the book back, byte-identical
+// or not, on every pass. Comparing file *content* before and after cannot tell "never opened" from
+// "opened and wrote the same bytes" — both leave identical content behind — so this checks the
+// book file's own modification time instead: an actual save always rewrites it, `.atomic` options
+// included, even when nothing in it changed.
+@Test func anAlreadySettledFileDoesNotRewriteTheBook() async throws {
+    let archive = try await makeArchive(
+        header: "participants: [Я, Собеседник 1]",
+        replies: ["[00:00:03] Собеседник 1: привет"],
+        labelNames: ["Собеседник 1"]
+    )
+    defer { try? FileManager.default.removeItem(at: archive.root) }
+    let bookURL = archive.root.appendingPathComponent(".voices.json")
+    let before = try FileManager.default.attributesOfItem(atPath: bookURL.path)[.modificationDate] as? Date
+    let box = NamingBox()
+
+    await naming(archive, box).scanArchive()
+
+    let after = try FileManager.default.attributesOfItem(atPath: bookURL.path)[.modificationDate] as? Date
+    #expect(before == after)
+    #expect(box.all.isEmpty)
+}
+
 // One name over two rows is how the owner repairs a split the automatic clustering missed.
 @Test func twoRowsWithOneNameMergeTheVoices() async throws {
     let archive = try await makeArchive(
