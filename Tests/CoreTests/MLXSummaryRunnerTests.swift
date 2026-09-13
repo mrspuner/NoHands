@@ -50,11 +50,11 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
     }
 }
 
-// A single chunk never goes through the merge pass at all: the script writes `partials[0]`
-// straight back when `len(partials) == 1`, without ever building `mergePrefix`. So the guard has
-// nothing to protect for one chunk, and must not fire for it even when `contextTokens` is small
-// enough to make the limit zero or negative — context: 1000 gives (1000 - mergeMaxTokens 3000) /
-// maxTokens 2500 = 0, which would refuse a single chunk if the guard did not exempt count == 1.
+// A single chunk never goes through a merge pass at all: there is nothing to merge, so the guard
+// has nothing to protect for one chunk, and must not fire for it even when `contextTokens` is
+// small enough to make the limit zero or negative — context: 1000 gives (1000 - mergeMaxTokens
+// 3000) / maxTokens 2500 = 0, which would refuse a single chunk if the guard did not exempt
+// count == 1.
 //
 // Asserts `.uvMissing` rather than merely "no `.tooManyChunks`": that proves execution actually
 // passed this guard and reached the next one, rather than some earlier guard swallowing the case
@@ -123,6 +123,68 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
 // could not see it there.
 @Test func theMergePrefixLivesWithTheOtherPromptText() {
     #expect(SummaryPrompt.mergePrefix.contains("Частичные конспекты"))
+}
+
+// Reading the answers file touches no subprocess at all, so it is tested directly against
+// fixture files rather than only through a real `uv` run — every guard test above stops before a
+// process is ever launched, so none of them exercises this. The failure mode is new to this
+// diff: before it, an unreadable answer was a parse failure in `SummaryResponse` with the reason
+// written into the meeting file; an unreadable *file* is now a different path with a different
+// message, and it must never crash or come back as a silent `[]`.
+@Test func decodeAnswersRefusesAMissingFile() {
+    let path = FileManager.default.temporaryDirectory
+        .appendingPathComponent("nohands-test-missing-\(UUID().uuidString).json").path
+    #expect(
+        throws: MLXSummaryRunner.Failure.runnerFailed("the summary runner wrote no readable answers")
+    ) {
+        try MLXSummaryRunner.decodeAnswers(from: path)
+    }
+}
+
+@Test func decodeAnswersRefusesAnEmptyFile() {
+    let path = FileManager.default.temporaryDirectory
+        .appendingPathComponent("nohands-test-empty-\(UUID().uuidString).json").path
+    FileManager.default.createFile(atPath: path, contents: Data())
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    #expect(
+        throws: MLXSummaryRunner.Failure.runnerFailed("the summary runner wrote no readable answers")
+    ) {
+        try MLXSummaryRunner.decodeAnswers(from: path)
+    }
+}
+
+@Test func decodeAnswersRefusesJSONThatIsNotAnArrayOfStrings() {
+    let path = FileManager.default.temporaryDirectory
+        .appendingPathComponent("nohands-test-shape-\(UUID().uuidString).json").path
+    FileManager.default.createFile(atPath: path, contents: Data(#"{"answer": "готово"}"#.utf8))
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    #expect(
+        throws: MLXSummaryRunner.Failure.runnerFailed("the summary runner wrote no readable answers")
+    ) {
+        try MLXSummaryRunner.decodeAnswers(from: path)
+    }
+}
+
+@Test func decodeAnswersRefusesAnEmptyArray() {
+    let path = FileManager.default.temporaryDirectory
+        .appendingPathComponent("nohands-test-empty-array-\(UUID().uuidString).json").path
+    FileManager.default.createFile(atPath: path, contents: Data("[]".utf8))
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    #expect(
+        throws: MLXSummaryRunner.Failure.runnerFailed("the summary runner wrote no readable answers")
+    ) {
+        try MLXSummaryRunner.decodeAnswers(from: path)
+    }
+}
+
+// The positive case, so a passing failure test above cannot be hiding a function that always
+// throws.
+@Test func decodeAnswersReturnsWhatTheFileHolds() throws {
+    let path = FileManager.default.temporaryDirectory
+        .appendingPathComponent("nohands-test-valid-\(UUID().uuidString).json").path
+    FileManager.default.createFile(atPath: path, contents: Data(#"["первый","второй"]"#.utf8))
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    #expect(try MLXSummaryRunner.decodeAnswers(from: path) == ["первый", "второй"])
 }
 
 // The request carries one prompt per chunk plus a path for the answers, not chunks and merge

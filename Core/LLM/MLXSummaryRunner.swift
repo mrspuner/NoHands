@@ -282,8 +282,16 @@ public struct MLXSummaryRunner: SummaryRunning {
             throw Failure.runnerFailed(Self.lastLine(of: diagnostics))
         }
 
-        guard let answersData = FileManager.default.contents(atPath: answersFile.path),
-            let answers = try? JSONDecoder().decode([String].self, from: answersData),
+        return try Self.decodeAnswers(from: answersFile.path)
+    }
+
+    /// Reads and decodes the child's answers file. Split out of `blockingRun` because this part
+    /// touches no subprocess at all — a missing file, an empty one, JSON of the wrong shape, and
+    /// an empty array are all fixtures, not a real `uv` run — so it is tested directly rather
+    /// than only through guards that never reach a process launch.
+    static func decodeAnswers(from path: String) throws -> [String] {
+        guard let data = FileManager.default.contents(atPath: path),
+            let answers = try? JSONDecoder().decode([String].self, from: data),
             !answers.isEmpty
         else {
             throw Failure.runnerFailed("the summary runner wrote no readable answers")
