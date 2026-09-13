@@ -33,29 +33,29 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
     }
 }
 
-// A single chunk never goes through a merge pass at all: there is nothing to merge, `checkMergeFits`
-// is never called, so it must reach the uv check regardless of how small `contextTokens` is.
-//
-// Asserts `.uvMissing` rather than merely "no `.mergeTooLong`": that proves execution actually
-// reached the next guard, rather than some earlier guard swallowing the case by accident and
-// leaving this one unexercised.
-@Test func aSingleChunkIsNeverTooManyEvenWhenTheLimitIsNonPositive() async {
+// A single chunk never goes through a merge pass at all: there is nothing to merge, so
+// `checkMergeFits` is never called regardless of how small `contextTokens` is. `checkMergeFits`
+// now runs after the uv check anyway, so the failure here — `.uvMissing` — says nothing about
+// ordering between guards; it is simply the next one a single-chunk run reaches. What this pins
+// is that a single chunk never gets near the merge guard at all, not the order of any two guards.
+@Test func aSingleChunkNeverReachesTheMergeGuard() async {
     await #expect(throws: MLXSummaryRunner.Failure.uvMissing("/nonexistent/uv")) {
         try await runner(context: 1000).summarize(chunks: ["[00:00:01] Я: раз"])
     }
 }
 
-// The ceilings were measured under the prompt this branch replaced: a five-point cap, three
+// `maxTokens` was measured under the prompt this branch replaced: a five-point cap, three
 // fields, a 1948-character answer. The prompt now has no cap on the number of points and two more
 // fields — `tasks`, four fields each including a 5-15 word quote, and `openIssues` — so the same
-// meeting yields a much longer answer. A truncated answer is not JSON, and neither place it can
-// land is survivable: on one chunk it is a permanent failure written into the archive, and inside
-// a merge it arrives as prose whose content can vanish with nothing marking it.
+// meeting yields a much longer answer. A truncated answer is not JSON: on one chunk that is a
+// permanent failure written into the archive; inside the merge it is caught the same way — parsed
+// with `try?`, named, and the chunks' own points survive regardless.
 @Test func theAnswerCeilingsFitThePromptThatIsActuallySent() {
     #expect(MLXSummaryRunner.maxTokens == 2500)
-    #expect(MLXSummaryRunner.mergeMaxTokens == 3000)
-    // The merge answers about a whole meeting rather than one chunk of it.
-    #expect(MLXSummaryRunner.mergeMaxTokens > MLXSummaryRunner.maxTokens)
+    // The merge answers with a title and at most ten summary lines — strictly less than a
+    // chunk's decisions, tasks, open issues and quotes — so its ceiling is smaller, not larger.
+    #expect(MLXSummaryRunner.mergeMaxTokens == 800)
+    #expect(MLXSummaryRunner.mergeMaxTokens < MLXSummaryRunner.maxTokens)
 }
 
 @Test func aMissingUvIsNamedWithItsPath() async {
@@ -227,9 +227,9 @@ private func runner(contextTokens: Int) -> MLXSummaryRunner {
 // comes back truncated rather than refused — and truncated JSON reads to the owner as "the model
 // could not read your meeting", which is a different and untrue statement.
 @Test func aMergeTooLargeForTheWindowIsRefusedWithNumbers() {
-    // 4000 − 3000 = 1000 tokens, i.e. 2500 characters at 2.5 per token.
+    // 4000 − 800 = 3200 tokens, i.e. 8000 characters at 2.5 per token.
     #expect(throws: MLXSummaryRunner.Failure.self) {
-        try runner(contextTokens: 4000).checkMergeFits(String(repeating: "я", count: 3000))
+        try runner(contextTokens: 4000).checkMergeFits(String(repeating: "я", count: 9000))
     }
 }
 

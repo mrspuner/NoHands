@@ -25,6 +25,11 @@ enum SummaryScript {
         This script decides nothing. Which prompts to send, in what order, what to do with an answer that
         does not parse, and whether a merge is needed at all are Swift's, where tests can see them.
 
+        The one contract Swift depends on: answers come back in prompt order, one per prompt. The list
+        comprehension below guarantees it — do not replace it with anything that could reorder or drop an
+        entry, such as a thread pool or a filter on failures. Swift lines the answers file back up with its
+        chunks by position alone.
+
         enable_thinking=False is not optional: Qwen3 is a reasoning model and without it half a minute of
         deliberation lands in the meeting file. temp=0.0 for the same reason a transcript is not creative
         writing.

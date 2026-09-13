@@ -150,6 +150,10 @@ import Testing
     // from it here — see that guard's tests in `MLXSummaryRunnerTests`.
     #expect(config.summaryContextTokens == 28_000)
     #expect(config.quoteMatchRatio == 0.4)
+    // Pinned so the memberwise initialiser's own default cannot drift back to the pre-branch
+    // value while only `.default` is updated — that gap shipped once already: `.default` said
+    // 300, the initialiser still said 900, and only a caller that omits the argument sees which.
+    #expect(config.summaryChunkSeconds == 300)
 }
 
 // A config the owner already wrote has none of the new keys. A missing key is a default,

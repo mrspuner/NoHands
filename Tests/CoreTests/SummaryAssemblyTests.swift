@@ -58,13 +58,14 @@ private func partial(_ title: String, _ summary: [String], decisions: [String] =
 // chunks, so this one is no more "the whole meeting" than any one of several survivors would be —
 // the same rule `aFailedMergeKeepsThePointsAndNamesTheReason` checks for several partials.
 @Test func aRefusedChunkIsNamedInTheSummary() {
+    let refusal = SummaryAssembly.chunkParseFailure(number: 2, of: 2)
     let combined = SummaryAssembly.combine(
         partials: [partial("одна часть", ["о ней"])],
-        refusals: ["Кусок 2: ответ модели не разобран"],
+        refusals: [refusal],
         merged: nil
     )
     #expect(combined.title.isEmpty)
-    #expect(combined.summary == ["о ней", "Кусок 2: ответ модели не разобран"])
+    #expect(combined.summary == ["о ней", refusal])
 }
 
 // A merge that succeeds does not swallow a refusal from pass A: the two travel independently, and
@@ -72,13 +73,14 @@ private func partial(_ title: String, _ summary: [String], decisions: [String] =
 // parse never existed — exactly where a real partial failure actually happens, since a merge only
 // runs at all when there is more than one chunk.
 @Test func aSuccessfulMergeStillCarriesARefusalFromPassA() {
+    let refusal = SummaryAssembly.chunkParseFailure(number: 2, of: 3)
     let combined = SummaryAssembly.combine(
         partials: [partial("первый", ["о первом"]), partial("второй", ["о втором"])],
-        refusals: ["Кусок 2 из 3: ответ модели не разобран"],
+        refusals: [refusal],
         merged: partial("вся встреча", ["итог"])
     )
     #expect(combined.title == "вся встреча")
-    #expect(combined.summary == ["итог", "Кусок 2 из 3: ответ модели не разобран"])
+    #expect(combined.summary == ["итог", refusal])
 }
 
 // A failed merge costs the title and the summary, never the points: losing a whole meeting's
@@ -87,11 +89,11 @@ private func partial(_ title: String, _ summary: [String], decisions: [String] =
 @Test func aFailedMergeKeepsThePointsAndNamesTheReason() {
     let combined = SummaryAssembly.combine(
         partials: [partial("первый", ["о первом"], decisions: ["решение A"]), partial("второй", ["о втором"], tasks: ["задача Б"])],
-        refusals: ["Сведение не удалось: ответ модели не разобран"],
+        refusals: [SummaryAssembly.mergeParseFailure],
         merged: nil
     )
     #expect(combined.title.isEmpty)
-    #expect(combined.summary == ["Сведение не удалось: ответ модели не разобран"])
+    #expect(combined.summary == [SummaryAssembly.mergeParseFailure])
     #expect(combined.decisions.map(\.text) == ["решение A"])
     #expect(combined.tasks.map(\.text) == ["задача Б"])
 }

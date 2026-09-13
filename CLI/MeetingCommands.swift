@@ -115,6 +115,7 @@ func runMeetingSummarize(_ file: URL) async throws {
         maxTurns: config.summaryChunkTurns
     )
     note("бюджет смен: \(config.summaryChunkTurns), кусков: \(chunks.count)")
+    note("конфиг: \(MeetingsConfig.configFileURL.path), секция meetings")
     for (number, chunk) in chunks.enumerated() {
         note(
             String(
@@ -144,16 +145,14 @@ func runMeetingSummarize(_ file: URL) async throws {
         let mark = task.timecode == nil ? "×" : " "
         note(String(format: "%@ %.2f %@ задача: %@", mark, task.ratio, stamp, task.text))
     }
-    // The six new keys never appear in the owner's config file: `loadOrCreate` only ever writes
+    // The summary keys never appear in the owner's config file: `loadOrCreate` only ever writes
     // the whole `meetings` section, and only when it is absent entirely — an existing section
     // gets missing keys from the in-memory default instead. So the knob this command exists to
-    // help tune is real but invisible in the owner's file, and naming where it lives is the only
-    // way to know it can be turned at all.
+    // help tune is real but invisible in the owner's file, which is why the path is printed
+    // unconditionally above, next to the budget it names. Here, on a quote that failed to match,
+    // only the threshold itself needs naming — the path was already given.
     if checked.contains(where: { $0.timecode == nil }) || checkedTasks.contains(where: { $0.timecode == nil }) {
-        note(
-            "порог quoteMatchRatio и бюджет summaryChunkTurns правятся в "
-                + "\(MeetingsConfig.configFileURL.path), секция meetings"
-        )
+        note("порог quoteMatchRatio правится там же")
     }
 
     let updated = try SummaryInsertion.apply(

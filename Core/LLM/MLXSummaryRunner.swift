@@ -4,7 +4,8 @@ import Foundation
 ///
 /// A subprocess rather than `mlx-swift`: the Swift route means two large new SPM dependencies,
 /// and this project already lost days to a package that would not resolve. The cost is that the
-/// model loads on every call — 15 s cold, 3 s warm, measured — which is seconds every few hours.
+/// model loads twice per meeting now — once for the per-chunk pass, once for the merge — at
+/// 15 s cold, 3 s warm, measured; still seconds every few hours.
 public struct MLXSummaryRunner: SummaryRunning {
     public enum Failure: LocalizedError, SummaryFailure, Equatable {
         case uvMissing(String)
@@ -53,18 +54,21 @@ public struct MLXSummaryRunner: SummaryRunning {
     /// `tasks` with four of its own (one a 5-15 word quote) and `openIssues`.
     ///
     /// Getting it wrong is not a shorter answer, it is a broken one: a truncated answer is not
-    /// valid JSON. Alone it reaches `SummaryResponse` as a permanent failure with the reason in
-    /// the file, which is the right outcome; inside a merge it used to arrive as prose the merge
-    /// would quietly absorb, which is why the script now checks each partial before merging.
+    /// valid JSON. Swift parses each partial on its own in the loop in `summarize(chunks:)` and
+    /// names the failure by chunk number rather than failing the meeting, so a truncated answer
+    /// costs one chunk, not the whole meeting.
     ///
     /// Moving it used to cost merge headroom directly, back when the merge call carried whole
     /// partial summaries. It no longer does: the merge sees only each partial's `summary` array,
     /// a few lines each, so this number bounds one chunk's answer and nothing past it — see
     /// `checkMergeFits` for what actually limits the merge now.
     static let maxTokens = 2500
-    /// The merge pass answers about a whole meeting rather than a chunk of one, so it gets more
-    /// room than a single chunk's summary needs.
-    static let mergeMaxTokens = 3000
+    /// The merge answers with a title and at most ten summary lines — `SummaryPrompt.merge` caps
+    /// the count itself — strictly less than a chunk's decisions, tasks and open issues, quotes
+    /// included. It needs less room than `maxTokens`, not more, now that it no longer re-emits
+    /// the chunks' own points. `checkMergeFits` subtracts this from the input budget, so leaving
+    /// it oversized would spend headroom on an answer shape that cannot use it.
+    static let mergeMaxTokens = 800
     /// Characters per token, deliberately pessimistic: the probe measured 3.04 on plain
     /// transcript text, and speaker labels with timecodes tokenise worse than prose.
     ///
@@ -146,6 +150,7 @@ public struct MLXSummaryRunner: SummaryRunning {
 
         var partials: [MeetingSummary] = []
         var refusals: [String] = []
+        var firstFailure: Error?
         for (number, raw) in answers.enumerated() {
             // `number` is trusted as the chunk's position — the answers file holds the results of
             // the script's list comprehension over `request["prompts"]`, so its JSON array
@@ -156,15 +161,19 @@ public struct MLXSummaryRunner: SummaryRunning {
             // A chunk whose answer does not parse is skipped and named. Failing the whole meeting
             // would be worse and pointless: generation runs at temperature 0, so the retry
             // produces the same unreadable answer for ever.
-            if let partial = try? SummaryResponse.parse(raw) {
-                partials.append(partial)
-            } else {
-                refusals.append("Кусок \(number + 1) из \(chunks.count): ответ модели не разобран")
+            do {
+                partials.append(try SummaryResponse.parse(raw))
+            } catch {
+                if firstFailure == nil { firstFailure = error }
+                refusals.append(SummaryAssembly.chunkParseFailure(number: number + 1, of: chunks.count))
             }
         }
         // Nothing parsed at all: there is no summary to write, and the reason belongs in the file
-        // as a permanent failure rather than as a file full of refusal lines.
-        guard !partials.isEmpty else { throw SummaryResponse.Failure.notJSON }
+        // as a permanent failure rather than as a file full of refusal lines. Rethrows the first
+        // chunk's actual failure rather than assuming `.notJSON`: `SummaryResponse.parse` also
+        // throws `.emptySummary` for well-formed JSON with nothing in `summary`, and that
+        // sentence, not "something other than JSON", is what belongs in the archive.
+        guard !partials.isEmpty else { throw firstFailure ?? SummaryResponse.Failure.notJSON }
 
         guard partials.count > 1 else {
             return SummaryAssembly.combine(partials: partials, refusals: refusals, merged: nil)
@@ -183,11 +192,11 @@ public struct MLXSummaryRunner: SummaryRunning {
             ]
         )
         guard let raw = mergeAnswer.first, let merged = try? SummaryResponse.parse(raw) else {
-            // The points survive a failed merge; only the headline is lost. Same shape as a
-            // refused cleanup inserting the raw dictation with the reason named.
+            // The title and the summary are lost; the points survive. Same shape as a refused
+            // cleanup inserting the raw dictation with the reason named.
             return SummaryAssembly.combine(
                 partials: partials,
-                refusals: refusals + ["Сведение не удалось: ответ модели не разобран"],
+                refusals: refusals + [SummaryAssembly.mergeParseFailure],
                 merged: nil
             )
         }

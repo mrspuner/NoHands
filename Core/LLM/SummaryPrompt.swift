@@ -7,8 +7,8 @@ import Foundation
 /// pipeline the transcript arrives in the same call and that instruction would replace the
 /// summary with that sentence. Its six markdown sections became JSON fields, because the quote
 /// check — the thing that told a real decision from an invented one on 2026-09-07 — needs
-/// structure. And its ceiling on the number of points is gone: on a fifteen-minute chunk the
-/// ceiling is what turned an hour of conversation into a table of contents.
+/// structure. And its ceiling on the number of points is gone: on a dense chunk the ceiling is
+/// what turned an hour of conversation into a table of contents.
 ///
 /// Lives in code rather than in the config for the same reason the envelope does: a prompt kept
 /// in the owner's `config.json` cannot be fixed for an installation that already has one.

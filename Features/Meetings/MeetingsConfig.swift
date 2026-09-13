@@ -67,26 +67,27 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
     /// Configured rather than looked up: an application launched from Finder has a PATH that does
     /// not include `~/.local/bin`.
     public var uvPath: String
-    /// One timeout for the whole subprocess: the model load, a generation for every chunk, and
-    /// the merge pass on top.
+    /// One timeout per subprocess run, not per meeting: `MLXSummaryRunner.summarize(chunks:)`
+    /// launches the subprocess twice — once for the per-chunk pass, once for the merge — and each
+    /// run pays this timeout and its own model load on its own.
     ///
     /// The number it used to cite — two minutes on a 71-minute meeting — was superseded within
     /// the week by the live run of 2026-09-07: 68 minutes took 5 min 51 s, of which 349 s was
-    /// generation, because that meeting was 105 KB of transcript against the probe's 36 KB. And
-    /// that was one generation. Chunking makes the same meeting five partial summaries plus a
-    /// merge.
+    /// generation, because that meeting was 105 KB of transcript against the probe's 36 KB. Redone
+    /// against this branch's chunking: at the 300 s default the same 68-minute meeting cuts into
+    /// fourteen chunks, not five, and its per-chunk pass took 8 minutes of wall clock end to end.
+    /// Scaled to `maxMeetingSeconds`, a four-hour meeting's first pass lands near half an hour
+    /// against this 1800 s limit — generous, but no longer generous by an order of magnitude.
     ///
-    /// Half an hour is that arithmetic with room for a cold load and for `uv` fetching packages
-    /// after a cache wipe. Generous on purpose: `timedOut` is a *temporary* failure, and a
-    /// temporary failure stops the whole archive pass. Files are taken in filename order, so one
-    /// meeting that reliably runs over would block every later file in `~/Meetings`, at every
-    /// launch, for ever — the cost of guessing low is not a slow evening, it is a stalled archive.
+    /// Generous on purpose regardless: `timedOut` is a *temporary* failure, and a temporary
+    /// failure stops the whole archive pass. Files are taken in filename order, so one meeting
+    /// that reliably runs over would block every later file in `~/Meetings`, at every launch, for
+    /// ever — the cost of guessing low is not a slow evening, it is a stalled archive.
     ///
-    /// What actually bounds how long a meeting the app will accept is time plus
-    /// `maxMeetingSeconds`, the four-hour recording cap — not this window: `checkMergeFits`
-    /// (`MLXSummaryRunner`) checks the merge call's exact size before it is sent, and it no longer
-    /// refuses on a chunk count, so a longer meeting costs more chunks and more minutes, not a
-    /// hard wall here.
+    /// The merge run gets the same timeout even though it finishes far sooner — what actually
+    /// bounds its size is `checkMergeFits` (`MLXSummaryRunner`), which checks the merge call's
+    /// exact size before it is sent rather than a chunk count, so a longer meeting costs more
+    /// chunks and more minutes on the first pass, not a hard wall here.
     public var summaryTimeoutSeconds: Double
     /// The model's 32k window minus the answer and the system part. It describes the model, and
     /// it must keep describing the model: raising it to make some other arithmetic come out would
@@ -94,8 +95,10 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
     /// subprocess is worse than a refusal with a name on it.
     ///
     /// Since this branch it is a limit on a *chunk*, not on a meeting: `tooLong` now means "this
-    /// quarter hour is abnormally dense", not "this meeting is long", and it is a long way from
-    /// firing — fifteen minutes at the measured 296 tokens a minute is about 4500 tokens.
+    /// chunk is abnormally dense", not "this meeting is long", and it is a long way from firing —
+    /// at the default five-minute chunk and the measured 296 tokens a minute, that is about 1500
+    /// tokens, a third of the fifteen-minute estimate this comment used to cite, so the headroom
+    /// is only larger since the clock default moved.
     ///
     /// The same window bounds the merge call separately, checked by `checkMergeFits` right before
     /// that call is made — the merge only ever carries each chunk's `summary` array, a few lines
@@ -210,7 +213,7 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         summaryTimeoutSeconds: Double = 1800,
         summaryContextTokens: Int = 28_000,
         quoteMatchRatio: Double = 0.4,
-        summaryChunkSeconds: Double = 900,
+        summaryChunkSeconds: Double = 300,
         summaryChunkTurns: Int = 25,
         diarizationEnabled: Bool = true,
         voiceMatchThreshold: Double = 0.7,

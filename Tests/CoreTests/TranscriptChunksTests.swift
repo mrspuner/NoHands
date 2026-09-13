@@ -55,8 +55,8 @@ private let noTurnBudget = 1000
     }
 }
 
-// Dense speech hits the character budget before the fifteen minutes are up. Both limits are
-// live at once and the first one to trip wins.
+// Dense speech hits the character budget before the clock runs out. Both limits are live at
+// once and the first one to trip wins.
 @Test func theCharacterBudgetCutsBeforeTheClockOnDenseSpeech() {
     let line = String(repeating: "а", count: 90)
     let chunks = TranscriptChunks.split(

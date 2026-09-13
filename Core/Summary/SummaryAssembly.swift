@@ -17,6 +17,21 @@ import Foundation
 /// unreachable from outside `Core` makes that guarantee true by construction instead of by
 /// convention.
 enum SummaryAssembly {
+    /// Names a chunk whose answer did not parse. `number` is 1-based, matching what the owner
+    /// reads in the file.
+    ///
+    /// The single source for this sentence: `MLXSummaryRunner` builds it here rather than
+    /// inline, and tests read it back through this symbol rather than re-typing the words —
+    /// same reasoning as `TranscriptEnvelope` keeping one copy of its markers, after the two
+    /// spellings were once allowed to drift apart.
+    static func chunkParseFailure(number: Int, of total: Int) -> String {
+        "Кусок \(number) из \(total): ответ модели не разобран"
+    }
+
+    /// Names a merge pass whose answer did not parse. The points still survive a failed merge —
+    /// see `combine` — only the title and the merged summary are lost.
+    static let mergeParseFailure = "Сведение не удалось: ответ модели не разобран"
+
     /// - Parameters:
     ///   - partials: the chunks that parsed, in meeting order. Never empty — a run where nothing
     ///     parsed is a failure, not a summary.
