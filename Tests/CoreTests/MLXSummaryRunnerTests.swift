@@ -78,44 +78,6 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
     #expect(MLXSummaryRunner.mergeMaxTokens > MLXSummaryRunner.maxTokens)
 }
 
-// A partial that will not parse must stop the run with a named failure rather than travel into the
-// merge, where it would arrive as prose the merge quietly absorbs. The message carries the chunk
-// number and nothing else: the project does not log recognised speech, and the diagnostics file
-// this lands in is read back into a panel line.
-//
-// Gated on there being a merge at all — the same condition that decides whether one happens. With
-// one chunk the answer goes to Swift unvalidated on purpose: `SummaryResponse.Failure.notJSON` is
-// permanent, so the reason lands in the meeting file and the archive pass moves on, whereas a
-// non-zero exit here is `runnerFailed`, which is temporary and would stop the pass at every launch
-// for ever over an answer that is identical every time at temperature 0.
-@Test func theScriptRefusesAPartialThatIsNotJSONOnlyWhenThereWillBeAMerge() {
-    #expect(SummaryScript.source.contains("json.loads"))
-    #expect(SummaryScript.source.contains("sys.exit(1)"))
-    #expect(SummaryScript.source.contains("chunk %d"))
-    #expect(SummaryScript.source.contains("len(request[\"chunks\"]) > 1 and not is_json(partial)"))
-    // No `%s` anywhere in the message written to stderr — that is how the partial's own text
-    // would get there.
-    #expect(!SummaryScript.source.contains("sys.stderr.write(\"chunk %d: %s"))
-}
-
-// The merge sees text lifted out of the transcript — every partial carries `quote` fields copied
-// from it verbatim — so it travels in the same envelope the chunk pass uses. The markers come
-// from the request rather than being typed a second time in Python: two sources of truth for this
-// marker is exactly the drift the envelope exists to avoid.
-@Test func theScriptWrapsEachPartialInTheMarkersItIsGiven() {
-    #expect(SummaryScript.source.contains("request[\"openingMarker\"]"))
-    #expect(SummaryScript.source.contains("request[\"closingMarker\"]"))
-    #expect(!SummaryScript.source.contains("расшифровка"))
-}
-
-@Test func theScriptLoadsTheModelOnceAndMergesOnlyWhenThereIsMoreThanOneChunk() {
-    #expect(SummaryScript.source.contains("enumerate(request[\"chunks\"], 1)"))
-    #expect(SummaryScript.source.contains("if len(partials) == 1"))
-    #expect(SummaryScript.source.contains("load(request[\"model\"])"))
-    // One load call in the whole script — the model must not be reloaded per chunk.
-    #expect(SummaryScript.source.components(separatedBy: "load(request[\"model\"])").count == 2)
-}
-
 @Test func aMissingUvIsNamedWithItsPath() async {
     do {
         _ = try await runner().summarize(chunks: ["[00:00:01] Я: раз"])
@@ -137,15 +99,6 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
     #expect(!MLXSummaryRunner.Failure.uvMissing("/x").isPermanent)
     #expect(!MLXSummaryRunner.Failure.timedOut(1800).isPermanent)
     #expect(!MLXSummaryRunner.Failure.runnerFailed("что-то").isPermanent)
-}
-
-// Скрипт вкомпилирован строкой, а не лежит ресурсом: `Bundle.module` в собранном приложении
-// искал его не там, куда его клал `make-app.sh`, и промах был бы не отказом, а падением.
-// Проверяются две строки, на которых стоит вся фаза: без первой в файл встречи попадёт
-// полминуты раздумий модели, без второй расшифровка станет творческой задачей.
-@Test func theScriptKeepsTheTwoSettingsTheDesignRestsOn() {
-    #expect(SummaryScript.source.contains("enable_thinking=False"))
-    #expect(SummaryScript.source.contains("temp=0.0"))
 }
 
 // The prompt is what the owner asked for, and these are the three properties that survive from
@@ -172,18 +125,43 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
     #expect(SummaryPrompt.mergePrefix.contains("Частичные конспекты"))
 }
 
-// What actually travels to the subprocess. The markers are in the request because Python wraps
-// each partial with them, and they have to be the same two strings dictation uses — asserted
-// against `TranscriptEnvelope` rather than against literals, so a change there cannot leave the
-// merge pass behind.
-@Test func theRequestCarriesThePromptTextAndTheMarkers() throws {
-    let data = try runner().encodedRequest(chunks: ["[00:00:01] Я: раз"])
+// The request carries one prompt per chunk plus a path for the answers, not chunks and merge
+// instructions: the merge is Swift's job now (task 3), so a prompt is all the script needs to
+// know about.
+@Test func theRequestCarriesOnePromptPerChunkAndAPathForTheAnswers() throws {
+    let runner = MLXSummaryRunner(
+        uvPath: "/nowhere/uv", model: "модель", timeout: 60, contextTokens: 28_000
+    )
+    let data = try runner.encodedRequest(
+        prompts: [
+            .init(system: "инструкция", user: "первый", maxTokens: 2500),
+            .init(system: "инструкция", user: "второй", maxTokens: 2500),
+        ],
+        answersPath: "/tmp/ответы.json"
+    )
     let request = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-    #expect(request?["openingMarker"] as? String == TranscriptEnvelope.openingMarker)
-    #expect(request?["closingMarker"] as? String == TranscriptEnvelope.closingMarker)
-    #expect(request?["mergePrefix"] as? String == SummaryPrompt.mergePrefix)
-    #expect(request?["maxTokens"] as? Int == MLXSummaryRunner.maxTokens)
-    #expect(request?["mergeMaxTokens"] as? Int == MLXSummaryRunner.mergeMaxTokens)
+    #expect(request?["model"] as? String == "модель")
+    #expect(request?["answersPath"] as? String == "/tmp/ответы.json")
+    let prompts = request?["prompts"] as? [[String: Any]]
+    #expect(prompts?.count == 2)
+    #expect(prompts?[0]["user"] as? String == "первый")
+    #expect(prompts?[0]["maxTokens"] as? Int == 2500)
+    // The merge is Swift's job now: nothing in the request tells the script about it.
+    #expect(request?["mergeSystem"] == nil)
+    #expect(request?["chunks"] == nil)
+}
+
+// The script is what the subprocess runs; two lines of it are conditions of the work rather
+// than preferences, and one is the new contract.
+@Test func theScriptKeepsItsConditionsAndWritesAnswersToAFile() {
+    #expect(SummaryScript.source.contains("enable_thinking=False"))
+    #expect(SummaryScript.source.contains("temp=0.0"))
+    #expect(SummaryScript.source.contains("request[\"answersPath\"]"))
+    #expect(SummaryScript.source.contains("json.dump"))
+    // The merge and the JSON check moved to Swift; leaving either here would be a second
+    // implementation nobody tests.
+    #expect(!SummaryScript.source.contains("mergeSystem"))
+    #expect(!SummaryScript.source.contains("def is_json"))
 }
 
 // The merge pass never sees the transcript — only the partial summaries. That is what makes it

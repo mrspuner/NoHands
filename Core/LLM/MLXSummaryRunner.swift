@@ -84,37 +84,26 @@ public struct MLXSummaryRunner: SummaryRunning {
         self.contextTokens = contextTokens
     }
 
-    private struct Request: Encodable {
+    struct Request: Encodable {
+        struct Prompt: Encodable {
+            var system: String
+            var user: String
+            var maxTokens: Int
+        }
+
         var model: String
-        var system: String
-        var mergeSystem: String
-        var mergePrefix: String
-        /// The envelope the merge pass wraps each partial summary in. It travels in the request
-        /// rather than being written out again in Python: the partials carry `quote` fields
-        /// copied verbatim out of the transcript, so they need the same envelope the chunk pass
-        /// uses, and a second copy of the marker in the script is the drift this project spends
-        /// its comments avoiding.
-        var openingMarker: String
-        var closingMarker: String
-        var chunks: [String]
-        var maxTokens: Int
-        var mergeMaxTokens: Int
+        /// Where the child writes its answers. A file rather than stdout: one pass returns every
+        /// chunk's partial summary at once, which on a long meeting is hundreds of kilobytes —
+        /// far past Darwin's 64 KB pipe buffer, where the child would block on the write and the
+        /// run would surface as a timeout. The request already travels this road.
+        var answersPath: String
+        var prompts: [Prompt]
     }
 
     /// Everything the subprocess is told, built apart from running it so a test can read it back.
-    func encodedRequest(chunks: [String]) throws -> Data {
+    func encodedRequest(prompts: [Request.Prompt], answersPath: String) throws -> Data {
         try JSONEncoder().encode(
-            Request(
-                model: model,
-                system: SummaryPrompt.system,
-                mergeSystem: SummaryPrompt.merge,
-                mergePrefix: SummaryPrompt.mergePrefix,
-                openingMarker: TranscriptEnvelope.openingMarker,
-                closingMarker: TranscriptEnvelope.closingMarker,
-                chunks: chunks.map { SummaryPrompt.user(chunk: $0) },
-                maxTokens: Self.maxTokens,
-                mergeMaxTokens: Self.mergeMaxTokens
-            )
+            Request(model: model, answersPath: answersPath, prompts: prompts)
         )
     }
 
@@ -134,13 +123,12 @@ public struct MLXSummaryRunner: SummaryRunning {
         // hold one chunk is a `tooLong` problem, not a `tooManyChunks` one, and the arithmetic
         // below can go negative for such a context.
         //
-        // Only when there is actually going to be a merge: with one chunk the script writes
-        // `partials[0]` straight back and returns — `if len(partials) == 1` — without ever
-        // building `mergePrefix`. So a single chunk has no merge call for this limit to protect,
-        // and the guard must not fire for it no matter how small `contextTokens` is. The merge
-        // call, when there is one, is `mergePrefix` plus one partial per chunk, each up to
-        // `maxTokens` — nothing else bounds that. The number of chunks a meeting yields is fixed
-        // by its length, so a retry cannot help: same reasoning as `tooLong` being permanent.
+        // Only when there is actually going to be a merge: with one chunk there is nothing to
+        // merge, so a single chunk has no merge call for this limit to protect, and the guard
+        // must not fire for it no matter how small `contextTokens` is. The merge call, when
+        // there is one, is `mergePrefix` plus one partial per chunk, each up to `maxTokens` —
+        // nothing else bounds that. The number of chunks a meeting yields is fixed by its
+        // length, so a retry cannot help: same reasoning as `tooLong` being permanent.
         if chunks.count > 1 {
             let chunkLimit = (contextTokens - Self.mergeMaxTokens) / Self.maxTokens
             guard chunks.count <= chunkLimit else {
@@ -156,18 +144,30 @@ public struct MLXSummaryRunner: SummaryRunning {
             throw Failure.uvMissing(uvPath)
         }
 
-        let request = try encodedRequest(chunks: chunks)
-        let answer = try await run(uv: URL(fileURLWithPath: uv), request: request)
-        return try SummaryResponse.parse(answer)
+        // TEMPORARY, task 3 replaces this entirely: one prompt per chunk, sent as one run, and
+        // only the first answer kept — every later chunk's partial summary is silently dropped.
+        // Wrong on purpose so the branch compiles between task 2 and task 3: which prompts to
+        // send and how partial answers become one summary is task 3's job, where tests can see
+        // it, not this runner's.
+        let prompts = chunks.map {
+            Request.Prompt(system: SummaryPrompt.system, user: SummaryPrompt.user(chunk: $0), maxTokens: Self.maxTokens)
+        }
+        let answers = try await run(uv: URL(fileURLWithPath: uv), prompts: prompts)
+        guard answers.count == prompts.count else {
+            throw Failure.runnerFailed(
+                "the summary runner returned \(answers.count) answers for \(prompts.count) prompts"
+            )
+        }
+        return try SummaryResponse.parse(answers[0])
     }
 
     /// The whole subprocess dance is blocking, and blocking a cooperative thread for two minutes
     /// starves the pool. It runs on a queue of its own and comes back through a continuation.
-    private func run(uv: URL, request: Data) async throws -> String {
+    private func run(uv: URL, prompts: [Request.Prompt]) async throws -> [String] {
         try await withCheckedThrowingContinuation { continuation in
             Self.queue.async {
                 do {
-                    continuation.resume(returning: try blockingRun(uv: uv, request: request))
+                    continuation.resume(returning: try blockingRun(uv: uv, prompts: prompts))
                 } catch {
                     continuation.resume(throwing: error)
                 }
@@ -187,8 +187,17 @@ public struct MLXSummaryRunner: SummaryRunning {
     /// cooperating process to exit and short enough not to matter when it is not.
     private static let terminationGrace: TimeInterval = 2
 
-    private func blockingRun(uv: URL, request: Data) throws -> String {
+    private func blockingRun(uv: URL, prompts: [Request.Prompt]) throws -> [String] {
         let process = Process()
+
+        // Where the child writes its answers, removed the same way the request file is: created
+        // (by the child, not here) and torn down in the same breath as everything else this run
+        // touches.
+        let answersFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("nohands-summary-answers-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: answersFile) }
+
+        let request = try encodedRequest(prompts: prompts, answersPath: answersFile.path)
 
         // The request travels as a file, not on stdin. A meeting transcript is 65-140 KB of
         // UTF-8 — past Darwin's 64 KB pipe capacity — so writing it to stdin blocks the parent
@@ -228,13 +237,12 @@ public struct MLXSummaryRunner: SummaryRunning {
         // pipe nobody drains fills its buffer and hangs the child — which would surface as a
         // timeout on a run that was working fine. There is no transcript content here.
         //
-        // stdout stays a pipe, and that only works because the answer is bounded. Exactly one
-        // answer is ever written there — the merged summary, or the single partial when there is
-        // only one chunk — so the ceiling is `mergeMaxTokens`, 3000 tokens. Cyrillic JSON runs
-        // around 2-3 bytes per token, so about 9 KB against Darwin's 64 KB buffer. Room for
-        // roughly seven times the current ceiling; past about 20 000 tokens the child would block
-        // writing and this would surface as a timeout on a run that was working fine, for the
-        // same reason stderr cannot be a pipe.
+        // stdout stays a pipe, but nothing meaningful travels on it any more: the answers go to
+        // `answersFile` for the same reason the request goes to a file rather than stdin — one
+        // pass can return hundreds of kilobytes of partial summaries, past Darwin's 64 KB pipe
+        // buffer, where the child would block on the write and the run would surface as a
+        // timeout. What (if anything) the script still writes to stdout is read and discarded
+        // below, so a pipe nobody drains cannot hang it either.
         let diagnostics = FileManager.default.temporaryDirectory
             .appendingPathComponent("nohands-summary-\(UUID().uuidString).log")
         FileManager.default.createFile(atPath: diagnostics.path, contents: nil)
@@ -266,11 +274,21 @@ public struct MLXSummaryRunner: SummaryRunning {
             throw Failure.timedOut(timeout)
         }
 
-        let answer = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        // Drained and discarded: nothing meaningful travels on stdout any more (see above), but
+        // an unread pipe would still fill and block a child that happens to write to it.
+        _ = output.fileHandleForReading.readDataToEndOfFile()
+
         guard process.terminationStatus == 0 else {
             throw Failure.runnerFailed(Self.lastLine(of: diagnostics))
         }
-        return answer
+
+        guard let answersData = FileManager.default.contents(atPath: answersFile.path),
+            let answers = try? JSONDecoder().decode([String].self, from: answersData),
+            !answers.isEmpty
+        else {
+            throw Failure.runnerFailed("the summary runner wrote no readable answers")
+        }
+        return answers
     }
 
     /// The last line of the script's own diagnostics, capped to what one panel line holds.
