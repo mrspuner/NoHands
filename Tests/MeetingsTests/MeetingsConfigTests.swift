@@ -140,50 +140,18 @@ import Testing
     #expect(config.summaryEnabled)
     #expect(config.summaryModel == "mlx-community/Qwen3-8B-4bit")
     #expect(config.uvPath == "~/.local/bin/uv")
-    // Half an hour, not the original fifteen minutes: the timeout covers one model load, one
-    // generation per chunk and the merge pass, and the number it used to cite — "2 minutes on a
-    // 71-minute meeting" — was superseded the same week by a live 68-minute run that took
-    // 5 min 51 s.
+    // Half an hour, per subprocess run — there are two, the chunk pass and the merge, each with
+    // its own model load. See the property's own doc for the arithmetic behind the number.
     #expect(config.summaryTimeoutSeconds == 1800)
-    // Still the model's window minus the answer, and deliberately not raised past it to make the
-    // merge guard's arithmetic come out — see
-    // `theSupportedMeetingLengthIsWhateverTheMergeGuardAllows`.
+    // Still the model's window minus the answer. `checkMergeFits` (`MLXSummaryRunner`) now checks
+    // the merge call's actual size against this at run time, rather than a chunk count computed
+    // from it here — see that guard's tests in `MLXSummaryRunnerTests`.
     #expect(config.summaryContextTokens == 28_000)
     #expect(config.quoteMatchRatio == 0.4)
-}
-
-// How long a meeting this app can summarise at all. Four constants across two modules decide it
-// between them, and this is the only place that says the answer out loud.
-//
-// The merge call holds one partial summary per chunk, each up to `maxTokens`, plus its own answer
-// at `mergeMaxTokens`, all inside `summaryContextTokens` — the model's window. That division is
-// the ceiling: (28000 - 3000) / 2500 = 10 chunks, and at fifteen minutes a chunk that is 150
-// minutes of meeting. Longer than that is refused by name — `tooManyChunks`, permanent, the
-// reason recorded in the meeting file — instead of crashing inside the subprocess. Note that
-// `maxMeetingSeconds` is 240 minutes: the app will record meetings it then refuses to summarise.
-// That is the honest state of this branch, not an oversight.
-//
-// Four numbers move this line: `maxTokens` and `mergeMaxTokens` in `MLXSummaryRunner`,
-// `summaryContextTokens` and `summaryChunkSeconds` here. When this test goes red the failure
-// message carries the supported length the new numbers produce — read it, decide whether it is
-// acceptable, then update these expectations. What must not be done is raising
-// `summaryContextTokens` past the model's window to make the arithmetic come out: the guard would
-// admit a merge call the model physically cannot take, trading a named refusal for a crash the
-// pipeline has no way to explain.
-//
-// Lifting the ceiling for real means merging hierarchically, so that the merge holds a fixed
-// number of partials however long the meeting was. That is deliberately not in this branch — the
-// owner's longest meeting today is 68 minutes, which is five chunks.
-@Test func theSupportedMeetingLengthIsWhateverTheMergeGuardAllows() {
-    let config = MeetingsConfig.default
-    let chunkLimit =
-        (config.summaryContextTokens - MLXSummaryRunner.mergeMaxTokens) / MLXSummaryRunner.maxTokens
-    let supportedMinutes = Double(chunkLimit) * config.summaryChunkSeconds / 60
-    #expect(chunkLimit == 10, "the merge guard now allows \(chunkLimit) chunks")
-    #expect(
-        supportedMinutes == 150,
-        "the longest meeting that can be summarised is now \(supportedMinutes) minutes"
-    )
+    // Pinned so the memberwise initialiser's own default cannot drift back to the pre-branch
+    // value while only `.default` is updated — that gap shipped once already: `.default` said
+    // 300, the initialiser still said 900, and only a caller that omits the argument sees which.
+    #expect(config.summaryChunkSeconds == 300)
 }
 
 // A config the owner already wrote has none of the new keys. A missing key is a default,
@@ -211,4 +179,14 @@ import Testing
     let config = try MeetingsConfig.decode(json)
     #expect(config.micThresholdDBFS == -35)
     #expect(config.voiceMatchThreshold == 0.7)
+}
+
+@Test func theTurnBudgetHasAMeasuredDefault() {
+    #expect(MeetingsConfig.default.summaryChunkTurns == 25)
+}
+
+@Test func aFileWithoutTheTurnBudgetStillReads() throws {
+    let config = try MeetingsConfig.decode(Data(#"{"summaryChunkSeconds": 600}"#.utf8))
+    #expect(config.summaryChunkSeconds == 600)
+    #expect(config.summaryChunkTurns == 25)
 }

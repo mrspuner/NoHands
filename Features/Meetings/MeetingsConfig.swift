@@ -67,21 +67,27 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
     /// Configured rather than looked up: an application launched from Finder has a PATH that does
     /// not include `~/.local/bin`.
     public var uvPath: String
-    /// One timeout for the whole subprocess: the model load, a generation for every chunk, and
-    /// the merge pass on top.
+    /// One timeout per subprocess run, not per meeting: `MLXSummaryRunner.summarize(chunks:)`
+    /// launches the subprocess twice — once for the per-chunk pass, once for the merge — and each
+    /// run pays this timeout and its own model load on its own.
     ///
     /// The number it used to cite — two minutes on a 71-minute meeting — was superseded within
     /// the week by the live run of 2026-09-07: 68 minutes took 5 min 51 s, of which 349 s was
-    /// generation, because that meeting was 105 KB of transcript against the probe's 36 KB. And
-    /// that was one generation. Chunking makes the same meeting five partial summaries plus a
-    /// merge, and the longest meeting this branch will accept at all — 150 minutes, see
-    /// `theSupportedMeetingLengthIsWhateverTheMergeGuardAllows` — ten of them plus a merge.
+    /// generation, because that meeting was 105 KB of transcript against the probe's 36 KB. Redone
+    /// against this branch's chunking: at the 300 s default the same 68-minute meeting cuts into
+    /// fourteen chunks, not five, and its per-chunk pass took 8 minutes of wall clock end to end.
+    /// Scaled to `maxMeetingSeconds`, a four-hour meeting's first pass lands near half an hour
+    /// against this 1800 s limit — generous, but no longer generous by an order of magnitude.
     ///
-    /// Half an hour is that arithmetic with room for a cold load and for `uv` fetching packages
-    /// after a cache wipe. Generous on purpose: `timedOut` is a *temporary* failure, and a
-    /// temporary failure stops the whole archive pass. Files are taken in filename order, so one
-    /// meeting that reliably runs over would block every later file in `~/Meetings`, at every
-    /// launch, for ever — the cost of guessing low is not a slow evening, it is a stalled archive.
+    /// Generous on purpose regardless: `timedOut` is a *temporary* failure, and a temporary
+    /// failure stops the whole archive pass. Files are taken in filename order, so one meeting
+    /// that reliably runs over would block every later file in `~/Meetings`, at every launch, for
+    /// ever — the cost of guessing low is not a slow evening, it is a stalled archive.
+    ///
+    /// The merge run gets the same timeout even though it finishes far sooner — what actually
+    /// bounds its size is `checkMergeFits` (`MLXSummaryRunner`), which checks the merge call's
+    /// exact size before it is sent rather than a chunk count, so a longer meeting costs more
+    /// chunks and more minutes on the first pass, not a hard wall here.
     public var summaryTimeoutSeconds: Double
     /// The model's 32k window minus the answer and the system part. It describes the model, and
     /// it must keep describing the model: raising it to make some other arithmetic come out would
@@ -89,20 +95,37 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
     /// subprocess is worse than a refusal with a name on it.
     ///
     /// Since this branch it is a limit on a *chunk*, not on a meeting: `tooLong` now means "this
-    /// quarter hour is abnormally dense", not "this meeting is long", and it is a long way from
-    /// firing — fifteen minutes at the measured 296 tokens a minute is about 4500 tokens.
+    /// chunk is abnormally dense", not "this meeting is long", and it is a long way from firing —
+    /// at the default five-minute chunk and the measured 296 tokens a minute, that is about 1500
+    /// tokens, a third of the fifteen-minute estimate this comment used to cite, so the headroom
+    /// is only larger since the clock default moved.
     ///
-    /// The same window bounds the merge call, which holds one partial summary per chunk. That is
-    /// what actually decides how long a meeting this app can summarise, and the arithmetic lives
-    /// in `theSupportedMeetingLengthIsWhateverTheMergeGuardAllows` rather than in anyone's head.
+    /// The same window bounds the merge call separately, checked by `checkMergeFits` right before
+    /// that call is made — the merge only ever carries each chunk's `summary` array, a few lines
+    /// each, so its exact size is known in advance rather than estimated from a chunk count.
     public var summaryContextTokens: Int
     /// Share of a quote's longest run that has to be found in the transcript. Measured: real
     /// quotes 65–100%, invented or foreign ones 12–18%, so the threshold sits in the gap.
     public var quoteMatchRatio: Double
-    /// Length of one chunk in seconds. Fifteen minutes is the length of the meeting that ran on
-    /// this machine on 2026-09-07 and produced the best summary of that day, while the
-    /// sixty-eight-minute one took ten gigabytes and was killed by the system.
+    /// Length of one chunk in seconds. Five minutes, not fifteen, is what the calibration
+    /// supports: on the only meeting whose completeness is hand-scored — sixteen minutes, four
+    /// people, a thirteen-item reference list — a fifteen-minute cut scored 1 of 13 while a
+    /// five-minute cut scored 5 of 13, the same score a turn-budget-only cut reached on its own.
+    /// `summaryChunkTurns` is the second limit, a ceiling for stretches denser than five minutes
+    /// can hold. One meeting and one reference list is a thin sample, and the model's own
+    /// judgment of what counts as a match is known to wobble.
     public var summaryChunkSeconds: Double
+    /// How many speaker turns one chunk of the transcript may hold before it is closed.
+    ///
+    /// The size of a chunk is a property of the meeting, not one number for all of them.
+    /// Measured on 2026-09-11: a sixteen-minute meeting whose single chunk held 59 turns produced
+    /// one point out of thirteen, while the same meeting in three chunks of 22, 13 and 25 turns
+    /// produced five. Chunks that worked elsewhere in the archive hold 12–29.
+    ///
+    /// The number is deliberately on the safe side: until phase 2г every interlocutor was one
+    /// «Собеседник», so turns in the archive are undercounted and the real budget is likely
+    /// larger. Calibrating it needs meetings with the voices told apart.
+    public var summaryChunkTurns: Int
 
     /// Whether speakers are separated at all. A switch, like `summaryEnabled`: if the step gets
     /// in the way, the archive must keep filling with transcripts.
@@ -164,7 +187,8 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         summaryTimeoutSeconds: 1800,
         summaryContextTokens: 28_000,
         quoteMatchRatio: 0.4,
-        summaryChunkSeconds: 900,
+        summaryChunkSeconds: 300,
+        summaryChunkTurns: 25,
         diarizationEnabled: true,
         voiceMatchThreshold: 0.7,
         minVoicePrintSeconds: 30,
@@ -189,7 +213,8 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         summaryTimeoutSeconds: Double = 1800,
         summaryContextTokens: Int = 28_000,
         quoteMatchRatio: Double = 0.4,
-        summaryChunkSeconds: Double = 900,
+        summaryChunkSeconds: Double = 300,
+        summaryChunkTurns: Int = 25,
         diarizationEnabled: Bool = true,
         voiceMatchThreshold: Double = 0.7,
         minVoicePrintSeconds: Double = 30,
@@ -213,6 +238,7 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         self.summaryContextTokens = summaryContextTokens
         self.quoteMatchRatio = quoteMatchRatio
         self.summaryChunkSeconds = summaryChunkSeconds
+        self.summaryChunkTurns = summaryChunkTurns
         self.diarizationEnabled = diarizationEnabled
         self.voiceMatchThreshold = voiceMatchThreshold
         self.minVoicePrintSeconds = minVoicePrintSeconds
@@ -257,6 +283,8 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
             ?? fallback.quoteMatchRatio
         summaryChunkSeconds = try container.decodeIfPresent(Double.self, forKey: .summaryChunkSeconds)
             ?? fallback.summaryChunkSeconds
+        summaryChunkTurns = try container.decodeIfPresent(Int.self, forKey: .summaryChunkTurns)
+            ?? fallback.summaryChunkTurns
         diarizationEnabled = try container.decodeIfPresent(Bool.self, forKey: .diarizationEnabled)
             ?? fallback.diarizationEnabled
         voiceMatchThreshold = try container.decodeIfPresent(Double.self, forKey: .voiceMatchThreshold)

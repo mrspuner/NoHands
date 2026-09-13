@@ -119,9 +119,10 @@ public actor MeetingSummarizer {
             let chunks = TranscriptChunks.split(
                 index,
                 maxSeconds: config.summaryChunkSeconds,
-                maxCharacters: Int(Double(config.summaryContextTokens) * MLXSummaryRunner.charactersPerToken)
+                maxCharacters: Int(Double(config.summaryContextTokens) * MLXSummaryRunner.charactersPerToken),
+                maxTurns: config.summaryChunkTurns
             )
-            let summary = try await makeRunner().summarize(chunks: chunks)
+            let summary = try await makeRunner().summarize(chunks: chunks.map(\.text))
             let decisions = QuoteMatch.check(
                 summary.decisions, against: index, threshold: config.quoteMatchRatio
             )

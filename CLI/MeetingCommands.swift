@@ -111,11 +111,21 @@ func runMeetingSummarize(_ file: URL) async throws {
     let chunks = TranscriptChunks.split(
         index,
         maxSeconds: config.summaryChunkSeconds,
-        maxCharacters: Int(Double(config.summaryContextTokens) * MLXSummaryRunner.charactersPerToken)
+        maxCharacters: Int(Double(config.summaryContextTokens) * MLXSummaryRunner.charactersPerToken),
+        maxTurns: config.summaryChunkTurns
     )
-    note("кусков: \(chunks.count)")
+    note("бюджет смен: \(config.summaryChunkTurns), кусков: \(chunks.count)")
+    note("конфиг: \(MeetingsConfig.configFileURL.path), секция meetings")
+    for (number, chunk) in chunks.enumerated() {
+        note(
+            String(
+                format: "  кусок %d: %.1f мин, смен %d, символов %d",
+                number + 1, chunk.seconds / 60, chunk.turns, chunk.text.count
+            )
+        )
+    }
     let started = Date()
-    let summary = try await runner.summarize(chunks: chunks)
+    let summary = try await runner.summarize(chunks: chunks.map(\.text))
     note("ответ за \(Int(Date().timeIntervalSince(started))) с")
 
     let checked = QuoteMatch.check(
@@ -135,13 +145,14 @@ func runMeetingSummarize(_ file: URL) async throws {
         let mark = task.timecode == nil ? "×" : " "
         note(String(format: "%@ %.2f %@ задача: %@", mark, task.ratio, stamp, task.text))
     }
-    // The six new keys never appear in the owner's config file: `loadOrCreate` only ever writes
+    // The summary keys never appear in the owner's config file: `loadOrCreate` only ever writes
     // the whole `meetings` section, and only when it is absent entirely — an existing section
     // gets missing keys from the in-memory default instead. So the knob this command exists to
-    // help tune is real but invisible in the owner's file, and naming where it lives is the only
-    // way to know it can be turned at all.
+    // help tune is real but invisible in the owner's file, which is why the path is printed
+    // unconditionally above, next to the budget it names. Here, on a quote that failed to match,
+    // only the threshold itself needs naming — the path was already given.
     if checked.contains(where: { $0.timecode == nil }) || checkedTasks.contains(where: { $0.timecode == nil }) {
-        note("порог quoteMatchRatio правится в \(MeetingsConfig.configFileURL.path), секция meetings")
+        note("порог quoteMatchRatio правится там же")
     }
 
     let updated = try SummaryInsertion.apply(

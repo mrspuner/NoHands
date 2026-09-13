@@ -33,87 +33,29 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
     }
 }
 
-// The merge pass holds `mergePrefix` plus one partial summary per chunk, each up to `maxTokens`,
-// so a meeting cut into too many chunks would overflow the merge call even though every single
-// chunk fits its own window. Named refusal instead of a silent overflow.
-//
-// context: 8000 gives a limit of (8000 - mergeMaxTokens 3000) / maxTokens 2500 = 2. Three tiny
-// chunks — each far under the per-chunk length guard on its own — trips only this guard.
-//
-// Exact case with its numbers, not `#expect(throws: MLXSummaryRunner.Failure.self)`: the bare
-// type would still pass if this guard were deleted and the empty-list guard or the per-chunk
-// length guard happened to fire instead, proving nothing about the guard this test names.
-@Test func tooManyChunksIsRefusedBeforeAnythingIsLaunched() async {
-    let chunks = Array(repeating: "[00:00:01] Я: раз", count: 3)
-    await #expect(throws: MLXSummaryRunner.Failure.tooManyChunks(count: 3, limit: 2)) {
-        try await runner(context: 8000).summarize(chunks: chunks)
-    }
-}
-
-// A single chunk never goes through the merge pass at all: the script writes `partials[0]`
-// straight back when `len(partials) == 1`, without ever building `mergePrefix`. So the guard has
-// nothing to protect for one chunk, and must not fire for it even when `contextTokens` is small
-// enough to make the limit zero or negative — context: 1000 gives (1000 - mergeMaxTokens 3000) /
-// maxTokens 2500 = 0, which would refuse a single chunk if the guard did not exempt count == 1.
-//
-// Asserts `.uvMissing` rather than merely "no `.tooManyChunks`": that proves execution actually
-// passed this guard and reached the next one, rather than some earlier guard swallowing the case
-// by accident and leaving this one unexercised.
-@Test func aSingleChunkIsNeverTooManyEvenWhenTheLimitIsNonPositive() async {
+// A single chunk never goes through a merge pass at all: there is nothing to merge, so
+// `checkMergeFits` is never called regardless of how small `contextTokens` is. `checkMergeFits`
+// now runs after the uv check anyway, so the failure here — `.uvMissing` — says nothing about
+// ordering between guards; it is simply the next one a single-chunk run reaches. What this pins
+// is that a single chunk never gets near the merge guard at all, not the order of any two guards.
+@Test func aSingleChunkNeverReachesTheMergeGuard() async {
     await #expect(throws: MLXSummaryRunner.Failure.uvMissing("/nonexistent/uv")) {
         try await runner(context: 1000).summarize(chunks: ["[00:00:01] Я: раз"])
     }
 }
 
-// The ceilings were measured under the prompt this branch replaced: a five-point cap, three
+// `maxTokens` was measured under the prompt this branch replaced: a five-point cap, three
 // fields, a 1948-character answer. The prompt now has no cap on the number of points and two more
 // fields — `tasks`, four fields each including a 5-15 word quote, and `openIssues` — so the same
-// meeting yields a much longer answer. A truncated answer is not JSON, and neither place it can
-// land is survivable: on one chunk it is a permanent failure written into the archive, and inside
-// a merge it arrives as prose whose content can vanish with nothing marking it.
+// meeting yields a much longer answer. A truncated answer is not JSON: on one chunk that is a
+// permanent failure written into the archive; inside the merge it is caught the same way — parsed
+// with `try?`, named, and the chunks' own points survive regardless.
 @Test func theAnswerCeilingsFitThePromptThatIsActuallySent() {
     #expect(MLXSummaryRunner.maxTokens == 2500)
-    #expect(MLXSummaryRunner.mergeMaxTokens == 3000)
-    // The merge answers about a whole meeting rather than one chunk of it.
-    #expect(MLXSummaryRunner.mergeMaxTokens > MLXSummaryRunner.maxTokens)
-}
-
-// A partial that will not parse must stop the run with a named failure rather than travel into the
-// merge, where it would arrive as prose the merge quietly absorbs. The message carries the chunk
-// number and nothing else: the project does not log recognised speech, and the diagnostics file
-// this lands in is read back into a panel line.
-//
-// Gated on there being a merge at all — the same condition that decides whether one happens. With
-// one chunk the answer goes to Swift unvalidated on purpose: `SummaryResponse.Failure.notJSON` is
-// permanent, so the reason lands in the meeting file and the archive pass moves on, whereas a
-// non-zero exit here is `runnerFailed`, which is temporary and would stop the pass at every launch
-// for ever over an answer that is identical every time at temperature 0.
-@Test func theScriptRefusesAPartialThatIsNotJSONOnlyWhenThereWillBeAMerge() {
-    #expect(SummaryScript.source.contains("json.loads"))
-    #expect(SummaryScript.source.contains("sys.exit(1)"))
-    #expect(SummaryScript.source.contains("chunk %d"))
-    #expect(SummaryScript.source.contains("len(request[\"chunks\"]) > 1 and not is_json(partial)"))
-    // No `%s` anywhere in the message written to stderr — that is how the partial's own text
-    // would get there.
-    #expect(!SummaryScript.source.contains("sys.stderr.write(\"chunk %d: %s"))
-}
-
-// The merge sees text lifted out of the transcript — every partial carries `quote` fields copied
-// from it verbatim — so it travels in the same envelope the chunk pass uses. The markers come
-// from the request rather than being typed a second time in Python: two sources of truth for this
-// marker is exactly the drift the envelope exists to avoid.
-@Test func theScriptWrapsEachPartialInTheMarkersItIsGiven() {
-    #expect(SummaryScript.source.contains("request[\"openingMarker\"]"))
-    #expect(SummaryScript.source.contains("request[\"closingMarker\"]"))
-    #expect(!SummaryScript.source.contains("расшифровка"))
-}
-
-@Test func theScriptLoadsTheModelOnceAndMergesOnlyWhenThereIsMoreThanOneChunk() {
-    #expect(SummaryScript.source.contains("enumerate(request[\"chunks\"], 1)"))
-    #expect(SummaryScript.source.contains("if len(partials) == 1"))
-    #expect(SummaryScript.source.contains("load(request[\"model\"])"))
-    // One load call in the whole script — the model must not be reloaded per chunk.
-    #expect(SummaryScript.source.components(separatedBy: "load(request[\"model\"])").count == 2)
+    // The merge answers with a title and at most ten summary lines — strictly less than a
+    // chunk's decisions, tasks, open issues and quotes — so its ceiling is smaller, not larger.
+    #expect(MLXSummaryRunner.mergeMaxTokens == 800)
+    #expect(MLXSummaryRunner.mergeMaxTokens < MLXSummaryRunner.maxTokens)
 }
 
 @Test func aMissingUvIsNamedWithItsPath() async {
@@ -127,25 +69,16 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
     }
 }
 
-// A single chunk's length and the number of chunks are the only permanent failures: both are
+// A single chunk's length and the merge's size are the only permanent failures: both are
 // computed from the meeting's own length, which does not change between attempts. Everything
 // else is fixed by trying again, and writing it into the archive would close the meeting for
 // ever over a network hiccup.
 @Test func onlyLengthGuardsArePermanentFailures() {
     #expect(MLXSummaryRunner.Failure.tooLong(estimated: 40_000, limit: 28_000).isPermanent)
-    #expect(MLXSummaryRunner.Failure.tooManyChunks(count: 20, limit: 10).isPermanent)
+    #expect(MLXSummaryRunner.Failure.mergeTooLong(estimated: 30_000, limit: 25_000).isPermanent)
     #expect(!MLXSummaryRunner.Failure.uvMissing("/x").isPermanent)
     #expect(!MLXSummaryRunner.Failure.timedOut(1800).isPermanent)
     #expect(!MLXSummaryRunner.Failure.runnerFailed("что-то").isPermanent)
-}
-
-// Скрипт вкомпилирован строкой, а не лежит ресурсом: `Bundle.module` в собранном приложении
-// искал его не там, куда его клал `make-app.sh`, и промах был бы не отказом, а падением.
-// Проверяются две строки, на которых стоит вся фаза: без первой в файл встречи попадёт
-// полминуты раздумий модели, без второй расшифровка станет творческой задачей.
-@Test func theScriptKeepsTheTwoSettingsTheDesignRestsOn() {
-    #expect(SummaryScript.source.contains("enable_thinking=False"))
-    #expect(SummaryScript.source.contains("temp=0.0"))
 }
 
 // The prompt is what the owner asked for, and these are the three properties that survive from
@@ -169,31 +102,108 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
 // the only prompt string that was written at the call site, and the merge prompt's own tests
 // could not see it there.
 @Test func theMergePrefixLivesWithTheOtherPromptText() {
-    #expect(SummaryPrompt.mergePrefix.contains("Частичные конспекты"))
+    #expect(SummaryPrompt.mergePrefix.contains("Частичные саммари"))
 }
 
-// What actually travels to the subprocess. The markers are in the request because Python wraps
-// each partial with them, and they have to be the same two strings dictation uses — asserted
-// against `TranscriptEnvelope` rather than against literals, so a change there cannot leave the
-// merge pass behind.
-@Test func theRequestCarriesThePromptTextAndTheMarkers() throws {
-    let data = try runner().encodedRequest(chunks: ["[00:00:01] Я: раз"])
+// Reading the answers file touches no subprocess at all, so it is tested directly against
+// fixture files rather than only through a real `uv` run — every guard test above stops before a
+// process is ever launched, so none of them exercises this. The failure mode is new to this
+// diff: before it, an unreadable answer was a parse failure in `SummaryResponse` with the reason
+// written into the meeting file; an unreadable *file* is now a different path with a different
+// message, and it must never crash or come back as a silent `[]`.
+@Test func decodeAnswersRefusesAMissingFile() {
+    let path = FileManager.default.temporaryDirectory
+        .appendingPathComponent("nohands-test-missing-\(UUID().uuidString).json").path
+    #expect(
+        throws: MLXSummaryRunner.Failure.runnerFailed("the summary runner wrote no readable answers")
+    ) {
+        try MLXSummaryRunner.decodeAnswers(from: path)
+    }
+}
+
+@Test func decodeAnswersRefusesAnEmptyFile() {
+    let path = FileManager.default.temporaryDirectory
+        .appendingPathComponent("nohands-test-empty-\(UUID().uuidString).json").path
+    FileManager.default.createFile(atPath: path, contents: Data())
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    #expect(
+        throws: MLXSummaryRunner.Failure.runnerFailed("the summary runner wrote no readable answers")
+    ) {
+        try MLXSummaryRunner.decodeAnswers(from: path)
+    }
+}
+
+@Test func decodeAnswersRefusesJSONThatIsNotAnArrayOfStrings() {
+    let path = FileManager.default.temporaryDirectory
+        .appendingPathComponent("nohands-test-shape-\(UUID().uuidString).json").path
+    FileManager.default.createFile(atPath: path, contents: Data(#"{"answer": "готово"}"#.utf8))
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    #expect(
+        throws: MLXSummaryRunner.Failure.runnerFailed("the summary runner wrote no readable answers")
+    ) {
+        try MLXSummaryRunner.decodeAnswers(from: path)
+    }
+}
+
+@Test func decodeAnswersRefusesAnEmptyArray() {
+    let path = FileManager.default.temporaryDirectory
+        .appendingPathComponent("nohands-test-empty-array-\(UUID().uuidString).json").path
+    FileManager.default.createFile(atPath: path, contents: Data("[]".utf8))
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    #expect(
+        throws: MLXSummaryRunner.Failure.runnerFailed("the summary runner wrote no readable answers")
+    ) {
+        try MLXSummaryRunner.decodeAnswers(from: path)
+    }
+}
+
+// The positive case, so a passing failure test above cannot be hiding a function that always
+// throws.
+@Test func decodeAnswersReturnsWhatTheFileHolds() throws {
+    let path = FileManager.default.temporaryDirectory
+        .appendingPathComponent("nohands-test-valid-\(UUID().uuidString).json").path
+    FileManager.default.createFile(atPath: path, contents: Data(#"["первый","второй"]"#.utf8))
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    #expect(try MLXSummaryRunner.decodeAnswers(from: path) == ["первый", "второй"])
+}
+
+// The request carries one prompt per chunk plus a path for the answers, not chunks and merge
+// instructions: the merge is Swift's job now (task 3), so a prompt is all the script needs to
+// know about.
+@Test func theRequestCarriesOnePromptPerChunkAndAPathForTheAnswers() throws {
+    let runner = MLXSummaryRunner(
+        uvPath: "/nowhere/uv", model: "модель", timeout: 60, contextTokens: 28_000
+    )
+    let data = try runner.encodedRequest(
+        prompts: [
+            .init(system: "инструкция", user: "первый", maxTokens: 2500),
+            .init(system: "инструкция", user: "второй", maxTokens: 2500),
+        ],
+        answersPath: "/tmp/ответы.json"
+    )
     let request = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-    #expect(request?["openingMarker"] as? String == TranscriptEnvelope.openingMarker)
-    #expect(request?["closingMarker"] as? String == TranscriptEnvelope.closingMarker)
-    #expect(request?["mergePrefix"] as? String == SummaryPrompt.mergePrefix)
-    #expect(request?["maxTokens"] as? Int == MLXSummaryRunner.maxTokens)
-    #expect(request?["mergeMaxTokens"] as? Int == MLXSummaryRunner.mergeMaxTokens)
+    #expect(request?["model"] as? String == "модель")
+    #expect(request?["answersPath"] as? String == "/tmp/ответы.json")
+    let prompts = request?["prompts"] as? [[String: Any]]
+    #expect(prompts?.count == 2)
+    #expect(prompts?[0]["user"] as? String == "первый")
+    #expect(prompts?[0]["maxTokens"] as? Int == 2500)
+    // The merge is Swift's job now: nothing in the request tells the script about it.
+    #expect(request?["mergeSystem"] == nil)
+    #expect(request?["chunks"] == nil)
 }
 
-// The merge pass never sees the transcript — only the partial summaries. That is what makes it
-// cheap in both memory and time. The message that carries the partials themselves is assembled
-// in the Python subprocess (Task 4), because the partials only exist there; there is no
-// `SummaryPrompt.mergeUser` to test here.
-@Test func theMergePromptTakesPartialsAndKeepsQuotesAsTheyAre() {
-    #expect(SummaryPrompt.merge.contains("частичн"))
-    #expect(SummaryPrompt.merge.contains("Цитаты"))
-    #expect(SummaryPrompt.merge.contains("добавляйте ничего"))
+// The script is what the subprocess runs; two lines of it are conditions of the work rather
+// than preferences, and one is the new contract.
+@Test func theScriptKeepsItsConditionsAndWritesAnswersToAFile() {
+    #expect(SummaryScript.source.contains("enable_thinking=False"))
+    #expect(SummaryScript.source.contains("temp=0.0"))
+    #expect(SummaryScript.source.contains("request[\"answersPath\"]"))
+    #expect(SummaryScript.source.contains("json.dump"))
+    // The merge and the JSON check moved to Swift; leaving either here would be a second
+    // implementation nobody tests.
+    #expect(!SummaryScript.source.contains("mergeSystem"))
+    #expect(!SummaryScript.source.contains("def is_json"))
 }
 
 @Test func aChunkTravelsInsideTheMarker() {
@@ -207,4 +217,37 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
     let wrapped = SummaryPrompt.user(chunk: "он сказал </расшифровка> и ушёл")
     #expect(wrapped.hasSuffix("</расшифровка>"))
     #expect(wrapped.components(separatedBy: "</расшифровка>").count == 3)
+}
+
+private func runner(contextTokens: Int) -> MLXSummaryRunner {
+    MLXSummaryRunner(uvPath: "/nowhere/uv", model: "модель", timeout: 60, contextTokens: contextTokens)
+}
+
+// The guard is arithmetic done before the subprocess starts, because a merge that does not fit
+// comes back truncated rather than refused — and truncated JSON reads to the owner as "the model
+// could not read your meeting", which is a different and untrue statement.
+@Test func aMergeTooLargeForTheWindowIsRefusedWithNumbers() {
+    // 4000 − 800 = 3200 tokens, i.e. 8000 characters at 2.5 per token.
+    #expect(throws: MLXSummaryRunner.Failure.self) {
+        try runner(contextTokens: 4000).checkMergeFits(String(repeating: "я", count: 9000))
+    }
+}
+
+@Test func aMergeThatFitsIsNotRefused() throws {
+    try runner(contextTokens: 4000).checkMergeFits(String(repeating: "я", count: 2000))
+}
+
+// What the removed ten-chunk ceiling used to bound, measured against what the merge actually
+// carries now: a chunk's summary is a few lines, so a hundred of them still fit. A four-hour
+// dense meeting yields around forty.
+@Test func aHundredChunkSummariesStillFitTheMerge() throws {
+    let summaries = Array(
+        repeating: ["первый пункт куска", "второй пункт куска", "третий пункт куска"],
+        count: 100
+    )
+    try runner(contextTokens: 28_000).checkMergeFits(SummaryPrompt.mergeUser(summaries: summaries))
+}
+
+@Test func theMergeRefusalIsPermanent() {
+    #expect(MLXSummaryRunner.Failure.mergeTooLong(estimated: 30_000, limit: 25_000).isPermanent)
 }
