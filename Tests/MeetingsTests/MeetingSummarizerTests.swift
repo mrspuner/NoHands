@@ -292,7 +292,7 @@ private let summary = MeetingSummary(
         report: { _ in }
     )
     await summarizer.scanArchive()
-    #expect(counts.all == [3])
+    #expect(counts.all == [8])
 }
 
 private final class OutcomeBox: @unchecked Sendable {

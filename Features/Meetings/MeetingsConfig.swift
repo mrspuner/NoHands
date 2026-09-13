@@ -104,9 +104,13 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
     /// Share of a quote's longest run that has to be found in the transcript. Measured: real
     /// quotes 65–100%, invented or foreign ones 12–18%, so the threshold sits in the gap.
     public var quoteMatchRatio: Double
-    /// Length of one chunk in seconds. Fifteen minutes is the length of the meeting that ran on
-    /// this machine on 2026-09-07 and produced the best summary of that day, while the
-    /// sixty-eight-minute one took ten gigabytes and was killed by the system.
+    /// Length of one chunk in seconds. Five minutes, not fifteen, is what the calibration
+    /// supports: on the only meeting whose completeness is hand-scored — sixteen minutes, four
+    /// people, a thirteen-item reference list — a fifteen-minute cut scored 1 of 13 while a
+    /// five-minute cut scored 5 of 13, the same score a turn-budget-only cut reached on its own.
+    /// `summaryChunkTurns` is the second limit, a ceiling for stretches denser than five minutes
+    /// can hold. One meeting and one reference list is a thin sample, and the model's own
+    /// judgment of what counts as a match is known to wobble.
     public var summaryChunkSeconds: Double
     /// How many speaker turns one chunk of the transcript may hold before it is closed.
     ///
@@ -180,7 +184,7 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         summaryTimeoutSeconds: 1800,
         summaryContextTokens: 28_000,
         quoteMatchRatio: 0.4,
-        summaryChunkSeconds: 900,
+        summaryChunkSeconds: 300,
         summaryChunkTurns: 25,
         diarizationEnabled: true,
         voiceMatchThreshold: 0.7,

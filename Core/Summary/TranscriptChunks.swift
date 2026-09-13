@@ -2,18 +2,26 @@ import Foundation
 
 /// Cuts a transcript into pieces small enough for the model to hold at once.
 ///
-/// Fifteen minutes is not a calculation. It is the length of the meeting that ran on the owner's
-/// machine on 2026-09-07 and produced the best summary of that day — names, a condition and a
-/// deadline — while the sixty-eight-minute meeting on the same prompt produced a table of
-/// contents and, on the second attempt, was killed by the system for taking ten gigabytes.
+/// Five minutes is not a calculation either. Fifteen minutes was the earlier default, justified by
+/// the length of the meeting that ran on the owner's machine on 2026-09-07 and produced the best
+/// summary of that day, while the sixty-eight-minute meeting on the same prompt produced a table
+/// of contents and, on the second attempt, was killed by the system for taking ten gigabytes. That
+/// justification held only until completeness could be measured: on the only meeting checked
+/// against a hand-written reference list — sixteen minutes, four people, thirteen things actually
+/// said — a fifteen-minute cut scored 1 of 13 against five minutes' 5 of 13. One meeting and one
+/// reference list is a thin sample, and the model's own judgment of what counts as a match is
+/// known to wobble.
 ///
-/// Fifteen minutes stopped being the whole rule once a sixteen-minute meeting on 2026-09-11 cut
-/// at that clock put 59 speaker turns in one chunk and produced one point out of thirteen, while
-/// five-minute chunks of the same meeting produced five. What separated the good chunks from the
-/// bad one was not time and not word count — a slower meeting elsewhere had made fifteen minutes
-/// work — but how many times the speaker changed. So a third limit joins the other two: how many
-/// speaker turns one chunk may hold. It is now a ceiling for calm stretches rather than the only
-/// rule — a monologue has no turns to spend and is still cut by the clock.
+/// Neither number was the whole rule on its own, which is why a third limit joins the other two:
+/// the same sixteen-minute meeting on 2026-09-11, cut at the old fifteen-minute clock, put 59
+/// speaker turns in one chunk and produced one point out of thirteen, while five-minute chunks
+/// of the same meeting produced five. What separated the good chunks from the bad one was not
+/// time and not word count — a slower meeting elsewhere had made fifteen minutes work — but how
+/// many times the speaker changed. So the third limit is how many speaker turns one chunk may
+/// hold. Combined with the five-minute clock it changed nothing on this meeting — the clock
+/// still trips first — but it is now a ceiling for stretches denser than five minutes can hold,
+/// which is what it did on the archive's longer meetings: closing chunks on turns rather than on
+/// time. A monologue has no turns to spend and is still cut by the clock.
 ///
 /// Three limits are live at once and the first to trip wins: the span in seconds, the number of
 /// characters, and the number of speaker turns.
