@@ -15,6 +15,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Same "build once, `update` in place" rule as `meetingQueue`, and for the same reason: two
     /// summarizers over the same archive would race each other's writes.
     private var meetingSummarizer: MeetingSummarizer?
+    /// Built once and never rebuilt, same as `meetingSummarizer`: two passes over the same
+    /// archive would read a file before the other had written it. No config to `update` here —
+    /// `SpeakerNaming` reads only the header the owner typed and the book itself.
+    private var speakerNaming: SpeakerNaming?
+    /// Owns the two archive passes above and runs them in sequence — see its own doc comment for
+    /// why ordering them at the call site, as this used to do, is not the same thing as
+    /// serializing them. Built once, alongside the two passes it holds.
+    private var archivePasses: ArchivePasses?
+    /// One store for `~/Meetings/.voices.json`, shared by the queue and the naming pass. `VoiceStore`
+    /// is an actor specifically so that concurrent read-modify-write cycles over that one file
+    /// serialize against each other; two separate instances would each hold the file open to
+    /// themselves and simply overwrite whichever saved last, silently losing the other's writes.
+    private let voiceStore = VoiceStore()
     /// Unlike `meetingQueue`, this one *is* recreated every time `rebuildMeetings` runs, as a
     /// side effect of that method always rebuilding this whole block rather than only at launch.
     /// The old timer is invalidated first, so a reload never leaves two of them sweeping.
@@ -179,17 +192,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard let summarizer = meetingSummarizer else { return nil }
 
+        if speakerNaming == nil {
+            speakerNaming = SpeakerNaming(
+                store: voiceStore,
+                report: { [panel] outcome in
+                    Task { @MainActor in
+                        panel.show(notice: PanelNotice.forNaming(outcome))
+                        panel.hideNotice(after: PanelNotice.dwell)
+                    }
+                }
+            )
+        }
+        guard let speakerNaming else { return nil }
+
+        if archivePasses == nil {
+            archivePasses = ArchivePasses(summarizer: summarizer, naming: speakerNaming)
+        }
+        guard let archivePasses else { return nil }
+
         // Built once and afterwards only re-configured. «Перечитать конфиг» is the single reload
         // path for every setting in this application, and a backlog drain can run for hours, so
         // replacing the actor here would routinely leave two of them working the same folder —
         // see `MeetingQueue.config` for what that costs. `startBuild`'s task guard exists for the
         // same reason on the dictation side.
+        let makeDiarizer: @Sendable () async throws -> any Diarizing = { try await FluidDiarizer.load() }
         if let existing = meetingQueue {
-            await existing.update(config: config, makeTranscriber: makeTranscriber)
+            await existing.update(config: config, makeTranscriber: makeTranscriber, makeDiarizer: makeDiarizer)
         } else {
             meetingQueue = MeetingQueue(
                 config: config,
                 makeTranscriber: makeTranscriber,
+                makeDiarizer: makeDiarizer,
+                voiceStore: voiceStore,
                 report: { [panel] outcome in
                     Task { @MainActor in
                         panel.show(notice: PanelNotice.forOutcome(outcome))
@@ -198,7 +232,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // A meeting that failed has no file in the archive to summarise; one that
                     // succeeded does, and `scanArchive` finds it without being told the path.
                     if outcome.failure == nil {
-                        Task { await summarizer.scanArchive() }
+                        Task { await archivePasses.scanArchive() }
                     }
                 }
             )
@@ -242,7 +276,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // fresh to sweep, but the order that needs no such argument is the better one.
             await queue.sweep()
             await queue.scanAll()
-            await summarizer.scanArchive()
+            await archivePasses.scanArchive()
         }
         // The machine is always on, so a once-a-day timer is all the scheduler this needs.
         let timer = Timer.scheduledTimer(withTimeInterval: 86400, repeats: true) { _ in

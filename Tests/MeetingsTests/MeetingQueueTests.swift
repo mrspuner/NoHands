@@ -10,9 +10,17 @@ private struct StubTranscriber: TimedTranscriber {
     /// Text, not `any Error`: a field of type `any Error` is not `Sendable`, and Swift 6 would
     /// refuse to accept this `TimedTranscriber` stub.
     var failureMessage: String?
+    /// Runs right before the microphone track's words are returned — the queue transcribes the
+    /// interlocutors' track, runs diarization, and only afterwards transcribes this one, so a
+    /// side effect landed here lets a test put a write inside the window between diarization and
+    /// the queue's own label-building, exactly where a concurrent naming pass would land one.
+    var onMicrophoneTranscribed: (@Sendable () async throws -> Void)?
 
     func transcribeTimed(audio url: URL) async throws -> [TimedWord] {
         if let failureMessage { throw TranscriptionError.modelUnavailable(failureMessage) }
+        if url.lastPathComponent == "mic.wav", let onMicrophoneTranscribed {
+            try await onMicrophoneTranscribed()
+        }
         return words[url.lastPathComponent] ?? []
     }
 }
@@ -70,17 +78,35 @@ private func word(_ text: String, _ start: Double) -> TimedWord {
     TimedWord(text: text, start: start, end: start + 0.4, confidence: 1)
 }
 
+/// The real diarizer is CoreML and cannot be raised in a test process.
+private struct FakeDiarizer: Diarizing {
+    var found: [VoiceSegment] = []
+    /// Text rather than `any Error`, for the same reason `StubTranscriber` carries a message:
+    /// a stored `any Error` is not `Sendable` and Swift 6 refuses the stub.
+    var failureMessage: String?
+
+    func segments(of audio: URL) async throws -> [VoiceSegment] {
+        if let failureMessage { throw DiarizationError.modelUnavailable(failureMessage) }
+        return found
+    }
+}
+
 private func makeQueue(
     _ fixture: Fixture,
     transcriber: StubTranscriber,
     level: @escaping @Sendable (URL, TimeInterval, TimeInterval) throws -> Float = { _, _, _ in 0 },
+    diarizer: any Diarizing = FakeDiarizer(),
+    store: VoiceStore? = nil,
+    config: MeetingsConfig = .default,
     outcomes: @escaping @Sendable (MeetingQueue.Outcome) -> Void
 ) -> MeetingQueue {
     MeetingQueue(
         queue: fixture.queue,
         archive: fixture.archive,
-        config: .default,
+        config: config,
         makeTranscriber: { transcriber },
+        makeDiarizer: { diarizer },
+        voiceStore: store ?? VoiceStore(url: fixture.archive.appendingPathComponent(".voices.json")),
         measureLevel: level,
         compress: { _, destination, _ in try Data("aac".utf8).write(to: destination) },
         report: outcomes
@@ -295,6 +321,333 @@ private func makeQueue(
     await queue.enqueue(fixture.folder)
 
     #expect(MeetingErrorFile.read(in: fixture.folder) == nil)
+}
+
+@Test func twoVoicesEndUpInTheHeaderAndInTheLabels() async throws {
+    let fixture = try makeMeetingFolder()
+    defer { try? FileManager.default.removeItem(at: fixture.archive) }
+    let transcriber = StubTranscriber(words: [
+        "system.wav": [word("привет", 0), word("здравствуйте", 50)],
+        "mic.wav": [],
+    ])
+    // Both well past `minVoicePrintSeconds`, so both are worth remembering.
+    let diarizer = FakeDiarizer(found: [
+        VoiceSegment(cluster: "S1", start: 0, end: 40, embedding: [1, 0]),
+        VoiceSegment(cluster: "S2", start: 45, end: 90, embedding: [0, 1]),
+    ])
+    let store = VoiceStore(url: fixture.archive.appendingPathComponent(".voices.json"))
+    let box = OutcomeBox()
+    let queue = makeQueue(
+        fixture, transcriber: transcriber, diarizer: diarizer, store: store
+    ) { box.append($0) }
+
+    await queue.enqueue(fixture.folder)
+
+    let text = try String(
+        contentsOf: fixture.archive.appendingPathComponent("2026-09-04-1053-telemost.md"),
+        encoding: .utf8
+    )
+    #expect(text.contains("participants: [Собеседник 1, Собеседник 2]\n"))
+    #expect(text.contains("] Собеседник 1: привет"))
+    #expect(text.contains("] Собеседник 2: здравствуйте"))
+    // Labels and a diarization failure are mutually exclusive at this call site: a successful
+    // run must never also carry the sentence a failed one would have written.
+    #expect(!text.contains("speakers:"))
+    #expect(box.all.first?.failure == nil)
+
+    let book = try await store.book()
+    #expect(book.voices.count == 2)
+    #expect(book.labels(for: "2026-09-04-1053-telemost.md")?.labels.count == 2)
+}
+
+// A regression that swaps `labels.order.enumerated()` for `voices.enumerated()` at the book-row
+// site would leave `twoVoicesEndUpInTheHeaderAndInTheLabels` green, because there every voice has
+// a line in the transcript and the two collections coincide. Here only S1 ever speaks: the header
+// and the book must agree on one voice, not two.
+@Test func meetingRowsComeFromTheHeaderNotFromTheDiarizersVoiceList() async throws {
+    let fixture = try makeMeetingFolder()
+    defer { try? FileManager.default.removeItem(at: fixture.archive) }
+    let transcriber = StubTranscriber(words: [
+        "system.wav": [word("привет", 0), word("здравствуйте", 3)],
+        "mic.wav": [],
+    ])
+    let diarizer = FakeDiarizer(found: [
+        VoiceSegment(cluster: "S1", start: 0, end: 40, embedding: [1, 0]),
+        VoiceSegment(cluster: "S2", start: 45, end: 90, embedding: [0, 1]),
+    ])
+    let store = VoiceStore(url: fixture.archive.appendingPathComponent(".voices.json"))
+    let box = OutcomeBox()
+    let queue = makeQueue(
+        fixture, transcriber: transcriber, diarizer: diarizer, store: store
+    ) { box.append($0) }
+
+    await queue.enqueue(fixture.folder)
+
+    let text = try String(
+        contentsOf: fixture.archive.appendingPathComponent("2026-09-04-1053-telemost.md"),
+        encoding: .utf8
+    )
+    // Both words fall inside S1's span, so S2 never appears in the transcript — a single unnamed
+    // voice keeps the bare word, exactly as `SpeakerLabels.label` documents.
+    #expect(text.contains("participants: [Собеседник]\n"))
+
+    let book = try await store.book()
+    // Both voices were long enough to remember — the clustering found two people.
+    #expect(book.voices.count == 2)
+    // But only one of them has a line in this file, so only one row belongs to it.
+    #expect(book.labels(for: "2026-09-04-1053-telemost.md")?.labels.count == 1)
+}
+
+// `FakeDiarizer()` defaults to `found: []` — a successful run that simply separated nobody, not
+// a refusal. Every pre-existing test above that used the default silently took this path, which
+// is why a bug here would not have broken the suite: the meeting must come out exactly as phase
+// 2б wrote it, because nothing about the voices was in fact learned.
+@Test func anEmptyDiarizationResultProducesThePhase2bFile() async throws {
+    let fixture = try makeMeetingFolder()
+    defer { try? FileManager.default.removeItem(at: fixture.archive) }
+    let transcriber = StubTranscriber(words: [
+        "system.wav": [word("привет", 3)],
+        "mic.wav": [word("здравствуйте", 11)],
+    ])
+    let store = VoiceStore(url: fixture.archive.appendingPathComponent(".voices.json"))
+    let box = OutcomeBox()
+    let queue = makeQueue(
+        fixture, transcriber: transcriber, diarizer: FakeDiarizer(), store: store
+    ) { box.append($0) }
+
+    await queue.enqueue(fixture.folder)
+
+    let text = try String(
+        contentsOf: fixture.archive.appendingPathComponent("2026-09-04-1053-telemost.md"),
+        encoding: .utf8
+    )
+    #expect(!text.contains("participants:"))
+    #expect(!text.contains("speakers:"))
+    #expect(text.contains("] Собеседник: привет"))
+    #expect(text.contains("] Я: здравствуйте"))
+    #expect(box.all.first?.failure == nil)
+
+    let book = try await store.book()
+    #expect(book.voices.isEmpty)
+    #expect(book.labels(for: "2026-09-04-1053-telemost.md") == nil)
+}
+
+// Removing `config.diarizationEnabled` from the header-building condition would leave this test
+// green too if `voices` were still populated from a diarizer call the switch is meant to skip —
+// so the diarizer here does find voices, and the assertion is that they never reach the file.
+@Test func diarizationDisabledWritesThePhase2bFileEvenWithVoicesAvailable() async throws {
+    let fixture = try makeMeetingFolder()
+    defer { try? FileManager.default.removeItem(at: fixture.archive) }
+    let transcriber = StubTranscriber(words: [
+        "system.wav": [word("привет", 0), word("здравствуйте", 50)],
+        "mic.wav": [],
+    ])
+    let diarizer = FakeDiarizer(found: [
+        VoiceSegment(cluster: "S1", start: 0, end: 40, embedding: [1, 0]),
+        VoiceSegment(cluster: "S2", start: 45, end: 90, embedding: [0, 1]),
+    ])
+    var config = MeetingsConfig.default
+    config.diarizationEnabled = false
+    let box = OutcomeBox()
+    let queue = makeQueue(
+        fixture, transcriber: transcriber, diarizer: diarizer, config: config
+    ) { box.append($0) }
+
+    await queue.enqueue(fixture.folder)
+
+    let text = try String(
+        contentsOf: fixture.archive.appendingPathComponent("2026-09-04-1053-telemost.md"),
+        encoding: .utf8
+    )
+    #expect(!text.contains("participants:"))
+    #expect(!text.contains("speakers:"))
+    #expect(text.contains("] Собеседник: привет"))
+    #expect(text.contains("] Собеседник: здравствуйте"))
+    #expect(box.all.first?.failure == nil)
+}
+
+// The whole reason the failure is caught inside the step: a thrown error here would mark the
+// folder failed, and the retry would find the tracks compressed and refuse for ever. A missing
+// 21 MB model must not cost a meeting.
+@Test func aFailedDiarizationStillProducesAMeeting() async throws {
+    let fixture = try makeMeetingFolder()
+    defer { try? FileManager.default.removeItem(at: fixture.archive) }
+    let transcriber = StubTranscriber(words: [
+        "system.wav": [word("привет", 3)],
+        "mic.wav": [word("здравствуйте", 11)],
+    ])
+    let box = OutcomeBox()
+    let queue = makeQueue(
+        fixture,
+        transcriber: transcriber,
+        diarizer: FakeDiarizer(failureMessage: "no model")
+    ) { box.append($0) }
+
+    await queue.enqueue(fixture.folder)
+
+    let text = try String(
+        contentsOf: fixture.archive.appendingPathComponent("2026-09-04-1053-telemost.md"),
+        encoding: .utf8
+    )
+    #expect(text.contains("speakers: \"не размечено — "))
+    #expect(!text.contains("participants:"))
+    #expect(text.contains("] Собеседник: привет"))
+    #expect(text.contains("] Я: здравствуйте"))
+    #expect(box.all.first?.failure == nil)
+    if case .processed = MeetingFolderState.of(fixture.folder) {
+    } else {
+        Issue.record("expected the folder to be processed, got \(MeetingFolderState.of(fixture.folder))")
+    }
+}
+
+// A book that will not parse costs only names and cross-meeting memory, never the split
+// diarization already produced on this one meeting — that split needs no book at all. The owner
+// still learns the book is broken, through Task 7's archive pass, not through a `speakers:` line
+// here that would wrongly blame diarization for a storage fault in a file that outlives the audio
+// by years.
+@Test func aCorruptBookNeverCostsTheSplitAlreadyFound() async throws {
+    let fixture = try makeMeetingFolder()
+    defer { try? FileManager.default.removeItem(at: fixture.archive) }
+    let transcriber = StubTranscriber(words: [
+        "system.wav": [word("привет", 0), word("здравствуйте", 50)],
+        "mic.wav": [],
+    ])
+    let diarizer = FakeDiarizer(found: [
+        VoiceSegment(cluster: "S1", start: 0, end: 40, embedding: [1, 0]),
+        VoiceSegment(cluster: "S2", start: 45, end: 90, embedding: [0, 1]),
+    ])
+    let storeURL = fixture.archive.appendingPathComponent(".voices.json")
+    try Data("не json".utf8).write(to: storeURL)
+    let store = VoiceStore(url: storeURL)
+    let box = OutcomeBox()
+    let queue = makeQueue(
+        fixture, transcriber: transcriber, diarizer: diarizer, store: store
+    ) { box.append($0) }
+
+    await queue.enqueue(fixture.folder)
+
+    let text = try String(
+        contentsOf: fixture.archive.appendingPathComponent("2026-09-04-1053-telemost.md"),
+        encoding: .utf8
+    )
+    #expect(text.contains("participants: [Собеседник 1, Собеседник 2]\n"))
+    #expect(!text.contains("speakers:"))
+    #expect(box.all.first?.failure == nil)
+}
+
+/// A track with no speech at all is a legitimate outcome — the interlocutors said nothing while
+/// the owner talked — not a broken model, so the file must say so in plain words rather than in
+/// the diarizer's own vocabulary for the case.
+private struct NoSpeechDiarizer: Diarizing {
+    func segments(of audio: URL) async throws -> [VoiceSegment] { throw DiarizationError.noSpeech }
+}
+
+@Test func noSpeechOnTheInterlocutorsTrackIsNamedPlainly() async throws {
+    let fixture = try makeMeetingFolder()
+    defer { try? FileManager.default.removeItem(at: fixture.archive) }
+    let transcriber = StubTranscriber(words: ["mic.wav": [word("здравствуйте", 1)]])
+    let box = OutcomeBox()
+    let queue = makeQueue(
+        fixture, transcriber: transcriber, diarizer: NoSpeechDiarizer()
+    ) { box.append($0) }
+
+    await queue.enqueue(fixture.folder)
+
+    let text = try String(
+        contentsOf: fixture.archive.appendingPathComponent("2026-09-04-1053-telemost.md"),
+        encoding: .utf8
+    )
+    #expect(text.contains(#"speakers: "не размечено — диаризация не нашла речи на дорожке собеседников""#))
+    #expect(!text.contains("participants:"))
+    #expect(box.all.first?.failure == nil)
+}
+
+@Test func aRecognisedVoiceIsNamedOnTheNextMeeting() async throws {
+    let fixture = try makeMeetingFolder()
+    defer { try? FileManager.default.removeItem(at: fixture.archive) }
+    // Copied before the first run: processing compresses the tracks and deletes the raw ones.
+    let second = fixture.queue.appendingPathComponent("2026-09-05-1000-telemost")
+    try FileManager.default.copyItem(at: fixture.folder, to: second)
+
+    let transcriber = StubTranscriber(words: [
+        "system.wav": [word("привет", 0)],
+        "mic.wav": [],
+    ])
+    let diarizer = FakeDiarizer(found: [
+        VoiceSegment(cluster: "S1", start: 0, end: 60, embedding: [1, 0])
+    ])
+    let store = VoiceStore(url: fixture.archive.appendingPathComponent(".voices.json"))
+    let box = OutcomeBox()
+    let queue = makeQueue(
+        fixture, transcriber: transcriber, diarizer: diarizer, store: store
+    ) { box.append($0) }
+
+    await queue.enqueue(fixture.folder)
+
+    // The owner names the voice between the two meetings, exactly as the archive pass would.
+    var book = try await store.book()
+    #expect(book.voices.count == 1)
+    book.rename(book.voices[0].id, to: "Настя")
+    try await store.save(book)
+
+    await queue.enqueue(second)
+
+    let text = try String(
+        contentsOf: fixture.archive.appendingPathComponent("2026-09-05-1000-telemost.md"),
+        encoding: .utf8
+    )
+    #expect(text.contains("participants: [Настя]\n"))
+    #expect(text.contains("] Настя: привет"))
+    // One person, not two: the second meeting joined the voice it recognised.
+    #expect(try await store.book().voices.count == 1)
+}
+
+// The book is read for names as late as `process` can manage — right before the label a reader
+// will actually see is decided, after both tracks are transcribed — precisely so that a name a
+// naming pass writes while this meeting is still being transcribed is not silently missed. Here
+// the write lands from inside the microphone track's own transcription: strictly after
+// diarization has already produced `voices`, and strictly before the label-building step that
+// follows both tracks. Before this fix the book was read right after diarization, well before
+// the microphone track's transcription even started, so a write landing here would have been
+// invisible to it.
+@Test func aNameWrittenWhileTheMeetingIsStillProcessingIsPickedUp() async throws {
+    let fixture = try makeMeetingFolder()
+    defer { try? FileManager.default.removeItem(at: fixture.archive) }
+    let store = VoiceStore(url: fixture.archive.appendingPathComponent(".voices.json"))
+
+    // The voice is already in the book, matching the diarizer's embedding below, but unnamed —
+    // exactly what a not-yet-run naming pass leaves behind.
+    var seed = VoiceBook.empty
+    let voiceId = seed.remember(
+        VoicePrint(vector: [1, 0]), meeting: "previous", seconds: 60, as: nil, maxPrints: 10
+    )
+    try await store.save(seed)
+
+    let diarizer = FakeDiarizer(found: [
+        VoiceSegment(cluster: "S1", start: 0, end: 40, embedding: [1, 0])
+    ])
+    let transcriber = StubTranscriber(
+        words: [
+            "system.wav": [word("привет", 3)],
+            "mic.wav": [word("здравствуйте", 11)],
+        ],
+        onMicrophoneTranscribed: {
+            try await store.mutate { book in book.rename(voiceId, to: "Настя") }
+        }
+    )
+    let box = OutcomeBox()
+    let queue = makeQueue(
+        fixture, transcriber: transcriber, diarizer: diarizer, store: store
+    ) { box.append($0) }
+
+    await queue.enqueue(fixture.folder)
+
+    let text = try String(
+        contentsOf: fixture.archive.appendingPathComponent("2026-09-04-1053-telemost.md"),
+        encoding: .utf8
+    )
+    #expect(text.contains("] Настя: привет"))
+    #expect(box.all.first?.failure == nil)
 }
 
 /// Collects outcomes: `report` is called from an actor, and the check happens outside it.

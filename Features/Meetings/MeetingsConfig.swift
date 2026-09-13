@@ -104,6 +104,25 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
     /// sixty-eight-minute one took ten gigabytes and was killed by the system.
     public var summaryChunkSeconds: Double
 
+    /// Whether speakers are separated at all. A switch, like `summaryEnabled`: if the step gets
+    /// in the way, the archive must keep filling with transcripts.
+    public var diarizationEnabled: Bool
+    /// How close two fingerprints have to be to count as one person — both between meetings and
+    /// between clusters of one meeting, because it is one question.
+    ///
+    /// Measured on 2026-09-10 over six real meetings: the same person across meetings 0.94–0.995,
+    /// different people inside one meeting 0.08–0.43, one person split by the library into two
+    /// clusters 0.76–0.93. The gap this sits in — 0.63 to 0.76 — is narrower than the 23 dB of
+    /// `micThresholdDBFS`, and two pairs of that measurement fell inside it.
+    public var voiceMatchThreshold: Double
+    /// How much a voice has to say before its fingerprint is worth keeping. Clusters from 31
+    /// seconds up matched at 0.96 in that same measurement; shorter scraps are noise that would
+    /// later attract other people's voices to itself.
+    public var minVoicePrintSeconds: Double
+    /// Fingerprints kept per voice, newest last. They are compared by the best match rather than
+    /// averaged: averaging blurs a voice the more often the person is met, which is backwards.
+    public var maxVoicePrints: Int
+
     /// Both identifiers are read off the applications installed on the owner's machine, not
     /// guessed from their names — `ru.yandex.telemost` was a guess, and the desktop client calls
     /// itself `ru.yandex.desktop.telemost`. The difference is invisible everywhere except a
@@ -145,7 +164,11 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         summaryTimeoutSeconds: 1800,
         summaryContextTokens: 28_000,
         quoteMatchRatio: 0.4,
-        summaryChunkSeconds: 900
+        summaryChunkSeconds: 900,
+        diarizationEnabled: true,
+        voiceMatchThreshold: 0.7,
+        minVoicePrintSeconds: 30,
+        maxVoicePrints: 10
     )
 
     public init(
@@ -166,7 +189,11 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         summaryTimeoutSeconds: Double = 1800,
         summaryContextTokens: Int = 28_000,
         quoteMatchRatio: Double = 0.4,
-        summaryChunkSeconds: Double = 900
+        summaryChunkSeconds: Double = 900,
+        diarizationEnabled: Bool = true,
+        voiceMatchThreshold: Double = 0.7,
+        minVoicePrintSeconds: Double = 30,
+        maxVoicePrints: Int = 10
     ) {
         self.triggerApps = triggerApps
         self.excludedApps = excludedApps
@@ -186,6 +213,10 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         self.summaryContextTokens = summaryContextTokens
         self.quoteMatchRatio = quoteMatchRatio
         self.summaryChunkSeconds = summaryChunkSeconds
+        self.diarizationEnabled = diarizationEnabled
+        self.voiceMatchThreshold = voiceMatchThreshold
+        self.minVoicePrintSeconds = minVoicePrintSeconds
+        self.maxVoicePrints = maxVoicePrints
     }
 
     public init(from decoder: any Decoder) throws {
@@ -226,6 +257,14 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
             ?? fallback.quoteMatchRatio
         summaryChunkSeconds = try container.decodeIfPresent(Double.self, forKey: .summaryChunkSeconds)
             ?? fallback.summaryChunkSeconds
+        diarizationEnabled = try container.decodeIfPresent(Bool.self, forKey: .diarizationEnabled)
+            ?? fallback.diarizationEnabled
+        voiceMatchThreshold = try container.decodeIfPresent(Double.self, forKey: .voiceMatchThreshold)
+            ?? fallback.voiceMatchThreshold
+        minVoicePrintSeconds = try container.decodeIfPresent(Double.self, forKey: .minVoicePrintSeconds)
+            ?? fallback.minVoicePrintSeconds
+        maxVoicePrints = try container.decodeIfPresent(Int.self, forKey: .maxVoicePrints)
+            ?? fallback.maxVoicePrints
     }
 
     public static func decode(_ data: Data) throws -> MeetingsConfig {

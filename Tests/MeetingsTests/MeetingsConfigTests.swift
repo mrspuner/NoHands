@@ -197,3 +197,18 @@ import Testing
     #expect(decoded.quoteMatchRatio == 0.4)
     #expect(decoded.uvPath == "~/.local/bin/uv")
 }
+
+@Test func diarizationKeysHaveMeasuredDefaults() {
+    let config = MeetingsConfig.default
+    #expect(config.diarizationEnabled)
+    #expect(config.voiceMatchThreshold == 0.7)
+    #expect(config.minVoicePrintSeconds == 30)
+    #expect(config.maxVoicePrints == 10)
+}
+
+@Test func aFileWithoutDiarizationKeysStillReads() throws {
+    let json = Data(#"{"micThresholdDBFS": -35}"#.utf8)
+    let config = try MeetingsConfig.decode(json)
+    #expect(config.micThresholdDBFS == -35)
+    #expect(config.voiceMatchThreshold == 0.7)
+}

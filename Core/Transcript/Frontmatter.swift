@@ -20,4 +20,20 @@ public enum Frontmatter {
             .replacingOccurrences(of: "\"", with: "\\\"")
         return "\"\(escaped)\""
     }
+
+    /// A value inside a `[a, b]` list. Quoted only when it has to be: a plain name reads better
+    /// unquoted, and a name with a comma, a bracket, a quote, or a control character in it would
+    /// otherwise break the list — or the `---` block itself, in the case of a raw newline — for
+    /// everything that re-reads the file, including this application's own pass over the archive.
+    ///
+    /// Routed through `quoted` for the unsafe case, same as every other front-matter value.
+    /// `quoted` *strips* control characters rather than escaping them, so a name containing one
+    /// loses it on the round trip through this function too — that is `quoted`'s own design, not
+    /// a bug to fix here.
+    public static func listValue(_ value: String) -> String {
+        let disallowed = CharacterSet(charactersIn: ",[]\"\\:#").union(.controlCharacters)
+        let plain = value.rangeOfCharacter(from: disallowed) == nil
+            && !value.hasPrefix(" ") && !value.hasSuffix(" ") && !value.isEmpty
+        return plain ? value : quoted(value)
+    }
 }

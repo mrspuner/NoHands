@@ -2,9 +2,10 @@ import Foundation
 
 /// The meeting file itself: front matter and a transcript, as `DESIGN.md` draws it.
 ///
-/// Phase 2в will insert `## Саммари` and `## Решения` above the transcript, and 2г will replace
-/// `Собеседник` with names and add `participants`. Neither needs this renderer to change, which
-/// is why it writes only what phase 2б actually knows.
+/// `## Саммари` and `## Решения` are inserted above the transcript afterwards, by
+/// `SummaryInsertion` — a separate pass that does not touch what this renderer writes. `labels`
+/// and `diarizationFailure` say what phase 2г knows about the voices on this one meeting; when
+/// both are `nil` the file looks exactly as phase 2б wrote it.
 public enum MeetingMarkdown {
     public static func timestamp(_ seconds: TimeInterval) -> String {
         // Clamped rather than allowed negative: merging two tracks could in principle hand this
@@ -45,13 +46,25 @@ public enum MeetingMarkdown {
         durationSeconds: TimeInterval,
         appName: String?,
         trailingMicrophoneSilenceSeconds: TimeInterval?,
-        microphoneSawAudio: Bool?
+        microphoneSawAudio: Bool?,
+        labels: SpeakerLabels?,
+        diarizationFailure: String?
     ) -> String {
         var lines: [String] = ["---"]
         lines.append("date: \(format(startedAt, as: "yyyy-MM-dd"))")
         lines.append("started: \(format(startedAt, as: "HH:mm"))")
         lines.append("duration: \(minutes(durationSeconds))m")
         if let appName { lines.append("app: \(Frontmatter.quoted(appName))") }
+        // Written only when the voices are actually known. A list on a meeting where diarization
+        // failed would claim knowledge the file does not have — the same rule that kept
+        // `participants` out of phase 2б entirely.
+        if let labels, !labels.order.isEmpty {
+            let names = labels.participants.map(Frontmatter.listValue).joined(separator: ", ")
+            lines.append("participants: [\(names)]")
+        }
+        if let diarizationFailure {
+            lines.append("speakers: \(Frontmatter.quoted("не размечено — \(diarizationFailure)"))")
+        }
         if let silence = trailingMicrophoneSilenceSeconds, silence > 0 {
             // Quoted and escaped like `app`, though nothing here comes from outside: the value is
             // a Russian sentence with a colon's worth of punctuation in it, and the front matter
@@ -65,7 +78,7 @@ public enum MeetingMarkdown {
         lines.append(TranscriptIndex.heading)
         lines.append("")
         for utterance in transcript {
-            lines.append("[\(timestamp(utterance.start))] \(label(utterance.speaker)): \(utterance.text)")
+            lines.append("[\(timestamp(utterance.start))] \(label(utterance.speaker, labels)): \(utterance.text)")
         }
         lines.append("")
         return lines.joined(separator: "\n")
@@ -115,11 +128,11 @@ public enum MeetingMarkdown {
         return whole < 1 ? "меньше минуты" : "\(whole) мин"
     }
 
-    private static func label(_ speaker: Utterance.Speaker) -> String {
-        switch speaker {
-        case .me: return "Я"
-        case .others: return "Собеседник"
-        }
+    private static func label(_ speaker: Utterance.Speaker, _ labels: SpeakerLabels?) -> String {
+        // Without labels the file looks exactly as phase 2б wrote it: the owner and one
+        // unnamed interlocutor. That is what a failed diarization leaves behind, and it must
+        // stay readable rather than become `v1`.
+        labels?.label(for: speaker) ?? (speaker == .me ? "Я" : "Собеседник")
     }
 
     /// Local time on purpose, matching `MeetingFolder.baseName`: the archive is read by a human

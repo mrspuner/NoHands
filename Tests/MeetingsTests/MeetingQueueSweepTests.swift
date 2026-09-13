@@ -34,10 +34,18 @@ private struct NeverCalledTranscriber: TimedTranscriber {
     func transcribeTimed(audio url: URL) async throws -> [TimedWord] { [] }
 }
 
+/// The folders in this file carry no audio tracks at all, so `process` always throws
+/// `Failure.noTracks` before either the transcriber or the diarizer is ever asked for anything.
+private struct NeverCalledDiarizer: Diarizing {
+    func segments(of audio: URL) async throws -> [VoiceSegment] { [] }
+}
+
 private func makeQueue(_ root: (queue: URL, archive: URL), seen: Seen) -> MeetingQueue {
     MeetingQueue(
         queue: root.queue, archive: root.archive, config: .default,
         makeTranscriber: { NeverCalledTranscriber() },
+        makeDiarizer: { NeverCalledDiarizer() },
+        voiceStore: VoiceStore(url: root.archive.appendingPathComponent(".voices.json")),
         measureLevel: { _, _, _ in 0 },
         compress: { _, destination, _ in try Data().write(to: destination) },
         report: { seen.append($0.folder) }

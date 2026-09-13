@@ -45,10 +45,30 @@ public actor MeetingQueue {
         }
     }
 
+    /// Exactly one of a meeting's voices being labelled, or diarization having failed for a
+    /// named reason — never both. `MeetingMarkdown.render` takes `labels` and
+    /// `diarizationFailure` as two independent optionals and would accept either combination,
+    /// including both at once, a fourth state the design does not name. Holding the result of
+    /// diarization in one value here, converted to that pair only immediately before the call,
+    /// makes the excluded combination unrepresentable instead of merely untested.
+    private enum DiarizationOutcome {
+        case none
+        case labels(SpeakerLabels)
+        case failure(String)
+
+        var forRendering: (labels: SpeakerLabels?, failure: String?) {
+            switch self {
+            case .none: return (nil, nil)
+            case .labels(let labels): return (labels, nil)
+            case .failure(let reason): return (nil, reason)
+            }
+        }
+    }
+
     private let queue: URL
     private let archive: URL
-    /// Reconfigured in place by `update(config:makeTranscriber:)` — the actor itself is never
-    /// torn down and rebuilt, which is why this and `makeTranscriber` below are `var`.
+    /// Reconfigured in place by `update(config:makeTranscriber:makeDiarizer:)` — the actor itself
+    /// is never torn down and rebuilt, which is why this and `makeTranscriber` below are `var`.
     ///
     /// The alternative looked harmless at first: throw the actor away on every settings reload
     /// and build a fresh one, exactly like `MeetingCoordinator` does. It is not. «Перечитать
@@ -64,6 +84,8 @@ public actor MeetingQueue {
     /// that meeting is retried forever afterwards, reporting `alreadyCompressed`.
     private var config: MeetingsConfig
     private var makeTranscriber: @Sendable () async throws -> any TimedTranscriber
+    private var makeDiarizer: @Sendable () async throws -> any Diarizing
+    private let voiceStore: VoiceStore
     private let measureLevel: @Sendable (URL, TimeInterval, TimeInterval) throws -> Float
     private let compress: @Sendable (URL, URL, Int) async throws -> Void
     private let report: @Sendable (Outcome) -> Void
@@ -72,6 +94,8 @@ public actor MeetingQueue {
     /// the alternative — sharing the transcriber dictation keeps — would put a dictation behind
     /// a whole meeting in the actor's queue.
     private var transcriber: (any TimedTranscriber)?
+    /// Held while there is work, like the transcriber: 21 MB of models and 0.3 s from cache.
+    private var diarizer: (any Diarizing)?
     private var pending: [URL] = []
     private var draining = false
 
@@ -80,6 +104,8 @@ public actor MeetingQueue {
         archive: URL = MeetingFolder.archiveURL,
         config: MeetingsConfig,
         makeTranscriber: @escaping @Sendable () async throws -> any TimedTranscriber,
+        makeDiarizer: @escaping @Sendable () async throws -> any Diarizing,
+        voiceStore: VoiceStore = VoiceStore(),
         measureLevel: @escaping @Sendable (URL, TimeInterval, TimeInterval) throws -> Float
             = { url, from, to in try PhraseLevel.peakDBFS(of: url, from: from, to: to) },
         compress: @escaping @Sendable (URL, URL, Int) async throws -> Void
@@ -92,6 +118,8 @@ public actor MeetingQueue {
         self.archive = archive
         self.config = config
         self.makeTranscriber = makeTranscriber
+        self.makeDiarizer = makeDiarizer
+        self.voiceStore = voiceStore
         self.measureLevel = measureLevel
         self.compress = compress
         self.report = report
@@ -108,10 +136,12 @@ public actor MeetingQueue {
     /// the settings it began with, and only the next one picks up whatever this call left behind.
     public func update(
         config: MeetingsConfig,
-        makeTranscriber: @escaping @Sendable () async throws -> any TimedTranscriber
+        makeTranscriber: @escaping @Sendable () async throws -> any TimedTranscriber,
+        makeDiarizer: @escaping @Sendable () async throws -> any Diarizing
     ) {
         self.config = config
         self.makeTranscriber = makeTranscriber
+        self.makeDiarizer = makeDiarizer
     }
 
     private func drain() async {
@@ -127,8 +157,9 @@ public actor MeetingQueue {
             if case .processed = MeetingFolderState.of(folder) { continue }
             report(await run(folder))
         }
-        // Nothing left to do: the model goes, and the resting footprint is what it was before.
+        // Nothing left to do: the models go, and the resting footprint is what it was before.
         transcriber = nil
+        diarizer = nil
         draining = false
     }
 
@@ -191,10 +222,10 @@ public actor MeetingQueue {
 
     /// - Returns: the meeting's duration in seconds.
     private func process(_ folder: URL, startedProcessingAt: Date) async throws -> TimeInterval {
-        // Snapshotted once, before any suspension point below. `update(config:makeTranscriber:)`
-        // can land on any of the awaits further down, and a folder cut into phrases with one gap
-        // value and then gated by a different microphone threshold would be a defect nobody could
-        // reproduce from outside this actor.
+        // Snapshotted once, before any suspension point below.
+        // `update(config:makeTranscriber:makeDiarizer:)` can land on any of the awaits further
+        // down, and a folder cut into phrases with one gap value and then gated by a different
+        // microphone threshold would be a defect nobody could reproduce from outside this actor.
         let config = self.config
         let fileManager = FileManager.default
         let metadata = try MeetingMetadata.read(
@@ -232,13 +263,48 @@ public actor MeetingQueue {
         let transcriber = try await resolveTranscriber()
 
         var theirs: [Utterance] = []
+        // Hoisted above the `if tracks.contains(system)` block that fills it in, because the
+        // label-building step below needs to know whether diarization actually found anyone —
+        // an empty result is a legitimate "nobody was separated", not a failure, and must read
+        // exactly as phase 2б's single nameless voice did.
+        var voices: [MeetingVoice] = []
+        var diarizationOutcome: DiarizationOutcome = .none
+
         // Reuses `tracks`, computed above, instead of asking the file system the same question
         // again — see the comment on `states` above about why the raw/compressed distinction is
         // decided once, from the whole folder's shape.
         if tracks.contains(system) {
+            let words = try await transcriber.transcribeTimed(audio: system)
+            if config.diarizationEnabled {
+                do {
+                    let diarizer = try await resolveDiarizer()
+                    voices = VoiceClustering.voices(
+                        from: try await diarizer.segments(of: system),
+                        threshold: Float(config.voiceMatchThreshold)
+                    )
+                } catch {
+                    // Never fatal to the meeting. A thrown error here would mark the folder
+                    // failed, and its retry would find the tracks compressed and refuse for
+                    // ever — the meeting would be lost over a missing 21 MB model.
+                    //
+                    // `.noSpeech` is not a defect: the interlocutors' track can be legitimately
+                    // silent while the owner talked. The sentence names the diarizer's own
+                    // finding rather than asserting a fact about the track — a claim that could
+                    // otherwise sit, permanently, directly above lines Parakeet did transcribe
+                    // on that same track.
+                    if let diarizationError = error as? DiarizationError, diarizationError == .noSpeech {
+                        diarizationOutcome = .failure("диаризация не нашла речи на дорожке собеседников")
+                    } else {
+                        diarizationOutcome = .failure(error.localizedDescription)
+                    }
+                }
+                // The book itself is read later, as close as this function can manage to the
+                // point where a name actually matters — see the comment above
+                // `SpeakerLabels.make` below for why, and for what that read does and does not
+                // touch.
+            }
             theirs = Utterance.split(
-                words: try await transcriber.transcribeTimed(audio: system),
-                speaker: .others,
+                assigned: VoiceAssignment.assign(words: words, to: voices),
                 gap: config.phraseGapSeconds,
                 maxLength: config.maxPhraseSeconds
             )
@@ -280,6 +346,41 @@ public actor MeetingQueue {
             throw Failure.nothingRecognised(folder.lastPathComponent)
         }
 
+        // Built from the merged transcript rather than from `voices`, because the order in the
+        // header must be the order the reader meets people in the file — and that is decided by
+        // the merge, which interleaves both tracks.
+        //
+        // `!voices.isEmpty` is the guard that matters: an empty result is diarization succeeding
+        // at finding nobody, and must produce the same file phase 2б wrote — no `participants:`,
+        // replies read as plain «Собеседник». `merged` cannot be empty here (the guard above
+        // already threw otherwise), and `SpeakerLabels.make` on a transcript with no `.voice`
+        // entries returns an empty `order`, which the two `!labels.order.isEmpty` guards below
+        // already treat as "nothing to say" — so neither is checked again here.
+        if case .none = diarizationOutcome, config.diarizationEnabled, !voices.isEmpty {
+            // Read as late as this function can manage — right before the name a reader will
+            // actually see is decided, and after both tracks are already transcribed — so the
+            // window in which a rename landed elsewhere and was missed is as small as it can be
+            // made. Against a throwaway copy: this read must not itself change anything, because
+            // the real update, below, once the file is safely written, resolves again against
+            // whatever the book holds at that later moment rather than against this snapshot.
+            var names: [String: String] = [:]
+            do {
+                var throwaway = try await voiceStore.book()
+                names = MeetingVoices.resolve(
+                    voices: voices,
+                    meeting: folder.lastPathComponent,
+                    book: &throwaway,
+                    config: config
+                ).names
+            } catch {
+                // Same rule as the diarizer's own do/catch above: a book that will not parse
+                // costs only names and cross-meeting memory, never the split diarization already
+                // found. A meeting labelled «Собеседник 1 / Собеседник 2» with no names is
+                // exactly the truth in that case.
+            }
+            diarizationOutcome = .labels(SpeakerLabels.make(transcript: merged, names: names))
+        }
+
         let duration = try tracks.map { try AudioDuration.seconds(of: $0) }.max() ?? 0
 
         // Markdown before compression, deliberately: if the encoder falls over, the text is
@@ -291,6 +392,11 @@ public actor MeetingQueue {
         // so the archive and the panel never disagree about whether a track was silent. Below it
         // the archive says nothing: a gap that short is a gap between buffers.
         let silence = metadata.trailingMicrophoneSilenceSeconds
+        // `labels` and `diarizationFailure` come out of one value rather than two independent
+        // optionals: `MeetingMarkdown.render` would happily accept both at once, a fourth state
+        // the design does not name, and `diarizationOutcome` makes that state unrepresentable
+        // here rather than merely untested.
+        let (labels, diarizationFailure) = diarizationOutcome.forRendering
         let markdown = MeetingMarkdown.render(
             transcript: merged,
             startedAt: metadata.startedAt,
@@ -303,9 +409,58 @@ public actor MeetingQueue {
             // says. No threshold of its own, and no default — `nil`, a folder recorded before
             // this was measured, is a third answer the renderer needs to see rather than a
             // missing value to fill in here.
-            microphoneSawAudio: metadata.microphoneSawAudio
+            microphoneSawAudio: metadata.microphoneSawAudio,
+            labels: labels,
+            diarizationFailure: diarizationFailure
         )
         try Data(markdown.utf8).write(to: transcript)
+
+        // Written after the file exists: the row says "the archive holds a file whose header
+        // means these voices", and a row without its file would let the archive pass read a
+        // rename out of thin air.
+        //
+        // The rows are built from `labels` — from what the file actually shows — and never from
+        // the voices the diarizer found. Those two can differ: a voice all of whose words went
+        // to a neighbour has no line in the transcript and no position in the header. Numbering
+        // rows from the diarizer's list would shift every position after it by one, and the
+        // archive pass would then read an untouched file as a rename.
+        //
+        // Resolved a second time here rather than reusing the names read above, and inside one
+        // `mutate` call rather than a separate read and save: this is the only point at which the
+        // book is actually changed, and it has to land on whatever the book holds right now, not
+        // on the snapshot the names above were read from — a naming pass that ran while this
+        // meeting was transcribing must not have its own write silently overwritten by a save of
+        // stale state. `renderedName` still comes from `labels` regardless of what this second
+        // resolve finds, so the row always agrees with the file this meeting actually wrote, even
+        // if the book moved between the two resolves.
+        if config.diarizationEnabled, !voices.isEmpty, let labels, !labels.order.isEmpty {
+            do {
+                try await voiceStore.mutate { book in
+                    let resolution = MeetingVoices.resolve(
+                        voices: voices,
+                        meeting: folder.lastPathComponent,
+                        book: &book,
+                        config: config
+                    )
+                    let rows = labels.order.enumerated().map { position, voice in
+                        MeetingLabels.Label(
+                            position: position + 1,
+                            voiceId: resolution.identities[voice],
+                            renderedName: labels.label(for: .voice(voice))
+                        )
+                    }
+                    book.record(MeetingLabels(file: transcript.lastPathComponent, labels: rows))
+                }
+            } catch {
+                // Never fatal to the meeting, for the same reason the diarizer's own failure
+                // isn't: the file above already exists and is correct. But the cost is not only
+                // this meeting's fingerprints — it is the meeting row too. Without a row,
+                // `SpeakerNaming` reads this file as a stranger's note and skips it in silence
+                // forever, even once the book is repaired, so the `participants:` line it already
+                // carries can never be acted on. Recovery is `nohands meeting diarize --write` on
+                // this folder, and only within the seven-day window the raw audio survives.
+            }
+        }
 
         // Compress everything before deleting anything. Interleaving the two would mean a
         // failure on the second track leaves the first one already gone: the retry would then
@@ -349,6 +504,16 @@ public actor MeetingQueue {
         if let transcriber { return transcriber }
         let made = try await makeTranscriber()
         transcriber = made
+        return made
+    }
+
+    private func resolveDiarizer() async throws -> any Diarizing {
+        // A failed load is not cached — same as `resolveTranscriber` — so the next folder in the
+        // drain retries it, which is what lets a transient failure (a model download that timed
+        // out, say) recover on its own without restarting the queue.
+        if let diarizer { return diarizer }
+        let made = try await makeDiarizer()
+        diarizer = made
         return made
     }
 }

@@ -7,7 +7,7 @@ private func mine(_ start: Double, _ text: String) -> Utterance {
 }
 
 private func theirs(_ start: Double, _ text: String) -> Utterance {
-    Utterance(speaker: .others, start: start, end: start + 1, text: text)
+    Utterance(speaker: .voice("v1"), start: start, end: start + 1, text: text)
 }
 
 @Test func theLaterTrackIsShiftedForward() {
