@@ -114,7 +114,15 @@ func runMeetingSummarize(_ file: URL) async throws {
         maxCharacters: Int(Double(config.summaryContextTokens) * MLXSummaryRunner.charactersPerToken),
         maxTurns: config.summaryChunkTurns
     )
-    note("кусков: \(chunks.count)")
+    note("бюджет смен: \(config.summaryChunkTurns), кусков: \(chunks.count)")
+    for (number, chunk) in chunks.enumerated() {
+        note(
+            String(
+                format: "  кусок %d: %.1f мин, смен %d, символов %d",
+                number + 1, chunk.seconds / 60, chunk.turns, chunk.text.count
+            )
+        )
+    }
     let started = Date()
     let summary = try await runner.summarize(chunks: chunks.map(\.text))
     note("ответ за \(Int(Date().timeIntervalSince(started))) с")
@@ -142,7 +150,10 @@ func runMeetingSummarize(_ file: URL) async throws {
     // help tune is real but invisible in the owner's file, and naming where it lives is the only
     // way to know it can be turned at all.
     if checked.contains(where: { $0.timecode == nil }) || checkedTasks.contains(where: { $0.timecode == nil }) {
-        note("порог quoteMatchRatio правится в \(MeetingsConfig.configFileURL.path), секция meetings")
+        note(
+            "порог quoteMatchRatio и бюджет summaryChunkTurns правятся в "
+                + "\(MeetingsConfig.configFileURL.path), секция meetings"
+        )
     }
 
     let updated = try SummaryInsertion.apply(
