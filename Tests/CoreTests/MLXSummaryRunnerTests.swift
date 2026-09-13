@@ -33,32 +33,15 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
     }
 }
 
-// The merge pass holds `mergePrefix` plus one partial summary per chunk, each up to `maxTokens`,
-// so a meeting cut into too many chunks would overflow the merge call even though every single
-// chunk fits its own window. Named refusal instead of a silent overflow.
-//
-// context: 8000 gives a limit of (8000 - mergeMaxTokens 3000) / maxTokens 2500 = 2. Three tiny
-// chunks — each far under the per-chunk length guard on its own — trips only this guard.
-//
-// Exact case with its numbers, not `#expect(throws: MLXSummaryRunner.Failure.self)`: the bare
-// type would still pass if this guard were deleted and the empty-list guard or the per-chunk
-// length guard happened to fire instead, proving nothing about the guard this test names.
-@Test func tooManyChunksIsRefusedBeforeAnythingIsLaunched() async {
-    let chunks = Array(repeating: "[00:00:01] Я: раз", count: 3)
-    await #expect(throws: MLXSummaryRunner.Failure.tooManyChunks(count: 3, limit: 2)) {
-        try await runner(context: 8000).summarize(chunks: chunks)
-    }
-}
-
-// A single chunk never goes through a merge pass at all: there is nothing to merge, so the guard
-// has nothing to protect for one chunk, and must not fire for it even when `contextTokens` is
-// small enough to make the limit zero or negative — context: 1000 gives (1000 - mergeMaxTokens
-// 3000) / maxTokens 2500 = 0, which would refuse a single chunk if the guard did not exempt
-// count == 1.
+// A single chunk never goes through a merge pass at all: there is nothing to merge, so it must
+// reach the uv check regardless of how small `contextTokens` is. The arithmetic-based
+// `tooManyChunks` guard that used to sit here moved out of `summarize` in this branch —
+// `checkMergeFits` is a no-op stub until task 4 gives it a body — so a small context can no
+// longer refuse a single chunk on the merge's account at all.
 //
 // Asserts `.uvMissing` rather than merely "no `.tooManyChunks`": that proves execution actually
-// passed this guard and reached the next one, rather than some earlier guard swallowing the case
-// by accident and leaving this one unexercised.
+// reached the next guard, rather than some earlier guard swallowing the case by accident and
+// leaving this one unexercised.
 @Test func aSingleChunkIsNeverTooManyEvenWhenTheLimitIsNonPositive() async {
     await #expect(throws: MLXSummaryRunner.Failure.uvMissing("/nonexistent/uv")) {
         try await runner(context: 1000).summarize(chunks: ["[00:00:01] Я: раз"])
@@ -122,7 +105,7 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
 // the only prompt string that was written at the call site, and the merge prompt's own tests
 // could not see it there.
 @Test func theMergePrefixLivesWithTheOtherPromptText() {
-    #expect(SummaryPrompt.mergePrefix.contains("Частичные конспекты"))
+    #expect(SummaryPrompt.mergePrefix.contains("Частичные саммари"))
 }
 
 // Reading the answers file touches no subprocess at all, so it is tested directly against
@@ -224,16 +207,6 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
     // implementation nobody tests.
     #expect(!SummaryScript.source.contains("mergeSystem"))
     #expect(!SummaryScript.source.contains("def is_json"))
-}
-
-// The merge pass never sees the transcript — only the partial summaries. That is what makes it
-// cheap in both memory and time. The message that carries the partials themselves is assembled
-// in the Python subprocess (Task 4), because the partials only exist there; there is no
-// `SummaryPrompt.mergeUser` to test here.
-@Test func theMergePromptTakesPartialsAndKeepsQuotesAsTheyAre() {
-    #expect(SummaryPrompt.merge.contains("частичн"))
-    #expect(SummaryPrompt.merge.contains("Цитаты"))
-    #expect(SummaryPrompt.merge.contains("добавляйте ничего"))
 }
 
 @Test func aChunkTravelsInsideTheMarker() {

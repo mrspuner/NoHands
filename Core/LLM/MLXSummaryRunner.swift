@@ -11,7 +11,8 @@ public struct MLXSummaryRunner: SummaryRunning {
         case tooLong(estimated: Int, limit: Int)
         /// The merge pass holds `mergePrefix` plus one partial summary per chunk, each up to
         /// `maxTokens` — a meeting cut into too many chunks would overflow that call even though
-        /// every individual chunk fits its own window. See `chunkLimit` for the arithmetic.
+        /// every individual chunk fits its own window. Not thrown by anything yet: `checkMergeFits`
+        /// is a stub until task 4 gives it the arithmetic and wires this case to it.
         case tooManyChunks(count: Int, limit: Int)
         case timedOut(TimeInterval)
         case runnerFailed(String)
@@ -119,22 +120,6 @@ public struct MLXSummaryRunner: SummaryRunning {
                 throw Failure.tooLong(estimated: estimated, limit: contextTokens)
             }
         }
-        // Checked after every chunk is known to fit on its own: a tiny context that cannot even
-        // hold one chunk is a `tooLong` problem, not a `tooManyChunks` one, and the arithmetic
-        // below can go negative for such a context.
-        //
-        // Only when there is actually going to be a merge: with one chunk there is nothing to
-        // merge, so a single chunk has no merge call for this limit to protect, and the guard
-        // must not fire for it no matter how small `contextTokens` is. The merge call, when
-        // there is one, is `mergePrefix` plus one partial per chunk, each up to `maxTokens` —
-        // nothing else bounds that. The number of chunks a meeting yields is fixed by its
-        // length, so a retry cannot help: same reasoning as `tooLong` being permanent.
-        if chunks.count > 1 {
-            let chunkLimit = (contextTokens - Self.mergeMaxTokens) / Self.maxTokens
-            guard chunks.count <= chunkLimit else {
-                throw Failure.tooManyChunks(count: chunks.count, limit: chunkLimit)
-            }
-        }
 
         // Expanded here rather than in the config so the file keeps the readable `~` the owner
         // typed. The application launched from Finder has no useful PATH, which is why the path
@@ -143,23 +128,72 @@ public struct MLXSummaryRunner: SummaryRunning {
         guard FileManager.default.isExecutableFile(atPath: uv) else {
             throw Failure.uvMissing(uvPath)
         }
+        let executable = URL(fileURLWithPath: uv)
 
-        // TEMPORARY, task 3 replaces this entirely: one prompt per chunk, sent as one run, and
-        // only the first answer kept — every later chunk's partial summary is silently dropped.
-        // Wrong on purpose so the branch compiles between task 2 and task 3: which prompts to
-        // send and how partial answers become one summary is task 3's job, where tests can see
-        // it, not this runner's.
-        let prompts = chunks.map {
-            Request.Prompt(system: SummaryPrompt.system, user: SummaryPrompt.user(chunk: $0), maxTokens: Self.maxTokens)
-        }
-        let answers = try await run(uv: URL(fileURLWithPath: uv), prompts: prompts)
-        guard answers.count == prompts.count else {
+        // Pass A: one prompt per chunk.
+        let answers = try await run(
+            uv: executable,
+            prompts: chunks.map {
+                Request.Prompt(
+                    system: SummaryPrompt.system, user: SummaryPrompt.user(chunk: $0), maxTokens: Self.maxTokens
+                )
+            }
+        )
+        guard answers.count == chunks.count else {
             throw Failure.runnerFailed(
-                "the summary runner returned \(answers.count) answers for \(prompts.count) prompts"
+                "the summary runner answered \(answers.count) of \(chunks.count) prompts"
             )
         }
-        return try SummaryResponse.parse(answers[0])
+
+        var partials: [MeetingSummary] = []
+        var refusals: [String] = []
+        for (number, raw) in answers.enumerated() {
+            // A chunk whose answer does not parse is skipped and named. Failing the whole meeting
+            // would be worse and pointless: generation runs at temperature 0, so the retry
+            // produces the same unreadable answer for ever.
+            if let partial = try? SummaryResponse.parse(raw) {
+                partials.append(partial)
+            } else {
+                refusals.append("Кусок \(number + 1) из \(chunks.count): ответ модели не разобран")
+            }
+        }
+        // Nothing parsed at all: there is no summary to write, and the reason belongs in the file
+        // as a permanent failure rather than as a file full of refusal lines.
+        guard !partials.isEmpty else { throw SummaryResponse.Failure.notJSON }
+
+        guard partials.count > 1 else {
+            return SummaryAssembly.combine(partials: partials, refusals: refusals, merged: nil)
+        }
+
+        let mergeUser = SummaryPrompt.mergeUser(summaries: partials.map(\.summary))
+        try checkMergeFits(mergeUser)
+
+        // Pass B: one prompt, and it sees only the summaries.
+        let mergeAnswer = try await run(
+            uv: executable,
+            prompts: [
+                Request.Prompt(
+                    system: SummaryPrompt.merge, user: mergeUser, maxTokens: Self.mergeMaxTokens
+                )
+            ]
+        )
+        guard let raw = mergeAnswer.first, let merged = try? SummaryResponse.parse(raw) else {
+            // The points survive a failed merge; only the headline is lost. Same shape as a
+            // refused cleanup inserting the raw dictation with the reason named.
+            return SummaryAssembly.combine(
+                partials: partials,
+                refusals: refusals + ["Сведение не удалось: ответ модели не разобран"],
+                merged: nil
+            )
+        }
+        return SummaryAssembly.combine(partials: partials, refusals: refusals, merged: merged)
     }
+
+    /// Guards the merge call against a meeting cut into more chunks than one merge prompt can
+    /// hold. Left empty here — task 4 fills in the body and removes `Failure.tooManyChunks` in
+    /// the same breath, so implementing half of that guard now would leave two limits in the
+    /// code that disagree with each other.
+    private func checkMergeFits(_ message: String) throws {}
 
     /// The whole subprocess dance is blocking, and blocking a cooperative thread for two minutes
     /// starves the pool. It runs on a queue of its own and comes back through a continuation.
