@@ -140,10 +140,8 @@ import Testing
     #expect(config.summaryEnabled)
     #expect(config.summaryModel == "mlx-community/Qwen3-8B-4bit")
     #expect(config.uvPath == "~/.local/bin/uv")
-    // Half an hour, not the original fifteen minutes: the timeout covers one model load, one
-    // generation per chunk and the merge pass, and the number it used to cite — "2 minutes on a
-    // 71-minute meeting" — was superseded the same week by a live 68-minute run that took
-    // 5 min 51 s.
+    // Half an hour, per subprocess run — there are two, the chunk pass and the merge, each with
+    // its own model load. See the property's own doc for the arithmetic behind the number.
     #expect(config.summaryTimeoutSeconds == 1800)
     // Still the model's window minus the answer. `checkMergeFits` (`MLXSummaryRunner`) now checks
     // the merge call's actual size against this at run time, rather than a chunk count computed
