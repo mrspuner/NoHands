@@ -21,4 +21,7 @@ import Testing
     #expect(!SummaryPrompt.merge.contains("decisions"))
     #expect(!SummaryPrompt.merge.contains("tasks"))
     #expect(!SummaryPrompt.merge.contains("openIssues"))
+    // The one thing standing between a merge and an invented line, now that it no longer has
+    // quotes to be checked against.
+    #expect(SummaryPrompt.merge.contains("добавляйте ничего"))
 }

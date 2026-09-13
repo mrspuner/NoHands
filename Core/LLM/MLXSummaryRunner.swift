@@ -148,6 +148,12 @@ public struct MLXSummaryRunner: SummaryRunning {
         var partials: [MeetingSummary] = []
         var refusals: [String] = []
         for (number, raw) in answers.enumerated() {
+            // `number` is trusted as the chunk's position — the answers file holds the results of
+            // the script's list comprehension over `request["prompts"]`, so its JSON array
+            // preserves prompt order and `enumerated()` here lines back up with `chunks`. Nothing
+            // on the Swift side reorders or filters `answers` before this loop; if it ever did,
+            // the chunk number printed into the owner's permanent file would name the wrong chunk.
+            //
             // A chunk whose answer does not parse is skipped and named. Failing the whole meeting
             // would be worse and pointless: generation runs at temperature 0, so the retry
             // produces the same unreadable answer for ever.

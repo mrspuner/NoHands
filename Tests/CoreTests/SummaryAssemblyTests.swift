@@ -53,14 +53,32 @@ private func partial(_ title: String, _ summary: [String], decisions: [String] =
 }
 
 // A chunk whose answer did not parse is named in the file rather than passed over in silence:
-// the reader must be able to tell "nothing was said here" from "we could not read it".
+// the reader must be able to tell "nothing was said here" from "we could not read it". And this
+// surviving partial does not get to title the meeting either: a refusal means there were other
+// chunks, so this one is no more "the whole meeting" than any one of several survivors would be —
+// the same rule `aFailedMergeKeepsThePointsAndNamesTheReason` checks for several partials.
 @Test func aRefusedChunkIsNamedInTheSummary() {
     let combined = SummaryAssembly.combine(
         partials: [partial("одна часть", ["о ней"])],
         refusals: ["Кусок 2: ответ модели не разобран"],
         merged: nil
     )
+    #expect(combined.title.isEmpty)
     #expect(combined.summary == ["о ней", "Кусок 2: ответ модели не разобран"])
+}
+
+// A merge that succeeds does not swallow a refusal from pass A: the two travel independently, and
+// losing this one would make a permanent archive file silently pretend a chunk that failed to
+// parse never existed — exactly where a real partial failure actually happens, since a merge only
+// runs at all when there is more than one chunk.
+@Test func aSuccessfulMergeStillCarriesARefusalFromPassA() {
+    let combined = SummaryAssembly.combine(
+        partials: [partial("первый", ["о первом"]), partial("второй", ["о втором"])],
+        refusals: ["Кусок 2 из 3: ответ модели не разобран"],
+        merged: partial("вся встреча", ["итог"])
+    )
+    #expect(combined.title == "вся встреча")
+    #expect(combined.summary == ["итог", "Кусок 2 из 3: ответ модели не разобран"])
 }
 
 // A failed merge costs the title and the summary, never the points: losing a whole meeting's

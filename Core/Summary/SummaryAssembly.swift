@@ -11,7 +11,12 @@ import Foundation
 /// appears twice, and a question raised early and closed late stays in the open issues. Nothing
 /// collapses repeats any more. That is a visible nuisance; a merge silently rewriting a quote
 /// would be an invisible falsehood.
-public enum SummaryAssembly {
+///
+/// Internal rather than public: the only caller is `MLXSummaryRunner`, in the same module, and it
+/// is the one place that already guarantees `partials` is never empty. Keeping the type
+/// unreachable from outside `Core` makes that guarantee true by construction instead of by
+/// convention.
+enum SummaryAssembly {
     /// - Parameters:
     ///   - partials: the chunks that parsed, in meeting order. Never empty — a run where nothing
     ///     parsed is a failure, not a summary.
@@ -20,7 +25,7 @@ public enum SummaryAssembly {
     ///     owner reads what the file knows about itself.
     ///   - merged: the merge pass's answer, or `nil` when there was one partial or the merge
     ///     failed. Only its `title` and `summary` are used.
-    public static func combine(
+    static func combine(
         partials: [MeetingSummary],
         refusals: [String],
         merged: MeetingSummary?
@@ -31,10 +36,17 @@ public enum SummaryAssembly {
             title = merged.title
             summary = merged.summary + refusals
         } else if partials.count == 1, refusals.isEmpty {
+            // A true single-chunk meeting: nothing was refused, so this partial's title has
+            // nothing else to misname.
             title = partials[0].title
             summary = partials[0].summary
         } else if partials.count == 1 {
-            title = partials[0].title
+            // One partial survived, but a refusal names a chunk that did not: there were other
+            // chunks, so this partial is not the whole meeting any more than any one of several
+            // surviving partials would be. Same rule as the branch below, one condition
+            // (`refusals.isEmpty`) rather than two: a lone partial only gets to title the meeting
+            // when there was truly nothing else to lose.
+            title = ""
             summary = partials[0].summary + refusals
         } else {
             // Several partials and no merge: the merge is what would have chosen a title, so
