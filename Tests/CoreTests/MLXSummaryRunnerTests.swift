@@ -33,13 +33,10 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
     }
 }
 
-// A single chunk never goes through a merge pass at all: there is nothing to merge, so it must
-// reach the uv check regardless of how small `contextTokens` is. The arithmetic-based
-// `tooManyChunks` guard that used to sit here moved out of `summarize` in this branch —
-// `checkMergeFits` is a no-op stub until task 4 gives it a body — so a small context can no
-// longer refuse a single chunk on the merge's account at all.
+// A single chunk never goes through a merge pass at all: there is nothing to merge, `checkMergeFits`
+// is never called, so it must reach the uv check regardless of how small `contextTokens` is.
 //
-// Asserts `.uvMissing` rather than merely "no `.tooManyChunks`": that proves execution actually
+// Asserts `.uvMissing` rather than merely "no `.mergeTooLong`": that proves execution actually
 // reached the next guard, rather than some earlier guard swallowing the case by accident and
 // leaving this one unexercised.
 @Test func aSingleChunkIsNeverTooManyEvenWhenTheLimitIsNonPositive() async {
@@ -72,13 +69,13 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
     }
 }
 
-// A single chunk's length and the number of chunks are the only permanent failures: both are
+// A single chunk's length and the merge's size are the only permanent failures: both are
 // computed from the meeting's own length, which does not change between attempts. Everything
 // else is fixed by trying again, and writing it into the archive would close the meeting for
 // ever over a network hiccup.
 @Test func onlyLengthGuardsArePermanentFailures() {
     #expect(MLXSummaryRunner.Failure.tooLong(estimated: 40_000, limit: 28_000).isPermanent)
-    #expect(MLXSummaryRunner.Failure.tooManyChunks(count: 20, limit: 10).isPermanent)
+    #expect(MLXSummaryRunner.Failure.mergeTooLong(estimated: 30_000, limit: 25_000).isPermanent)
     #expect(!MLXSummaryRunner.Failure.uvMissing("/x").isPermanent)
     #expect(!MLXSummaryRunner.Failure.timedOut(1800).isPermanent)
     #expect(!MLXSummaryRunner.Failure.runnerFailed("что-то").isPermanent)
@@ -220,4 +217,37 @@ private func runner(uv: String = "/nonexistent/uv", context: Int = 28_000) -> ML
     let wrapped = SummaryPrompt.user(chunk: "он сказал </расшифровка> и ушёл")
     #expect(wrapped.hasSuffix("</расшифровка>"))
     #expect(wrapped.components(separatedBy: "</расшифровка>").count == 3)
+}
+
+private func runner(contextTokens: Int) -> MLXSummaryRunner {
+    MLXSummaryRunner(uvPath: "/nowhere/uv", model: "модель", timeout: 60, contextTokens: contextTokens)
+}
+
+// The guard is arithmetic done before the subprocess starts, because a merge that does not fit
+// comes back truncated rather than refused — and truncated JSON reads to the owner as "the model
+// could not read your meeting", which is a different and untrue statement.
+@Test func aMergeTooLargeForTheWindowIsRefusedWithNumbers() {
+    // 4000 − 3000 = 1000 tokens, i.e. 2500 characters at 2.5 per token.
+    #expect(throws: MLXSummaryRunner.Failure.self) {
+        try runner(contextTokens: 4000).checkMergeFits(String(repeating: "я", count: 3000))
+    }
+}
+
+@Test func aMergeThatFitsIsNotRefused() throws {
+    try runner(contextTokens: 4000).checkMergeFits(String(repeating: "я", count: 2000))
+}
+
+// What the removed ten-chunk ceiling used to bound, measured against what the merge actually
+// carries now: a chunk's summary is a few lines, so a hundred of them still fit. A four-hour
+// dense meeting yields around forty.
+@Test func aHundredChunkSummariesStillFitTheMerge() throws {
+    let summaries = Array(
+        repeating: ["первый пункт куска", "второй пункт куска", "третий пункт куска"],
+        count: 100
+    )
+    try runner(contextTokens: 28_000).checkMergeFits(SummaryPrompt.mergeUser(summaries: summaries))
+}
+
+@Test func theMergeRefusalIsPermanent() {
+    #expect(MLXSummaryRunner.Failure.mergeTooLong(estimated: 30_000, limit: 25_000).isPermanent)
 }

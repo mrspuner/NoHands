@@ -74,14 +74,19 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
     /// the week by the live run of 2026-09-07: 68 minutes took 5 min 51 s, of which 349 s was
     /// generation, because that meeting was 105 KB of transcript against the probe's 36 KB. And
     /// that was one generation. Chunking makes the same meeting five partial summaries plus a
-    /// merge, and the longest meeting this branch will accept at all — 150 minutes, see
-    /// `theSupportedMeetingLengthIsWhateverTheMergeGuardAllows` — ten of them plus a merge.
+    /// merge.
     ///
     /// Half an hour is that arithmetic with room for a cold load and for `uv` fetching packages
     /// after a cache wipe. Generous on purpose: `timedOut` is a *temporary* failure, and a
     /// temporary failure stops the whole archive pass. Files are taken in filename order, so one
     /// meeting that reliably runs over would block every later file in `~/Meetings`, at every
     /// launch, for ever — the cost of guessing low is not a slow evening, it is a stalled archive.
+    ///
+    /// What actually bounds how long a meeting the app will accept is time plus
+    /// `maxMeetingSeconds`, the four-hour recording cap — not this window: `checkMergeFits`
+    /// (`MLXSummaryRunner`) checks the merge call's exact size before it is sent, and it no longer
+    /// refuses on a chunk count, so a longer meeting costs more chunks and more minutes, not a
+    /// hard wall here.
     public var summaryTimeoutSeconds: Double
     /// The model's 32k window minus the answer and the system part. It describes the model, and
     /// it must keep describing the model: raising it to make some other arithmetic come out would
@@ -92,9 +97,9 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
     /// quarter hour is abnormally dense", not "this meeting is long", and it is a long way from
     /// firing — fifteen minutes at the measured 296 tokens a minute is about 4500 tokens.
     ///
-    /// The same window bounds the merge call, which holds one partial summary per chunk. That is
-    /// what actually decides how long a meeting this app can summarise, and the arithmetic lives
-    /// in `theSupportedMeetingLengthIsWhateverTheMergeGuardAllows` rather than in anyone's head.
+    /// The same window bounds the merge call separately, checked by `checkMergeFits` right before
+    /// that call is made — the merge only ever carries each chunk's `summary` array, a few lines
+    /// each, so its exact size is known in advance rather than estimated from a chunk count.
     public var summaryContextTokens: Int
     /// Share of a quote's longest run that has to be found in the transcript. Measured: real
     /// quotes 65–100%, invented or foreign ones 12–18%, so the threshold sits in the gap.

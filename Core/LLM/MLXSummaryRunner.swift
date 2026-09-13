@@ -9,11 +9,10 @@ public struct MLXSummaryRunner: SummaryRunning {
     public enum Failure: LocalizedError, SummaryFailure, Equatable {
         case uvMissing(String)
         case tooLong(estimated: Int, limit: Int)
-        /// The merge pass holds `mergePrefix` plus one partial summary per chunk, each up to
-        /// `maxTokens` — a meeting cut into too many chunks would overflow that call even though
-        /// every individual chunk fits its own window. Not thrown by anything yet: `checkMergeFits`
-        /// is a stub until task 4 gives it the arithmetic and wires this case to it.
-        case tooManyChunks(count: Int, limit: Int)
+        /// The assembled merge message does not fit the window. Permanent for the same reason
+        /// `tooLong` is: the meeting's length fixes how many chunks it has, so a retry produces
+        /// the same message.
+        case mergeTooLong(estimated: Int, limit: Int)
         case timedOut(TimeInterval)
         case runnerFailed(String)
 
@@ -23,8 +22,8 @@ public struct MLXSummaryRunner: SummaryRunning {
                 return "uv not found at \(path)"
             case .tooLong(let estimated, let limit):
                 return "The meeting is longer than the model's window: about \(estimated) tokens against \(limit)"
-            case .tooManyChunks(let count, let limit):
-                return "The meeting has too many chunks for the merge pass to hold: \(count) against \(limit)"
+            case .mergeTooLong(let estimated, let limit):
+                return "The merge of \(estimated) tokens does not fit the \(limit) the window leaves for it"
             case .timedOut(let seconds):
                 return "The model did not answer within \(Int(seconds / 60)) min"
             case .runnerFailed(let detail):
@@ -34,7 +33,7 @@ public struct MLXSummaryRunner: SummaryRunning {
 
         public var isPermanent: Bool {
             switch self {
-            case .tooLong, .tooManyChunks: return true
+            case .tooLong, .mergeTooLong: return true
             case .uvMissing, .timedOut, .runnerFailed: return false
             }
         }
@@ -58,10 +57,10 @@ public struct MLXSummaryRunner: SummaryRunning {
     /// the file, which is the right outcome; inside a merge it used to arrive as prose the merge
     /// would quietly absorb, which is why the script now checks each partial before merging.
     ///
-    /// Moving it is not free either. A bigger partial means fewer of them fit one merge call,
-    /// and that number is how long a meeting the app can summarise at all — see
-    /// `theSupportedMeetingLengthIsWhateverTheMergeGuardAllows`, which fails with the new
-    /// supported length rather than letting it be discovered on a real meeting.
+    /// Moving it used to cost merge headroom directly, back when the merge call carried whole
+    /// partial summaries. It no longer does: the merge sees only each partial's `summary` array,
+    /// a few lines each, so this number bounds one chunk's answer and nothing past it — see
+    /// `checkMergeFits` for what actually limits the merge now.
     static let maxTokens = 2500
     /// The merge pass answers about a whole meeting rather than a chunk of one, so it gets more
     /// room than a single chunk's summary needs.
@@ -195,11 +194,24 @@ public struct MLXSummaryRunner: SummaryRunning {
         return SummaryAssembly.combine(partials: partials, refusals: refusals, merged: merged)
     }
 
-    /// Guards the merge call against a meeting cut into more chunks than one merge prompt can
-    /// hold. Left empty here — task 4 fills in the body and removes `Failure.tooManyChunks` in
-    /// the same breath, so implementing half of that guard now would leave two limits in the
-    /// code that disagree with each other.
-    private func checkMergeFits(_ message: String) throws {}
+    /// The merge call has to fit what the window leaves after the answer is reserved.
+    ///
+    /// This replaces the ten-chunk ceiling, which was arithmetic on the worst case: every partial
+    /// summary could have filled `maxTokens`, so ten of them plus the prefix was as much as the
+    /// window could hold. The merge no longer carries partial summaries — it carries their
+    /// `summary` arrays, a few lines each — so the size is known exactly before the call, and
+    /// bounding it by a count of chunks would refuse meetings that fit comfortably.
+    ///
+    /// The practical ceiling moves far out: at a couple of hundred tokens per chunk summary the
+    /// window holds more than a hundred chunks, and a four-hour dense meeting yields around
+    /// forty. What limits a long meeting now is time, not this.
+    func checkMergeFits(_ message: String) throws {
+        let estimated = Int(Double(message.count) / Self.charactersPerToken)
+        let limit = contextTokens - Self.mergeMaxTokens
+        guard estimated <= limit else {
+            throw Failure.mergeTooLong(estimated: estimated, limit: limit)
+        }
+    }
 
     /// The whole subprocess dance is blocking, and blocking a cooperative thread for two minutes
     /// starves the pool. It runs on a queue of its own and comes back through a continuation.
