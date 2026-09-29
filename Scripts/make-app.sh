@@ -17,11 +17,29 @@ swift build -c release --product NoHandsApp
 BIN_PATH="$(swift build -c release --product NoHandsApp --show-bin-path)"
 
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_PATH/NoHandsApp" "$APP/Contents/MacOS/NoHands"
 cp App/Info.plist "$APP/Contents/Info.plist"
+cp App/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 codesign --force --sign "$IDENTITY" --identifier com.nohands.app "$APP"
 codesign --verify --verbose "$APP"
 
-echo "готово: $APP"
+# Installed into /Applications so it shows up in Launchpad and so Login Items points at a path
+# that does not move — the app registers itself there on launch, see App/LoginItem.swift.
+# NOHANDS_NO_INSTALL=1 stops at the signed bundle in build/.
+if [ "${NOHANDS_NO_INSTALL:-}" = "1" ]; then
+    echo "готово: $APP"
+    exit 0
+fi
+
+INSTALLED="/Applications/NoHands.app"
+# SIGTERM rather than an Apple event "quit": the latter would ask for Automation permission for
+# whatever terminal runs this. A meeting in flight survives as a draft, same as after a crash.
+pkill -TERM -x NoHands || true
+while pgrep -x NoHands >/dev/null; do sleep 0.2; done
+rm -rf "$INSTALLED"
+ditto "$APP" "$INSTALLED"
+open "$INSTALLED"
+
+echo "готово: $INSTALLED"

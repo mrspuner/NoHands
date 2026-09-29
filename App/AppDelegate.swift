@@ -102,6 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let current = NSWorkspace.shared.frontmostApplication
         panel.setFrontmost(name: current?.localizedName, icon: current?.icon)
 
+        LoginItem.registerIfInstalled()
         startBuild(menu: menu)
     }
 
