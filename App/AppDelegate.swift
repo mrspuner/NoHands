@@ -142,8 +142,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// task, before meetings, so its failure lands on the same status line as everything else.
     private func startTodoistSync() async {
         guard todoistServer == nil else { return }
-        let creator = TaskCreator(api: todoistClient, journal: ActionJournal(url: ActionJournal.defaultURL))
-        let endpoint = TodoistEndpoint(create: { try await creator.create($0) })
+        let operations = TodoistOperations(api: todoistClient, journal: ActionJournal(url: ActionJournal.defaultURL))
+        let endpoint = TodoistEndpoint(operations: operations)
         let server = LocalHTTPServer(port: TodoistSyncConfig.port) { method, path, body in
             await endpoint.respond(method: method, path: path, body: body)
         }
