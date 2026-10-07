@@ -81,9 +81,17 @@ public struct IngestRunner: Sendable {
         guard code == 0 else { throw IngestError.failed(code) }
     }
 
-    /// The prompt goes right after `-p`, before `--allowedTools`, which takes several values.
+    /// - `-p <prompt>`: non-interactive run; the prompt stays right after `-p`.
+    /// - `--restricted`: drops command/code-running tools and WebFetch, ignores user/project/local
+    ///   settings, and confines file tools to the working directory (BigHead).
+    /// - `--strict-mcp-config` (no `--mcp-config`): loads no MCP servers, so the user's connectors
+    ///   are unreachable.
+    /// - `--permission-mode acceptEdits`: file edits need no prompt in an unattended run.
+    /// - `--tools`: restricts the built-in set to file tools. (`--allowedTools` would only
+    ///   pre-approve, not remove, tools such as Bash.) Not `--bare`: it disables OAuth login.
     static func arguments(rawFile: String) -> [String] {
-        ["-p", prompt(rawFile: rawFile), "--permission-mode", "acceptEdits", "--allowedTools", "Read,Edit,Write,Glob,Grep"]
+        ["-p", prompt(rawFile: rawFile), "--restricted", "--strict-mcp-config",
+         "--permission-mode", "acceptEdits", "--tools", "Read,Edit,Write,Glob,Grep"]
     }
 
     static func prompt(rawFile: String) -> String {

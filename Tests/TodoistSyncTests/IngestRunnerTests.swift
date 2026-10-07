@@ -28,12 +28,22 @@ private let bighead = URL(fileURLWithPath: "/tmp/BigHead")
     #expect(args[0] == "-p")
     #expect(args[1].contains("raw/2026-10-07-todoist-190640.md"))
     #expect(args[1].contains("Todoist → входящие"))
-    #expect(Array(args[2...]) == ["--permission-mode", "acceptEdits", "--allowedTools", "Read,Edit,Write,Glob,Grep"])
+    #expect(Array(args[2...]) == ["--restricted", "--strict-mcp-config", "--permission-mode", "acceptEdits",
+                                  "--tools", "Read,Edit,Write,Glob,Grep"])
 }
 
-// No Bash: the agent cannot reach NoHands, so applying a Todoist event never echoes back.
-@Test func theAgentGetsNoShell() {
-    #expect(!IngestRunner.arguments(rawFile: "raw/x.md").joined(separator: " ").contains("Bash"))
+// The agent must reach neither a shell nor MCP connectors (NoHands among them),
+// so applying a Todoist event never echoes back.
+@Test func theAgentIsSandboxed() throws {
+    let args = IngestRunner.arguments(rawFile: "raw/x.md")
+    #expect(args.contains("--restricted"))
+    #expect(args.contains("--strict-mcp-config"))
+    let toolsIndex = try #require(args.firstIndex(of: "--tools"))
+    #expect(args[toolsIndex + 1] == "Read,Edit,Write,Glob,Grep")
+    for forbidden in ["--allowedTools", "--dangerously-skip-permissions", "bypassPermissions", "--mcp-config"] {
+        #expect(!args.contains(forbidden))
+    }
+    #expect(!args.joined(separator: " ").contains("Bash"))
 }
 
 @Test func aNonZeroExitIsAFailure() async {
@@ -62,8 +72,13 @@ private let bighead = URL(fileURLWithPath: "/tmp/BigHead")
 }
 
 @Test func aMissingExecutableIsALaunchFailure() async {
-    await #expect(throws: IngestError.self) {
+    do {
         _ = try await SystemProcessRunner().run(executable: URL(fileURLWithPath: "/nonexistent/claude"), arguments: [],
                                                 directory: FileManager.default.temporaryDirectory, timeout: 5)
+        Issue.record("expected a launch failure")
+    } catch let error as IngestError {
+        guard case .launchFailed = error else { Issue.record("wrong error: \(error)"); return }
+    } catch {
+        Issue.record("wrong error type: \(error)")
     }
 }
