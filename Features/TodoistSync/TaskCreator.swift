@@ -81,6 +81,8 @@ public actor TaskCreator {
             switch error {
             case .requestFailed(let status, _) where (400..<500).contains(status):
                 throw error  // Todoist refused: the task does not exist.
+            case .notFound:
+                throw error  // The target project vanished; Todoist refused the task.
             case .tokenMissing, .keychain:
                 throw error  // Nothing was sent.
             case .requestFailed, .unexpectedResponse:

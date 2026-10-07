@@ -160,3 +160,91 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
     let client = TodoistClient(lookup: { nil }, transport: { _ in throw URLError(.badURL) })
     await client.warmUp()
 }
+
+// MARK: - Slice 2 calls
+
+@Test func a404BecomesNotFound() async {
+    let transport = FakeTransport([(404, "Not found")])
+    await #expect(throws: TodoistError.notFound) {
+        _ = try await client(transport).task(id: "t1")
+    }
+}
+
+@Test func taskReadsItsProject() async throws {
+    let transport = FakeTransport([(200, #"{"id":"t1","project_id":"p9","content":"x"}"#)])
+    let info = try await client(transport).task(id: "t1")
+    #expect(info == TodoistTaskInfo(id: "t1", projectID: "p9"))
+    #expect(transport.requests[0].url!.absoluteString == "https://api.todoist.com/api/v1/tasks/t1")
+    #expect(transport.requests[0].httpMethod == "GET")
+}
+
+@Test func updateSendsTheWholeTask() async throws {
+    let transport = FakeTransport([(200, #"{"id":"t1"}"#)])
+    try await client(transport).updateTask(id: "t1", TaskUpdate(content: "T", description: "D", dueDate: "2026-10-10"))
+    let request = transport.requests[0]
+    #expect(request.httpMethod == "POST")
+    #expect(request.url!.absoluteString == "https://api.todoist.com/api/v1/tasks/t1")
+    let body = try json(request)
+    #expect(body["content"] as? String == "T")
+    #expect(body["description"] as? String == "D")
+    #expect(body["due_date"] as? String == "2026-10-10")
+    #expect(body["due_string"] == nil)
+}
+
+// Verified live: `due_date: null` is silently ignored; only `due_string: "no date"` clears it.
+// An update sends the whole task, so an absent due date means "no due date".
+@Test func anUpdateWithoutDueClearsIt() async throws {
+    let transport = FakeTransport([(200, #"{"id":"t1"}"#)])
+    try await client(transport).updateTask(id: "t1", TaskUpdate(content: "T", description: nil, dueDate: nil))
+    let body = try json(transport.requests[0])
+    #expect(body["due_string"] as? String == "no date")
+    #expect(body["due_date"] == nil)
+    #expect(body["description"] as? String == "")
+}
+
+// Verified live: `project_id` in an update is silently ignored; moving is its own call.
+@Test func moveUsesTheMoveEndpoint() async throws {
+    let transport = FakeTransport([(200, "{}")])
+    try await client(transport).moveTask(id: "t1", toProject: "p2")
+    let request = transport.requests[0]
+    #expect(request.httpMethod == "POST")
+    #expect(request.url!.absoluteString == "https://api.todoist.com/api/v1/tasks/t1/move")
+    #expect(try json(request)["project_id"] as? String == "p2")
+}
+
+@Test func closeAcceptsAnEmpty204() async throws {
+    let transport = FakeTransport([(204, "")])
+    try await client(transport).closeTask(id: "t1")
+    #expect(transport.requests[0].httpMethod == "POST")
+    #expect(transport.requests[0].url!.absoluteString == "https://api.todoist.com/api/v1/tasks/t1/close")
+}
+
+@Test func deleteUsesDELETE() async throws {
+    let transport = FakeTransport([(204, "")])
+    try await client(transport).deleteTask(id: "t1")
+    #expect(transport.requests[0].httpMethod == "DELETE")
+    #expect(transport.requests[0].url!.absoluteString == "https://api.todoist.com/api/v1/tasks/t1")
+}
+
+@Test func archivedProjectsFollowTheCursor() async throws {
+    let transport = FakeTransport([
+        (200, #"{"results":[{"id":"a","name":"A","parent_id":null}],"next_cursor":"c"}"#),
+        (200, #"{"results":[{"id":"b","name":"B","parent_id":"a"}],"next_cursor":null}"#),
+    ])
+    let projects = try await client(transport).archivedProjects()
+    #expect(projects.map(\.id) == ["a", "b"])
+    #expect(transport.requests[0].url!.absoluteString == "https://api.todoist.com/api/v1/projects/archived?limit=200")
+    #expect(transport.requests[1].url!.absoluteString == "https://api.todoist.com/api/v1/projects/archived?limit=200&cursor=c")
+}
+
+@Test func archiveAndUnarchiveHitTheirEndpoints() async throws {
+    let transport = FakeTransport([(200, "{}"), (200, "{}")])
+    let client = client(transport)
+    try await client.archiveProject(id: "p1")
+    try await client.unarchiveProject(id: "p1")
+    #expect(transport.requests.map { $0.url!.absoluteString } == [
+        "https://api.todoist.com/api/v1/projects/p1/archive",
+        "https://api.todoist.com/api/v1/projects/p1/unarchive",
+    ])
+    #expect(transport.requests.allSatisfy { $0.httpMethod == "POST" })
+}

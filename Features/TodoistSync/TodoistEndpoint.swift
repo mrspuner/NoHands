@@ -44,6 +44,8 @@ public struct TodoistEndpoint: Sendable {
                 return .json(503, ["error": error.localizedDescription])
             case .requestFailed(let status, _):
                 return .json(502, ["error": error.localizedDescription, "todoist_status": status])
+            case .notFound:
+                return .json(404, ["error": error.localizedDescription])
             case .unexpectedResponse:
                 return .json(502, ["error": error.localizedDescription])
             }

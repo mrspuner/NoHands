@@ -2,40 +2,6 @@ import Foundation
 import Testing
 @testable import TodoistSync
 
-/// An in-memory Todoist account.
-private actor FakeAccount: TodoistAPI {
-    var projectList: [TodoistProject]
-    var tasks: [NewTodoistTask] = []
-    var projectCalls = 0
-    var taskCreationError: (any Error)?
-    private var counter = 0
-
-    init(_ projects: [TodoistProject] = []) { projectList = projects }
-
-    func failTaskCreation(with error: any Error) { taskCreationError = error }
-
-    func projects() async throws -> [TodoistProject] {
-        projectCalls += 1
-        // A suspension point, so two overlapping requests really do interleave here.
-        try await Task.sleep(for: .milliseconds(20))
-        return projectList
-    }
-
-    func createProject(name: String, parentID: String?) async throws -> TodoistProject {
-        counter += 1
-        let project = TodoistProject(id: "new\(counter)", name: name, parentID: parentID)
-        projectList.append(project)
-        return project
-    }
-
-    func createTask(_ task: NewTodoistTask) async throws -> String {
-        if let taskCreationError { throw taskCreationError }
-        tasks.append(task)
-        counter += 1
-        return "task\(counter)"
-    }
-}
-
 private func journal() -> ActionJournal {
     ActionJournal(url: FileManager.default.temporaryDirectory
         .appendingPathComponent("tc-\(UUID().uuidString)/todoist-actions.jsonl"))

@@ -46,6 +46,14 @@ public actor TodoistClient: TodoistAPI {
     }
 
     public func projects() async throws -> [TodoistProject] {
+        try await pagedProjects(path: "projects")
+    }
+
+    public func archivedProjects() async throws -> [TodoistProject] {
+        try await pagedProjects(path: "projects/archived")
+    }
+
+    private func pagedProjects(path: String) async throws -> [TodoistProject] {
         struct Page: Decodable {
             let results: [TodoistProject]
             let nextCursor: String?
@@ -57,7 +65,7 @@ public actor TodoistClient: TodoistAPI {
         var all: [TodoistProject] = []
         var cursor: String?
         repeat {
-            var components = URLComponents(url: Self.base.appendingPathComponent("projects"), resolvingAgainstBaseURL: false)!
+            var components = URLComponents(url: Self.base.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
             components.queryItems = [URLQueryItem(name: "limit", value: "200")]
             if let cursor {
                 components.queryItems?.append(URLQueryItem(name: "cursor", value: cursor))
@@ -65,6 +73,8 @@ public actor TodoistClient: TodoistAPI {
             let data = try await send(method: "GET", url: components.url!, body: nil)
             let page = try Self.decode(Page.self, from: data)
             all += page.results
+            // A repeated or empty cursor would loop forever on a Todoist bug.
+            guard page.nextCursor != cursor, page.nextCursor?.isEmpty != true else { break }
             cursor = page.nextCursor
         } while cursor != nil
         return all
@@ -89,6 +99,52 @@ public actor TodoistClient: TodoistAPI {
         return id
     }
 
+    public func task(id: String) async throws -> TodoistTaskInfo {
+        let data = try await send(method: "GET", url: Self.taskURL(id), body: nil)
+        return try Self.decode(TodoistTaskInfo.self, from: data)
+    }
+
+    public func updateTask(id: String, _ update: TaskUpdate) async throws {
+        var body: [String: Any] = ["content": update.content, "description": update.description ?? ""]
+        if let dueDate = update.dueDate {
+            body["due_date"] = dueDate
+        } else {
+            // The only way to clear a due date; `due_date: null` is ignored (verified 2026-10-07).
+            // `due_string` is never used to set a date: it is parsed by language.
+            body["due_string"] = "no date"
+        }
+        _ = try await send(method: "POST", url: Self.taskURL(id), body: body)
+    }
+
+    public func moveTask(id: String, toProject projectID: String) async throws {
+        _ = try await send(method: "POST", url: Self.taskURL(id, "move"), body: ["project_id": projectID])
+    }
+
+    public func closeTask(id: String) async throws {
+        _ = try await send(method: "POST", url: Self.taskURL(id, "close"), body: nil)
+    }
+
+    public func deleteTask(id: String) async throws {
+        _ = try await send(method: "DELETE", url: Self.taskURL(id), body: nil)
+    }
+
+    public func archiveProject(id: String) async throws {
+        _ = try await send(method: "POST", url: Self.projectURL(id, "archive"), body: nil)
+    }
+
+    public func unarchiveProject(id: String) async throws {
+        _ = try await send(method: "POST", url: Self.projectURL(id, "unarchive"), body: nil)
+    }
+
+    private static func taskURL(_ id: String, _ action: String? = nil) -> URL {
+        let url = base.appendingPathComponent("tasks").appendingPathComponent(id)
+        return action.map { url.appendingPathComponent($0) } ?? url
+    }
+
+    private static func projectURL(_ id: String, _ action: String) -> URL {
+        base.appendingPathComponent("projects").appendingPathComponent(id).appendingPathComponent(action)
+    }
+
     private func send(method: String, url: URL, body: [String: Any]?) async throws -> Data {
         let token = try resolvedToken()
         var request = URLRequest(url: url)
@@ -102,6 +158,9 @@ public actor TodoistClient: TodoistAPI {
         let (data, response) = try await transport(request)
         guard let http = response as? HTTPURLResponse else {
             throw TodoistError.unexpectedResponse("no HTTP response")
+        }
+        if http.statusCode == 404 {
+            throw TodoistError.notFound
         }
         guard (200..<300).contains(http.statusCode) else {
             let message = String(data: data, encoding: .utf8) ?? "no body"

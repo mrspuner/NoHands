@@ -32,13 +32,50 @@ public struct NewTodoistTask: Equatable, Sendable {
     }
 }
 
-/// The three calls the first slice needs. A protocol so `TaskCreator` can be tested against a
+public struct TodoistTaskInfo: Equatable, Sendable, Decodable {
+    public let id: String
+    public let projectID: String
+
+    public init(id: String, projectID: String) {
+        self.id = id
+        self.projectID = projectID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case projectID = "project_id"
+    }
+}
+
+/// The whole editable state of a task. Sent whole on every update, so a retry is harmless and
+/// an absent field means "empty", not "unchanged".
+public struct TaskUpdate: Equatable, Sendable {
+    public let content: String
+    public let description: String?
+    public let dueDate: String?
+
+    public init(content: String, description: String?, dueDate: String?) {
+        self.content = content
+        self.description = description
+        self.dueDate = dueDate
+    }
+}
+
+/// The calls the Todoist sync needs. A protocol so `TaskCreator` can be tested against a
 /// fake account instead of the owner's real one.
 public protocol TodoistAPI: Sendable {
     func projects() async throws -> [TodoistProject]
     func createProject(name: String, parentID: String?) async throws -> TodoistProject
     /// - Returns: the id of the created task, taken from the response and only from it.
     func createTask(_ task: NewTodoistTask) async throws -> String
+    func task(id: String) async throws -> TodoistTaskInfo
+    func updateTask(id: String, _ update: TaskUpdate) async throws
+    func moveTask(id: String, toProject projectID: String) async throws
+    func closeTask(id: String) async throws
+    func deleteTask(id: String) async throws
+    func archivedProjects() async throws -> [TodoistProject]
+    func archiveProject(id: String) async throws
+    func unarchiveProject(id: String) async throws
 }
 
 public enum TodoistError: Error, Equatable, LocalizedError {
@@ -47,6 +84,8 @@ public enum TodoistError: Error, Equatable, LocalizedError {
     case keychain(String)
     case requestFailed(status: Int, message: String)
     case unexpectedResponse(String)
+    /// HTTP 404: Todoist has no such task or project (deleted, or never existed).
+    case notFound
 
     public var errorDescription: String? {
         switch self {
@@ -56,6 +95,8 @@ public enum TodoistError: Error, Equatable, LocalizedError {
             return message
         case .requestFailed(let status, let message):
             return "Todoist answered \(status): \(message)"
+        case .notFound:
+            return "Todoist has no such task or project"
         case .unexpectedResponse(let detail):
             return "Todoist response could not be read: \(detail)"
         }
