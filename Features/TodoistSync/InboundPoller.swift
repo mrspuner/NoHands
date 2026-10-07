@@ -36,8 +36,14 @@ public actor InboundPoller {
             try await poll()
             report(nil)
         } catch let error as IngestError {
+            switch error {
+            case .failed(let code): Self.logger.error("todoist ingest failed: exit code \(code, privacy: .public)")
+            case .timedOut: Self.logger.error("todoist ingest failed: timed out")
+            case .launchFailed: Self.logger.error("todoist ingest failed: could not launch")
+            }
             report("todoist: ingest не прошёл — \(error.localizedDescription)")
         } catch {
+            Self.logger.error("todoist poll failed: \(String(describing: type(of: error)), privacy: .public)")
             report("todoist: опрос не прошёл — \(error.localizedDescription)")
         }
     }
@@ -57,7 +63,13 @@ public actor InboundPoller {
 
         // An unreadable journal must not stop the poll; without it echoes may slip through,
         // and applying an echo in BigHead changes nothing.
-        let entries = (try? await journal.entries()) ?? []
+        let entries: [ActionJournal.Entry]
+        do {
+            entries = try await journal.entries()
+        } catch {
+            Self.logger.error("todoist journal unreadable: \(String(describing: type(of: error)), privacy: .public)")
+            entries = []
+        }
         let batch = InboundEvents.build(response: response, previous: state.projects, areas: config.areas,
                                         ignored: Set(state.ignored), journal: entries)
         let rawDirectory = URL(fileURLWithPath: config.bigheadPath).appendingPathComponent("raw")

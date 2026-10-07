@@ -36,7 +36,7 @@ private struct Setup {
         runner = RecordingRunner(exit)
     }
 
-    func poller(_ sync: FakeSync) -> InboundPoller {
+    func poller(_ sync: any TodoistSyncing) -> InboundPoller {
         let config = TodoistInboundConfig(bigheadPath: dir.appendingPathComponent("BigHead").path,
                                           areas: ["Сколково"], claudePath: "/usr/local/bin/claude", pollSeconds: 60)
         return InboundPoller(config: config, sync: sync, store: store, journal: journal,
@@ -166,10 +166,37 @@ private let baseline = SyncResponse(syncToken: "t1", fullSync: true, items: [clo
 // A tick that arrives while the previous one is still running is skipped, not queued.
 @Test func overlappingTicksDoNotRunTwice() async throws {
     let s = try Setup()
-    let sync = FakeSync([.success(baseline), .success(baseline)])
+    let sync = GatedSync(baseline)
     let poller = s.poller(sync)
-    async let first: Void = poller.tick()
-    async let second: Void = poller.tick()
-    _ = await (first, second)
-    #expect(await sync.tokens.count <= 2)
+    let first = Task { await poller.tick() }
+    await sync.waitForFirstCall()
+    await poller.tick()  // returns at once: the first tick still holds the poll
+    #expect(await sync.calls == 1)
+    await sync.release()
+    await first.value
+    #expect(await sync.calls == 1)
+}
+
+private actor GatedSync: TodoistSyncing {
+    let response: SyncResponse
+    private(set) var calls = 0
+    private var gate: CheckedContinuation<Void, Never>?
+    private var entered: CheckedContinuation<Void, Never>?
+    private var released = false
+    init(_ response: SyncResponse) { self.response = response }
+    func sync(token: String) async throws -> SyncResponse {
+        calls += 1
+        entered?.resume()
+        entered = nil
+        if calls == 1, !released { await withCheckedContinuation { gate = $0 } }
+        return response
+    }
+    func waitForFirstCall() async {
+        if calls == 0 { await withCheckedContinuation { entered = $0 } }
+    }
+    func release() {
+        released = true
+        gate?.resume()
+        gate = nil
+    }
 }
