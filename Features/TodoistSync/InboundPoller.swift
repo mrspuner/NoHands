@@ -65,8 +65,9 @@ public actor InboundPoller {
             let map = Dictionary(response.projects.filter { !$0.isDeleted }.map {
                 ($0.id, ProjectInfo(name: $0.name, parentID: $0.parentID))
             }, uniquingKeysWith: { _, last in last })
-            let work = InboundEvents.workItemIDs(items: response.items, projects: map, areas: config.areas,
-                                                 ignored: Set(state.ignored))
+            // A reset full sync lists only active items: closed work tasks stay remembered.
+            let work = Set(state.syncToken == nil ? [] : state.workItems).union(InboundEvents.workItemIDs(items: response.items, projects: map, areas: config.areas,
+                                                 ignored: Set(state.ignored)))
             try await store.saveSync(token: response.syncToken, projects: map, workItems: work)
             return
         }

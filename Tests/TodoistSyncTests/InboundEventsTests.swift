@@ -191,3 +191,9 @@ private func bareDeleted(_ id: String) -> InboundEvent {
     #expect(batch.tasks.isEmpty)
     #expect(batch.workItems == ["1"])
 }
+
+@Test func anEmptyContentDeletedItemIsBareEvenWhenItsProjectPlaces() {
+    let placed = SyncItem(id: "9", content: "", description: nil, dueDate: nil, projectID: "k", checked: false,
+                          isDeleted: true, addedAt: "1970-01-01T00:00:00.000000Z", updatedAt: nil)
+    #expect(build([placed], workItems: ["9"]).tasks == [bareDeleted("9")])
+}

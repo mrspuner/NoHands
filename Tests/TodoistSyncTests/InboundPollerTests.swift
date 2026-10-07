@@ -262,3 +262,12 @@ private actor GatedSync: TodoistSyncing {
         gate = nil
     }
 }
+
+@Test func aTokenResetKeepsRememberedWorkItems() async throws {
+    let s = try Setup()
+    try await s.store.saveSync(token: "t0", projects: [:], workItems: ["closedOne"])
+    let item = SyncItem(id: "a", content: "x", description: nil, dueDate: nil, projectID: "k", checked: false,
+                        isDeleted: false, addedAt: nil, updatedAt: nil)
+    await s.poller(FakeSync([.success(SyncResponse(syncToken: "t9", fullSync: true, items: [item], projects: projects))])).tick()
+    #expect(Set(try await s.store.load().workItems) == ["closedOne", "a"])
+}

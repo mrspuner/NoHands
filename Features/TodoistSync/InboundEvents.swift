@@ -87,18 +87,21 @@ public enum InboundEvents {
             if item.isDeleted {
                 work.remove(item.id)
                 if journaledDeletes.contains(item.id) { continue }
-                if let place {
+                if let place, !item.content.isEmpty {
                     if isEcho(item.id, updatedAt: item.updatedAt, completedAt: item.completedAt) { continue }
                     tasks.append(.deleted(TaskSnapshot(
                         id: item.id, title: item.content, description: item.description, due: item.dueDate,
                         area: place.area, project: place.project, addedAt: item.addedAt, updatedAt: item.updatedAt)))
-                } else if workItems.contains(item.id) || journaledIDs.contains(item.id) {
-                    // A tombstone: Todoist keeps no project or title for it.
+                } else if place != nil || workItems.contains(item.id) || journaledIDs.contains(item.id) {
+                    // A tombstone: Todoist keeps no title for it, and its times are placeholders
+                    // (added_at is 1970), so only the id goes to BigHead.
                     tasks.append(.deleted(TaskSnapshot(id: item.id, title: "", description: nil, due: nil,
                                                        area: "", project: nil, addedAt: nil, updatedAt: nil)))
                 }
                 continue
             }
+            // Unplaced and not deleted (e.g. moved out of an area): the id stays in `work` so a later
+            // delete still clears it from BigHead (id only, no text).
             guard let place else { continue }
             work.insert(item.id)
             guard !isEcho(item.id, updatedAt: item.updatedAt, completedAt: item.completedAt) else { continue }
