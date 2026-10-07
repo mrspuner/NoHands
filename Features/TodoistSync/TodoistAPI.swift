@@ -61,7 +61,7 @@ public struct TaskUpdate: Equatable, Sendable {
     }
 }
 
-/// The calls the Todoist sync needs. A protocol so `TaskCreator` can be tested against a
+/// The calls the Todoist sync needs. A protocol so `TodoistOperations` can be tested against a
 /// fake account instead of the owner's real one.
 public protocol TodoistAPI: Sendable {
     func projects() async throws -> [TodoistProject]

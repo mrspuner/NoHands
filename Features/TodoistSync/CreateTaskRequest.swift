@@ -1,7 +1,7 @@
 import Foundation
 
 /// What the BigHead agent sends to create one task. Names, not ids: `area` and `project` are the
-/// Todoist-side names from the pair BigHead keeps, and resolving them is `TaskCreator`'s job.
+/// Todoist-side names from the pair BigHead keeps, and resolving them is `TodoistOperations`'s job.
 public struct CreateTaskRequest: Equatable, Sendable {
     public let title: String
     public let description: String?

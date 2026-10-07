@@ -9,6 +9,12 @@ public actor ActionJournal {
     public enum Action {
         public static let projectCreated = "project.created"
         public static let taskCreated = "task.created"
+        public static let taskUpdated = "task.updated"
+        public static let taskMoved = "task.moved"
+        public static let taskClosed = "task.closed"
+        public static let taskDeleted = "task.deleted"
+        public static let projectArchived = "project.archived"
+        public static let projectUnarchived = "project.unarchived"
     }
 
     public struct Entry: Codable, Equatable, Sendable {
