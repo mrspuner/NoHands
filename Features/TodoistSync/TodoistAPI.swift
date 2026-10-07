@@ -76,6 +76,9 @@ public protocol TodoistAPI: Sendable {
     func archivedProjects() async throws -> [TodoistProject]
     func archiveProject(id: String) async throws
     func unarchiveProject(id: String) async throws
+    /// Nests a project under `parentID`. Only the Sync API can: REST rejects `parent_id` on update
+    /// and has no project move (verified 2026-10-07).
+    func moveProject(id: String, toParent parentID: String) async throws
 }
 
 public enum TodoistError: Error, Equatable, LocalizedError {

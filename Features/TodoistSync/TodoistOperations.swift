@@ -251,7 +251,7 @@ public actor TodoistOperations: TodoistOperating {
         if archive {
             guard let project = activeProject else {
                 let archived = try await api.archivedProjects()
-                if try Self.find(request.project, parentID: area.id, in: archived) != nil {
+                if try Self.findArchived(request.project, in: archived) != nil {
                     return OperationResult(already: true, warning: nil)
                 }
                 throw OperationError.projectNotFound(request.project)
@@ -261,13 +261,27 @@ public actor TodoistOperations: TodoistOperating {
         } else {
             if activeProject != nil { return OperationResult(already: true, warning: nil) }
             let archived = try await api.archivedProjects()
-            guard let project = try Self.find(request.project, parentID: area.id, in: archived) else {
+            guard let project = try Self.findArchived(request.project, in: archived) else {
                 throw OperationError.projectNotFound(request.project)
             }
             try await api.unarchiveProject(id: project.id)
             await note(ActionJournal.Action.projectUnarchived, id: project.id, name: project.name, into: &warnings)
+            // Unarchiving restores a root project; put it back under its area. A failure here
+            // must not throw: the unarchive happened, and a retry would answer already:true.
+            do {
+                try await api.moveProject(id: project.id, toParent: area.id)
+                await note(ActionJournal.Action.projectMoved, id: project.id, name: area.name, into: &warnings)
+            } catch {
+                warnings.append("project was unarchived but left at the top level: \(error.localizedDescription)")
+            }
         }
         return OperationResult(already: false, warning: warnings.isEmpty ? nil : warnings.joined(separator: "; "))
+    }
+
+    /// Archiving drops a project's parent, so an archived project is told apart by name among
+    /// the top-level entries; the area it came from is no longer recorded.
+    private static func findArchived(_ name: String, in projects: [TodoistProject]) throws -> TodoistProject? {
+        try find(name, parentID: nil, in: projects)
     }
 
     private static func find(_ name: String, parentID: String?, in projects: [TodoistProject]) throws -> TodoistProject? {

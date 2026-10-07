@@ -263,3 +263,45 @@ func anIdCannotEscapeItsPathSegment(id: String, encoded: String) async throws {
     try await client(transport).archiveProject(id: "a/b?c")
     #expect(transport.requests[0].url!.absoluteString == "https://api.todoist.com/api/v1/projects/a%2Fb%3Fc/archive")
 }
+
+/// Answers a sync call the way Todoist does: `sync_status` keyed by the uuid the request carried.
+private func syncClient(status: String, record: @escaping @Sendable (URLRequest) -> Void = { _ in }) -> TodoistClient {
+    TodoistClient(lookup: { "secret" }, transport: { request in
+        record(request)
+        let commands = try json(request)["commands"] as! [[String: Any]]
+        let uuid = commands[0]["uuid"] as! String
+        let body = status.isEmpty ? #"{"sync_status":{}}"# : #"{"sync_status":{"\#(uuid)":\#(status)}}"#
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+        return (Data(body.utf8), response)
+    })
+}
+
+@Test func moveProjectSendsAProjectMoveSyncCommand() async throws {
+    let seen = OSAllocatedUnfairLock(initialState: [URLRequest]())
+    try await syncClient(status: #""ok""#) { request in seen.withLock { $0.append(request) } }
+        .moveProject(id: "b", toParent: "a")
+
+    let request = try #require(seen.withLock { $0.first })
+    #expect(request.httpMethod == "POST")
+    #expect(request.url!.absoluteString == "https://api.todoist.com/api/v1/sync")
+    #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer secret")
+    let command = (try json(request)["commands"] as! [[String: Any]])[0]
+    #expect(command["type"] as? String == "project_move")
+    #expect(!(command["uuid"] as! String).isEmpty)
+    let args = command["args"] as! [String: Any]
+    #expect(args["id"] as? String == "b")
+    #expect(args["parent_id"] as? String == "a")
+}
+
+@Test func moveProjectThrowsOnANonOkSyncStatus() async {
+    await #expect(throws: TodoistError.self) {
+        try await syncClient(status: #"{"error_code":22,"error":"Invalid parent"}"#)
+            .moveProject(id: "b", toParent: "a")
+    }
+}
+
+@Test func moveProjectThrowsWhenTheStatusIsMissing() async {
+    await #expect(throws: TodoistError.self) {
+        try await syncClient(status: "").moveProject(id: "b", toParent: "a")
+    }
+}

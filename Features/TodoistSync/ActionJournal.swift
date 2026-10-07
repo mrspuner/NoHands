@@ -15,6 +15,7 @@ public actor ActionJournal {
         public static let taskDeleted = "task.deleted"
         public static let projectArchived = "project.archived"
         public static let projectUnarchived = "project.unarchived"
+        public static let projectMoved = "project.moved"
     }
 
     public struct Entry: Codable, Equatable, Sendable {

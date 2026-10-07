@@ -14,6 +14,8 @@ actor FakeAccount: TodoistAPI {
     var deleted: [String] = []
     var archivedIDs: [String] = []
     var unarchivedIDs: [String] = []
+    var projectMoves: [(id: String, parentID: String)] = []
+    var moveProjectError: (any Error)?
     var projectCalls = 0
     var createTaskError: (any Error)?
     private var counter = 0
@@ -25,6 +27,7 @@ actor FakeAccount: TodoistAPI {
     /// Kept for the slice-1 creator tests.
     func failTaskCreation(with error: any Error) { createTaskError = error }
     func addTask(id: String, projectID: String) { taskProjects[id] = projectID }
+    func setMoveProjectError(_ error: any Error) { moveProjectError = error }
     func setArchived(_ projects: [TodoistProject]) { archivedList = projects }
 
     func projects() async throws -> [TodoistProject] {
@@ -80,13 +83,24 @@ actor FakeAccount: TodoistAPI {
 
     func archiveProject(id: String) async throws {
         guard let index = projectList.firstIndex(where: { $0.id == id }) else { throw TodoistError.notFound }
-        archivedList.append(projectList.remove(at: index))
+        // Live behavior (2026-10-07): archiving drops the parent.
+        let project = projectList.remove(at: index)
+        archivedList.append(TodoistProject(id: project.id, name: project.name, parentID: nil))
         archivedIDs.append(id)
     }
 
     func unarchiveProject(id: String) async throws {
         guard let index = archivedList.firstIndex(where: { $0.id == id }) else { throw TodoistError.notFound }
-        projectList.append(archivedList.remove(at: index))
+        // Live behavior: unarchive restores a root project, nesting is lost.
+        let project = archivedList.remove(at: index)
+        projectList.append(TodoistProject(id: project.id, name: project.name, parentID: nil))
         unarchivedIDs.append(id)
+    }
+
+    func moveProject(id: String, toParent parentID: String) async throws {
+        if let moveProjectError { throw moveProjectError }
+        guard let index = projectList.firstIndex(where: { $0.id == id }) else { throw TodoistError.notFound }
+        projectList[index] = TodoistProject(id: id, name: projectList[index].name, parentID: parentID)
+        projectMoves.append((id, parentID))
     }
 }

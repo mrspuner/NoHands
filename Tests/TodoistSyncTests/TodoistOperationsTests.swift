@@ -10,6 +10,9 @@ private func journal() -> ActionJournal {
 private let skolkovo = TodoistProject(id: "a", name: "Сколково", parentID: nil)
 private let khibiny = TodoistProject(id: "b", name: "Хибины", parentID: "a")
 
+/// What Todoist reports for an archived subproject: the parent is gone (verified 2026-10-07).
+private let archivedKhibiny = TodoistProject(id: "b", name: "Хибины", parentID: nil)
+
 private func request(area: String = "Сколково", project: String? = "Хибины") -> CreateTaskRequest {
     CreateTaskRequest(title: "T", description: "D", due: "2026-10-10", area: area, project: project)
 }
@@ -273,7 +276,7 @@ private let brandsim = TodoistProject(id: "c", name: "Бренд симулят�
 
 @Test func archivingAnArchivedProjectIsAlreadyDone() async throws {
     let account = FakeAccount([skolkovo])
-    await account.setArchived([khibiny])
+    await account.setArchived([archivedKhibiny])
     let result = try await TodoistOperations(api: account, journal: journal())
         .archiveProject(ProjectRequest(area: "Сколково", project: "Хибины"))
     #expect(result.already)
@@ -296,11 +299,57 @@ private let brandsim = TodoistProject(id: "c", name: "Бренд симулят�
 
 @Test func unarchivingAnArchivedProject() async throws {
     let account = FakeAccount([skolkovo])
-    await account.setArchived([khibiny])
+    await account.setArchived([archivedKhibiny])
     let log = journal()
     let result = try await TodoistOperations(api: account, journal: log)
         .unarchiveProject(ProjectRequest(area: "Сколково", project: "Хибины"))
     #expect(result.already == false)
+    #expect(result.warning == nil)
+    #expect(await account.unarchivedIDs == ["b"])
+    #expect(await account.projectMoves.map(\.parentID) == ["a"])
+    #expect(try await log.entries().map(\.action) == ["project.unarchived", "project.moved"])
+}
+
+@Test func archiveThenReArchiveIsAlreadyDone() async throws {
+    let account = FakeAccount([skolkovo, khibiny])
+    let operations = TodoistOperations(api: account, journal: journal())
+    let ask = ProjectRequest(area: "Сколково", project: "Хибины")
+    _ = try await operations.archiveProject(ask)
+    let again = try await operations.archiveProject(ask)
+    #expect(again.already)
+    #expect(await account.archivedIDs == ["b"])
+}
+
+@Test func archiveThenUnarchiveReturnsTheProjectToItsArea() async throws {
+    let account = FakeAccount([skolkovo, khibiny])
+    let log = journal()
+    let operations = TodoistOperations(api: account, journal: log)
+    let ask = ProjectRequest(area: "Сколково", project: "Хибины")
+    _ = try await operations.archiveProject(ask)
+    let result = try await operations.unarchiveProject(ask)
+    #expect(result.already == false)
+    #expect(await account.projectList.contains(khibiny))
+    #expect(try await log.entries().map(\.action) == ["project.archived", "project.unarchived", "project.moved"])
+}
+
+@Test func twoArchivedRootsWithTheSameNameAreAmbiguous() async {
+    let account = FakeAccount([skolkovo])
+    await account.setArchived([archivedKhibiny, TodoistProject(id: "z", name: " хибины ", parentID: nil)])
+    await #expect(throws: ResolveError.ambiguousProject("Хибины")) {
+        _ = try await TodoistOperations(api: account, journal: journal())
+            .unarchiveProject(ProjectRequest(area: "Сколково", project: "Хибины"))
+    }
+}
+
+@Test func aFailedMoveAfterUnarchiveIsASuccessWithAWarning() async throws {
+    let account = FakeAccount([skolkovo])
+    await account.setArchived([archivedKhibiny])
+    await account.setMoveProjectError(TodoistError.requestFailed(status: 500, message: "down"))
+    let log = journal()
+    let result = try await TodoistOperations(api: account, journal: log)
+        .unarchiveProject(ProjectRequest(area: "Сколково", project: "Хибины"))
+    #expect(result.already == false)
+    #expect(result.warning?.contains("top level") == true)
     #expect(await account.unarchivedIDs == ["b"])
     #expect(try await log.entries().map(\.action) == ["project.unarchived"])
 }

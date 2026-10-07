@@ -136,6 +136,29 @@ public actor TodoistClient: TodoistAPI {
         _ = try await send(method: "POST", url: Self.projectURL(id, "unarchive"), body: nil)
     }
 
+    /// `project_move` through the Sync API. Unarchiving restores a project at the top level, and
+    /// this is the only call that puts it back under its area. A 200 does not mean success: the
+    /// outcome of the command is in `sync_status`, keyed by the command's uuid.
+    public func moveProject(id: String, toParent parentID: String) async throws {
+        let uuid = UUID().uuidString
+        let command: [String: Any] = [
+            "type": "project_move",
+            "uuid": uuid,
+            "args": ["id": id, "parent_id": parentID],
+        ]
+        let data = try await send(
+            method: "POST",
+            url: Self.base.appendingPathComponent("sync"),
+            body: ["commands": [command]]
+        )
+        let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let status = (object?["sync_status"] as? [String: Any])?[uuid]
+        guard let text = status as? String, text == "ok" else {
+            let detail = status.map { Self.cut(String(describing: $0)) } ?? "no status"
+            throw TodoistError.unexpectedResponse("project_move: \(detail)")
+        }
+    }
+
     /// ASCII letters and digits pass; everything else, `.` included, is percent-encoded, so an id
     /// can never add, drop or reinterpret a path segment.
     private static let segmentAllowed = CharacterSet(
