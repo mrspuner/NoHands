@@ -36,6 +36,12 @@ private let snapshot = TaskSnapshot(id: "6hh", title: "Внести правки
     #expect(!text.contains("project:"))
 }
 
+@Test func aTombstoneRendersAsIdOnly() {
+    let tombstone = TaskSnapshot(id: "6hh", title: "", description: nil, due: nil, area: "", project: nil, addedAt: nil, updatedAt: nil)
+    let text = InboundRawFile.renderTasks([.deleted(tombstone)], polledAt: moment)
+    #expect(text.hasSuffix("- event: deleted\n  id: 6hh\n\n"))
+}
+
 @Test func projectsRender() {
     let text = InboundRawFile.renderProjects([ProjectAdded(id: "p", area: "RooX", name: "Новый")], polledAt: moment)
     #expect(text.hasPrefix("---\nkind: todoist-project\npolled_at: 2026-10-07T19:06:40Z\n---\n\n"))

@@ -65,7 +65,9 @@ public actor InboundPoller {
             let map = Dictionary(response.projects.filter { !$0.isDeleted }.map {
                 ($0.id, ProjectInfo(name: $0.name, parentID: $0.parentID))
             }, uniquingKeysWith: { _, last in last })
-            try await store.saveSync(token: response.syncToken, projects: map)
+            let work = InboundEvents.workItemIDs(items: response.items, projects: map, areas: config.areas,
+                                                 ignored: Set(state.ignored))
+            try await store.saveSync(token: response.syncToken, projects: map, workItems: work)
             return
         }
 
@@ -81,7 +83,7 @@ public actor InboundPoller {
         let config = self.config
         let ingest = self.ingest
         let batch = InboundEvents.build(response: response, previous: state.projects, areas: config.areas,
-                                        ignored: Set(state.ignored), journal: entries)
+                                        ignored: Set(state.ignored), workItems: Set(state.workItems), journal: entries)
         let rawDirectory = URL(fileURLWithPath: config.bigheadPath).appendingPathComponent("raw")
         let polledAt = now()
 
@@ -99,8 +101,9 @@ public actor InboundPoller {
         // Skipped when nothing moved: most polls are empty, and each save rewrites the file.
         let unchanged = response.syncToken == state.syncToken && batch.tasks.isEmpty
             && batch.projects.isEmpty && batch.projectMap == state.projects
+            && batch.workItems == Set(state.workItems)
         if !unchanged {
-            try await store.saveSync(token: response.syncToken, projects: batch.projectMap)
+            try await store.saveSync(token: response.syncToken, projects: batch.projectMap, workItems: batch.workItems)
         }
         Self.logger.info("todoist poll: \(batch.tasks.count, privacy: .public) task events, \(batch.projects.count, privacy: .public) new projects")
 

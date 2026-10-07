@@ -30,6 +30,9 @@ public struct InboundBatch: Equatable, Sendable {
     public let projects: [ProjectAdded]
     /// The project map after this sync, to be saved.
     public let projectMap: [String: ProjectInfo]
+    /// Ids of tasks known to be inside areas after this sync, to be saved: a deleted task
+    /// arrives as a bare tombstone, and this memory is the only way to tell it was work.
+    public let workItems: Set<String>
 }
 
 /// Turns one sync answer into what BigHead should hear: only work (inside an area), never a
@@ -44,6 +47,7 @@ public enum InboundEvents {
         previous: [String: ProjectInfo],
         areas: [String],
         ignored: Set<String>,
+        workItems: Set<String> = [],
         journal: [ActionJournal.Entry]
     ) -> InboundBatch {
         // `placing` keeps projects deleted in this sync, so their deleted tasks still resolve to
@@ -64,17 +68,7 @@ public enum InboundEvents {
             .mapValues { $0.compactMap { date($0.time, formatter) } }
 
         func placement(_ projectID: String) -> (area: String, project: String?)? {
-            var chain: [String] = []
-            var current: String? = projectID
-            while let id = current, let info = placing[id] {
-                if ignored.contains(id) { return nil }
-                chain.append(id)
-                guard chain.count < 32 else { return nil }  // a cycle in bad data
-                current = info.parentID
-            }
-            guard let rootID = chain.last, let root = placing[rootID], root.parentID == nil,
-                  areaNames.contains(normalize(root.name)) else { return nil }
-            return (root.name, projectID == rootID ? nil : placing[projectID]?.name)
+            place(projectID, in: placing, areaNames: areaNames, ignored: ignored)
         }
 
         // The later of the two: the owner may close a task long after our last touch of it.
@@ -84,20 +78,35 @@ public enum InboundEvents {
             return (journalTimes[id] ?? []).contains { $0 >= changed.addingTimeInterval(-echoWindow) }
         }
 
+        let journaledIDs = Set(journal.map(\.todoistID))
+        let journaledDeletes = Set(journal.filter { $0.action == ActionJournal.Action.taskDeleted }.map(\.todoistID))
+        var work = workItems
         var tasks: [InboundEvent] = []
         for item in response.items {
-            guard let place = placement(item.projectID), !isEcho(item.id, updatedAt: item.updatedAt, completedAt: item.completedAt) else { continue }
+            let place = placement(item.projectID)
+            if item.isDeleted {
+                work.remove(item.id)
+                if journaledDeletes.contains(item.id) { continue }
+                if let place {
+                    if isEcho(item.id, updatedAt: item.updatedAt, completedAt: item.completedAt) { continue }
+                    tasks.append(.deleted(TaskSnapshot(
+                        id: item.id, title: item.content, description: item.description, due: item.dueDate,
+                        area: place.area, project: place.project, addedAt: item.addedAt, updatedAt: item.updatedAt)))
+                } else if workItems.contains(item.id) || journaledIDs.contains(item.id) {
+                    // A tombstone: Todoist keeps no project or title for it.
+                    tasks.append(.deleted(TaskSnapshot(id: item.id, title: "", description: nil, due: nil,
+                                                       area: "", project: nil, addedAt: nil, updatedAt: nil)))
+                }
+                continue
+            }
+            guard let place else { continue }
+            work.insert(item.id)
+            guard !isEcho(item.id, updatedAt: item.updatedAt, completedAt: item.completedAt) else { continue }
             let snapshot = TaskSnapshot(
                 id: item.id, title: item.content, description: item.description, due: item.dueDate,
                 area: place.area, project: place.project, addedAt: item.addedAt, updatedAt: item.updatedAt
             )
-            if item.isDeleted {
-                tasks.append(.deleted(snapshot))
-            } else if item.checked {
-                tasks.append(.closed(snapshot))
-            } else {
-                tasks.append(.changed(snapshot))
-            }
+            tasks.append(item.checked ? .closed(snapshot) : .changed(snapshot))
         }
 
         var added: [ProjectAdded] = []
@@ -108,7 +117,30 @@ public enum InboundEvents {
                   journalTimes[project.id] == nil else { continue }
             added.append(ProjectAdded(id: project.id, area: parent.name, name: project.name))
         }
-        return InboundBatch(tasks: tasks, projects: added, projectMap: map)
+        return InboundBatch(tasks: tasks, projects: added, projectMap: map, workItems: work)
+    }
+
+    /// Ids of the non-deleted items whose project places inside an area: the baseline memory.
+    public static func workItemIDs(items: [SyncItem], projects: [String: ProjectInfo], areas: [String],
+                                   ignored: Set<String>) -> Set<String> {
+        let areaNames = Set(areas.map(normalize))
+        return Set(items.filter { !$0.isDeleted
+            && place($0.projectID, in: projects, areaNames: areaNames, ignored: ignored) != nil }.map(\.id))
+    }
+
+    static func place(_ projectID: String, in placing: [String: ProjectInfo], areaNames: Set<String>,
+                      ignored: Set<String>) -> (area: String, project: String?)? {
+        var chain: [String] = []
+        var current: String? = projectID
+        while let id = current, let info = placing[id] {
+            if ignored.contains(id) { return nil }
+            chain.append(id)
+            guard chain.count < 32 else { return nil }  // a cycle in bad data
+            current = info.parentID
+        }
+        guard let rootID = chain.last, let root = placing[rootID], root.parentID == nil,
+              areaNames.contains(normalize(root.name)) else { return nil }
+        return (root.name, projectID == rootID ? nil : placing[projectID]?.name)
     }
 
     /// One formatter per `build` call, not per journal entry; it never leaves the call.

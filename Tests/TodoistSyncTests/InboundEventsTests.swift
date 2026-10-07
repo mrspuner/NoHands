@@ -17,10 +17,10 @@ private func item(_ id: String, project: String = "k", checked: Bool = false, de
 }
 
 private func build(_ items: [SyncItem] = [], projects: [SyncProject] = [], ignored: Set<String> = [],
-                   journal: [ActionJournal.Entry] = []) -> InboundBatch {
+                   workItems: Set<String> = [], journal: [ActionJournal.Entry] = []) -> InboundBatch {
     InboundEvents.build(
         response: SyncResponse(syncToken: "t", fullSync: false, items: items, projects: projects),
-        previous: map, areas: ["Сколково"], ignored: ignored, journal: journal
+        previous: map, areas: ["Сколково"], ignored: ignored, workItems: workItems, journal: journal
     )
 }
 
@@ -145,4 +145,49 @@ private func build(_ items: [SyncItem] = [], projects: [SyncProject] = [], ignor
 @Test func anItemWithNoTimesIsNeverAnEcho() {
     let journal = [ActionJournal.Entry(time: "2026-10-07T15:00:02Z", action: "task.created", todoistID: "1", name: nil)]
     #expect(build([item("1", updated: nil, completed: nil)], journal: journal).tasks.count == 1)
+}
+
+// Live Todoist: a deleted task comes back as a tombstone with an empty content, no times and
+// a project that no longer places it.
+private func tombstone(_ id: String) -> SyncItem {
+    SyncItem(id: id, content: "", description: nil, dueDate: nil, projectID: "gone", checked: false,
+             isDeleted: true, addedAt: "1970-01-01T00:00:00.000000Z", updatedAt: nil)
+}
+private func bareDeleted(_ id: String) -> InboundEvent {
+    .deleted(TaskSnapshot(id: id, title: "", description: nil, due: nil, area: "", project: nil, addedAt: nil, updatedAt: nil))
+}
+
+@Test func aTombstoneOfAKnownWorkItemIsDeleted() {
+    let batch = build([tombstone("9")], workItems: ["9", "other"])
+    #expect(batch.tasks == [bareDeleted("9")])
+    #expect(batch.workItems == ["other"])
+}
+
+@Test func aTombstoneOfAnUnknownIdIsPersonalAndSilent() {
+    #expect(build([tombstone("9")], workItems: ["other"]).tasks.isEmpty)
+}
+
+@Test func aTombstoneKnownOnlyFromTheJournalIsDeleted() {
+    let journal = [ActionJournal.Entry(time: "2026-10-07T15:00:01Z", action: "task.created", todoistID: "9", name: nil)]
+    #expect(build([tombstone("9")], journal: journal).tasks == [bareDeleted("9")])
+}
+
+@Test func aTombstoneOfOurOwnDeleteIsAnEcho() {
+    let journal = [ActionJournal.Entry(time: "2026-10-07T15:00:01Z", action: "task.deleted", todoistID: "9", name: nil)]
+    let batch = build([tombstone("9")], workItems: ["9"], journal: journal)
+    #expect(batch.tasks.isEmpty)
+    #expect(batch.workItems.isEmpty)
+}
+
+@Test func workItemsGainPlacedItemsAndLoseDeletedOnes() {
+    let batch = build([item("1"), item("2", checked: true), item("3", project: "home"), item("4", deleted: true)],
+                      workItems: ["4", "5"])
+    #expect(batch.workItems == ["1", "2", "5"])
+}
+
+@Test func anEchoedItemStillJoinsWorkItems() {
+    let journal = [ActionJournal.Entry(time: "2026-10-07T15:00:01Z", action: "task.created", todoistID: "1", name: nil)]
+    let batch = build([item("1")], journal: journal)
+    #expect(batch.tasks.isEmpty)
+    #expect(batch.workItems == ["1"])
 }

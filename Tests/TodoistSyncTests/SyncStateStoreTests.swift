@@ -13,10 +13,18 @@ private func store() -> SyncStateStore {
 
 @Test func savedSyncIsReadBack() async throws {
     let s = store()
-    try await s.saveSync(token: "t1", projects: ["a": ProjectInfo(name: "Сколково", parentID: nil)])
+    try await s.saveSync(token: "t1", projects: ["a": ProjectInfo(name: "Сколково", parentID: nil)], workItems: ["w1"])
     let state = try await s.load()
     #expect(state.syncToken == "t1")
     #expect(state.projects["a"]?.name == "Сколково")
+    #expect(state.workItems == ["w1"])
+}
+
+@Test func anOldStateFileWithoutWorkItemsStillDecodes() throws {
+    let json = #"{"syncToken":"t","projects":{},"ignored":["p"]}"#
+    let state = try JSONDecoder().decode(SyncState.self, from: Data(json.utf8))
+    #expect(state.workItems == [])
+    #expect(state.ignored == ["p"])
 }
 
 @Test func ignoringIsRememberedOnce() async throws {
@@ -31,7 +39,7 @@ private func store() -> SyncStateStore {
 @Test func savingSyncKeepsIgnoredProjects() async throws {
     let s = store()
     try await s.ignore(projectID: "p1")
-    try await s.saveSync(token: "t2", projects: [:])
+    try await s.saveSync(token: "t2", projects: [:], workItems: [])
     let state = try await s.load()
     #expect(state.ignored == ["p1"])
     #expect(state.syncToken == "t2")

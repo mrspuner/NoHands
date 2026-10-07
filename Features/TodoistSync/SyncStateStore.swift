@@ -17,8 +17,22 @@ public struct SyncState: Codable, Equatable, Sendable {
     public var projects: [String: ProjectInfo]
     /// Projects the owner declined; their tasks and subprojects never reach BigHead.
     public var ignored: [String]
+    /// Ids of tasks known to be inside areas; a deleted task arrives without its project.
+    public var workItems: [String]
 
-    public static let empty = SyncState(syncToken: nil, projects: [:], ignored: [])
+    public static let empty = SyncState(syncToken: nil, projects: [:], ignored: [], workItems: [])
+
+    public init(syncToken: String?, projects: [String: ProjectInfo], ignored: [String], workItems: [String] = []) {
+        self.syncToken = syncToken; self.projects = projects; self.ignored = ignored; self.workItems = workItems
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        syncToken = try c.decodeIfPresent(String.self, forKey: .syncToken)
+        projects = try c.decode([String: ProjectInfo].self, forKey: .projects)
+        ignored = try c.decode([String].self, forKey: .ignored)
+        workItems = try c.decodeIfPresent([String].self, forKey: .workItems) ?? []
+    }
 }
 
 public protocol IgnoredProjectsStore: Sendable {
@@ -42,11 +56,12 @@ public actor SyncStateStore: IgnoredProjectsStore {
         return try JSONDecoder().decode(SyncState.self, from: Data(contentsOf: url))
     }
 
-    /// Replaces the token and the project map, keeping the ignored list as it is on disk now.
-    public func saveSync(token: String, projects: [String: ProjectInfo]) throws {
+    /// Replaces the token, the project map and the work-item set, keeping the ignored list as it is on disk now.
+    public func saveSync(token: String, projects: [String: ProjectInfo], workItems: Set<String>) throws {
         var state = try load()
         state.syncToken = token
         state.projects = projects
+        state.workItems = workItems.sorted()
         try write(state)
     }
 

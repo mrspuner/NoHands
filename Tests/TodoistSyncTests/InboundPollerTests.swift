@@ -86,6 +86,27 @@ private let baseline = SyncResponse(syncToken: "t1", fullSync: true, items: [clo
     #expect(state.syncToken == "t1")
     #expect(state.projects["k"]?.name == "Хибины")
     #expect(s.reports.all == [nil])
+    // Only non-deleted items placed inside an area are remembered as work.
+    #expect(state.workItems == ["old"])
+}
+
+@Test func theBaselineSeedsWorkItemsAndTheirDeletionIsHeard() async throws {
+    let s = try Setup()
+    let personal = SyncItem(id: "p", content: "x", description: nil, dueDate: nil, projectID: "home", checked: false,
+                            isDeleted: false, addedAt: nil, updatedAt: nil)
+    let seeded = SyncResponse(syncToken: "t1", fullSync: true, items: [closedItem("w"), personal],
+                              projects: projects + [SyncProject(id: "home", name: "Дом", parentID: nil, isArchived: false, isDeleted: false)])
+    let tomb = { (id: String) in SyncItem(id: id, content: "", description: nil, dueDate: nil, projectID: "gone", checked: false,
+                                          isDeleted: true, addedAt: nil, updatedAt: nil) }
+    let poller = s.poller(FakeSync([.success(seeded), .success(SyncResponse(syncToken: "t2", fullSync: false, items: [tomb("w"), tomb("p")], projects: []))]))
+    await poller.tick()
+    #expect(try await s.store.load().workItems == ["w"])
+    await poller.tick()
+    #expect(s.rawFiles.count == 1)
+    let text = try String(contentsOf: s.raw.appendingPathComponent(s.rawFiles[0]), encoding: .utf8)
+    #expect(text.contains("- event: deleted\n  id: w\n"))
+    #expect(!text.contains("id: p"))
+    #expect(try await s.store.load().workItems == [])
 }
 
 @Test func changesAreWrittenAndIngested() async throws {
