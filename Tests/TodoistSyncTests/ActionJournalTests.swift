@@ -58,3 +58,16 @@ private let fixedNow: @Sendable () -> Date = { Date(timeIntervalSince1970: 1_791
 @Test func theDefaultLocationIsOutsideTheRepository() {
     #expect(ActionJournal.defaultURL.path.hasSuffix("Library/Application Support/NoHands/todoist-actions.jsonl"))
 }
+
+// One damaged line must not switch the echo filter off for good.
+@Test func anUndecodableLineIsSkipped() async throws {
+    let url = temporaryJournalURL()
+    let journal = ActionJournal(url: url, now: fixedNow)
+    try await journal.record(action: ActionJournal.Action.taskCreated, todoistID: "t1", name: nil)
+    let handle = try FileHandle(forWritingTo: url)
+    try handle.seekToEnd()
+    try handle.write(contentsOf: Data("{garbage\n".utf8))
+    try handle.close()
+    try await journal.record(action: ActionJournal.Action.taskCreated, todoistID: "t2", name: nil)
+    #expect(try await journal.entries().map(\.todoistID) == ["t1", "t2"])
+}

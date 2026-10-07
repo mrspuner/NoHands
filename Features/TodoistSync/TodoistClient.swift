@@ -5,7 +5,7 @@ import Foundation
 public actor TodoistClient: TodoistAPI {
     public typealias Transport = @Sendable (URLRequest) async throws -> (Data, URLResponse)
 
-    private static let base = URL(string: "https://api.todoist.com/api/v1/")!
+    fileprivate static let base = URL(string: "https://api.todoist.com/api/v1/")!
     /// Error bodies are passed on to the agent and from there to the owner's chat; several KB of
     /// HTML from a proxy would bury the one line worth reading.
     private static let messageLimit = 500
@@ -179,7 +179,7 @@ public actor TodoistClient: TodoistAPI {
         URL(string: base.absoluteString + "projects/\(segment(id))/\(action)")!
     }
 
-    private func send(method: String, url: URL, body: [String: Any]?) async throws -> Data {
+    fileprivate func send(method: String, url: URL, body: [String: Any]?) async throws -> Data {
         let token = try resolvedToken()
         var request = URLRequest(url: url)
         request.httpMethod = method
@@ -217,7 +217,7 @@ public actor TodoistClient: TodoistAPI {
         return found
     }
 
-    private static func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+    fileprivate static func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
         do {
             return try JSONDecoder().decode(type, from: data)
         } catch {
@@ -227,5 +227,16 @@ public actor TodoistClient: TodoistAPI {
 
     static func cut(_ text: String) -> String {
         text.count > messageLimit ? String(text.prefix(messageLimit)) + "…" : text
+    }
+}
+
+extension TodoistClient: TodoistSyncing {
+    public func sync(token: String) async throws -> SyncResponse {
+        let data = try await send(
+            method: "POST",
+            url: Self.base.appendingPathComponent("sync"),
+            body: ["sync_token": token, "resource_types": ["items", "projects"]]
+        )
+        return try Self.decode(SyncResponse.self, from: data)
     }
 }

@@ -77,6 +77,7 @@ public actor ActionJournal {
         guard FileManager.default.fileExists(atPath: url.path) else { return [] }
         let text = try String(contentsOf: url, encoding: .utf8)
         let decoder = JSONDecoder()
-        return try text.split(separator: "\n").map { try decoder.decode(Entry.self, from: Data($0.utf8)) }
+        // A damaged line is skipped: one bad line must not disable the echo filter for good.
+        return text.split(separator: "\n").compactMap { try? decoder.decode(Entry.self, from: Data($0.utf8)) }
     }
 }

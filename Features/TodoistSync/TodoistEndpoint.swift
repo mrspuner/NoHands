@@ -18,6 +18,7 @@ public struct TodoistEndpoint: Sendable {
         case ensureProject
         case archiveProject
         case unarchiveProject
+        case ignoreProject
     }
 
     enum Resolution: Equatable {
@@ -43,6 +44,7 @@ public struct TodoistEndpoint: Sendable {
             }
         case 2 where parts[0] == "projects" && parts[1] == "archive": return allow("POST", .archiveProject)
         case 2 where parts[0] == "projects" && parts[1] == "unarchive": return allow("POST", .unarchiveProject)
+        case 2 where parts[0] == "projects" && parts[1] == "ignore": return allow("POST", .ignoreProject)
         case 3 where parts[0] == "tasks" && parts[2] == "close": return allow("POST", .closeTask(parts[1]))
         default: return .notFound
         }
@@ -105,6 +107,9 @@ public struct TodoistEndpoint: Sendable {
 
         case .unarchiveProject:
             return Self.gone(try await operations.unarchiveProject(try ProjectRequest.decode(body)))
+
+        case .ignoreProject:
+            return .json(200, ["id": try await operations.ignoreProject(try ProjectRequest.decode(body))])
         }
     }
 
@@ -147,6 +152,9 @@ public struct TodoistEndpoint: Sendable {
                 return .json(502, ["error": error.localizedDescription])
             }
         case let error as OperationError:
+            if case .ignoreUnavailable = error {
+                return .json(500, ["error": error.localizedDescription])
+            }
             if case .taskNotFound = error {
                 return .json(404, ["error": error.localizedDescription, "task_missing": true])
             }

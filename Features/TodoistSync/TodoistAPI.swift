@@ -81,6 +81,115 @@ public protocol TodoistAPI: Sendable {
     func moveProject(id: String, toParent parentID: String) async throws
 }
 
+public struct SyncItem: Equatable, Sendable, Decodable {
+    public let id: String
+    public let content: String
+    /// Nil for an empty description: an empty string and no description mean the same to BigHead.
+    public let description: String?
+    /// The calendar date of the due, `YYYY-MM-DD`; a due with a time keeps only its date.
+    public let dueDate: String?
+    public let projectID: String
+    public let checked: Bool
+    public let isDeleted: Bool
+    public let addedAt: String?
+    public let updatedAt: String?
+    /// When the task was checked off; a close by the owner may come well after `updatedAt`.
+    public let completedAt: String?
+
+    public init(id: String, content: String, description: String?, dueDate: String?, projectID: String,
+                checked: Bool, isDeleted: Bool, addedAt: String?, updatedAt: String?, completedAt: String? = nil) {
+        self.id = id; self.content = content; self.description = description; self.dueDate = dueDate
+        self.projectID = projectID; self.checked = checked; self.isDeleted = isDeleted
+        self.addedAt = addedAt; self.updatedAt = updatedAt; self.completedAt = completedAt
+    }
+
+    /// `date` is optional: a due without it must not fail the whole response.
+    private struct Due: Decodable { let date: String? }
+    private enum CodingKeys: String, CodingKey {
+        case id, content, description, due, checked
+        case projectID = "project_id", isDeleted = "is_deleted", addedAt = "added_at", updatedAt = "updated_at"
+        case completedAt = "completed_at"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let description = try c.decodeIfPresent(String.self, forKey: .description)
+        let due = try c.decodeIfPresent(Due.self, forKey: .due)
+        self.init(
+            id: try c.decode(String.self, forKey: .id),
+            content: try c.decodeIfPresent(String.self, forKey: .content) ?? "",
+            description: (description?.isEmpty ?? true) ? nil : description,
+            dueDate: due?.date.map { String($0.prefix(10)) },
+            projectID: try c.decode(String.self, forKey: .projectID),
+            checked: try c.decodeIfPresent(Bool.self, forKey: .checked) ?? false,
+            isDeleted: try c.decodeIfPresent(Bool.self, forKey: .isDeleted) ?? false,
+            addedAt: try c.decodeIfPresent(String.self, forKey: .addedAt),
+            updatedAt: try c.decodeIfPresent(String.self, forKey: .updatedAt),
+            completedAt: try c.decodeIfPresent(String.self, forKey: .completedAt)
+        )
+    }
+}
+
+public struct SyncProject: Equatable, Sendable, Decodable {
+    public let id: String
+    public let name: String
+    public let parentID: String?
+    public let isArchived: Bool
+    public let isDeleted: Bool
+
+    public init(id: String, name: String, parentID: String?, isArchived: Bool, isDeleted: Bool) {
+        self.id = id; self.name = name; self.parentID = parentID
+        self.isArchived = isArchived; self.isDeleted = isDeleted
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name
+        case parentID = "parent_id", isArchived = "is_archived", isDeleted = "is_deleted"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try c.decode(String.self, forKey: .id),
+            name: try c.decodeIfPresent(String.self, forKey: .name) ?? "",
+            parentID: try c.decodeIfPresent(String.self, forKey: .parentID),
+            isArchived: try c.decodeIfPresent(Bool.self, forKey: .isArchived) ?? false,
+            isDeleted: try c.decodeIfPresent(Bool.self, forKey: .isDeleted) ?? false
+        )
+    }
+}
+
+public struct SyncResponse: Equatable, Sendable, Decodable {
+    public let syncToken: String
+    public let fullSync: Bool
+    public let items: [SyncItem]
+    public let projects: [SyncProject]
+
+    public init(syncToken: String, fullSync: Bool, items: [SyncItem], projects: [SyncProject]) {
+        self.syncToken = syncToken; self.fullSync = fullSync; self.items = items; self.projects = projects
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case items, projects
+        case syncToken = "sync_token", fullSync = "full_sync"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            syncToken: try c.decode(String.self, forKey: .syncToken),
+            fullSync: try c.decodeIfPresent(Bool.self, forKey: .fullSync) ?? false,
+            items: try c.decodeIfPresent([SyncItem].self, forKey: .items) ?? [],
+            projects: try c.decodeIfPresent([SyncProject].self, forKey: .projects) ?? []
+        )
+    }
+}
+
+/// The poll, separate from `TodoistAPI` so the poller can be tested against its own fake.
+public protocol TodoistSyncing: Sendable {
+    func sync(token: String) async throws -> SyncResponse
+}
+
 public enum TodoistError: Error, Equatable, LocalizedError {
     case tokenMissing
     /// The Keychain refused the query; the text is `KeychainError`'s description.

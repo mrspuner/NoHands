@@ -305,3 +305,56 @@ private func syncClient(status: String, record: @escaping @Sendable (URLRequest)
         try await syncClient(status: "").moveProject(id: "b", toParent: "a")
     }
 }
+
+// MARK: - Sync
+
+@Test func syncSendsTheTokenAndResourceTypes() async throws {
+    let transport = FakeTransport([(200, #"{"sync_token":"t2","full_sync":false,"items":[],"projects":[]}"#)])
+    let response = try await client(transport).sync(token: "t1")
+    #expect(response == SyncResponse(syncToken: "t2", fullSync: false, items: [], projects: []))
+    let request = transport.requests[0]
+    #expect(request.httpMethod == "POST")
+    #expect(request.url!.absoluteString == "https://api.todoist.com/api/v1/sync")
+    let body = try json(request)
+    #expect(body["sync_token"] as? String == "t1")
+    #expect(body["resource_types"] as? [String] == ["items", "projects"])
+}
+
+@Test func syncDecodesItemsAndProjects() async throws {
+    let transport = FakeTransport([(200, """
+    {"sync_token":"t2","full_sync":true,
+     "items":[{"id":"i1","content":"T","description":"D","due":{"date":"2026-10-12T10:00:00","string":"x"},"project_id":"p1","checked":true,"is_deleted":false,"added_at":"2026-10-07T14:07:22.518055Z","updated_at":"2026-10-07T14:07:22.518073Z","completed_at":"2026-10-07T15:10:00.000000Z","labels":[]},
+              {"id":"i2","content":"U","description":"","due":null,"project_id":"p1","checked":false,"is_deleted":true}],
+     "projects":[{"id":"p1","name":"Хибины","parent_id":"a","is_archived":false,"is_deleted":false},
+                 {"id":"a","name":"Сколково","parent_id":null}]}
+    """)])
+    let response = try await client(transport).sync(token: "*")
+    #expect(response.fullSync)
+    #expect(response.items[0] == SyncItem(
+        id: "i1", content: "T", description: "D", dueDate: "2026-10-12", projectID: "p1",
+        checked: true, isDeleted: false,
+        addedAt: "2026-10-07T14:07:22.518055Z", updatedAt: "2026-10-07T14:07:22.518073Z",
+        completedAt: "2026-10-07T15:10:00.000000Z"
+    ))
+    #expect(response.items[1].dueDate == nil)
+    #expect(response.items[1].description == nil)
+    #expect(response.items[1].isDeleted)
+    #expect(response.projects[1] == SyncProject(id: "a", name: "Сколково", parentID: nil, isArchived: false, isDeleted: false))
+}
+
+@Test func syncToleratesMissingArrays() async throws {
+    let transport = FakeTransport([(200, #"{"sync_token":"t2","full_sync":false}"#)])
+    let response = try await client(transport).sync(token: "t1")
+    #expect(response.items.isEmpty && response.projects.isEmpty)
+}
+
+@Test func aDueWithoutDateDecodesAsNoDue() async throws {
+    let transport = FakeTransport([(200, """
+    {"sync_token":"t2","full_sync":false,
+     "items":[{"id":"i1","content":"T","due":{"string":"someday"},"project_id":"p1"},
+              {"id":"i2","content":"U","due":{"date":null},"project_id":"p1"}]}
+    """)])
+    let response = try await client(transport).sync(token: "t1")
+    #expect(response.items.count == 2)
+    #expect(response.items.allSatisfy { $0.dueDate == nil })
+}
