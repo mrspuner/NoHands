@@ -116,3 +116,18 @@ private func build(_ items: [SyncItem] = [], projects: [SyncProject] = [], ignor
     guard case .changed(let s) = batch.tasks[0] else { Issue.record(); return }
     #expect(s.project == "Новый")
 }
+
+// A project deleted in the same sync still places its deleted tasks.
+@Test func aTaskDeletedWithItsProjectStillGivesADeleteEvent() {
+    let batch = build([item("1", project: "k", deleted: true)],
+                      projects: [SyncProject(id: "k", name: "Хибины", parentID: "a", isArchived: false, isDeleted: true)])
+    #expect(batch.tasks.count == 1)
+    guard case .deleted(let s) = batch.tasks[0] else { Issue.record("not deleted"); return }
+    #expect(s.project == "Хибины")
+    #expect(batch.projectMap["k"] == nil)
+}
+
+@Test func theEchoWindowBoundaryIsInclusive() {
+    let edge = [ActionJournal.Entry(time: "2026-10-07T14:59:55Z", action: "task.updated", todoistID: "1", name: nil)]
+    #expect(build([item("1")], journal: edge).tasks.isEmpty)
+}
