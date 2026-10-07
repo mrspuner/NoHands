@@ -2,115 +2,190 @@ import Foundation
 import Testing
 @testable import TodoistSync
 
+/// Records the call and answers with a canned result or error.
+private actor FakeOperations: TodoistOperating {
+    var calls: [String] = []
+    var error: (any Error)?
+    var already = false
+    var created = true
+
+    init(error: (any Error)? = nil, already: Bool = false, created: Bool = true) {
+        self.error = error
+        self.already = already
+        self.created = created
+    }
+
+    private func record(_ call: String) throws {
+        calls.append(call)
+        if let error { throw error }
+    }
+
+    func create(_ request: CreateTaskRequest) async throws -> CreateTaskResult {
+        try record("create \(request.title)")
+        return CreateTaskResult(id: "6hRv", projectID: "p1", createdProjects: ["Хибины"], warning: nil)
+    }
+
+    func update(id: String, _ request: CreateTaskRequest) async throws -> UpdateTaskResult {
+        try record("update \(id) \(request.title)")
+        return UpdateTaskResult(projectID: "p2", moved: true, createdProjects: [], warning: nil)
+    }
+
+    func close(id: String) async throws -> OperationResult {
+        try record("close \(id)")
+        return OperationResult(already: already, warning: nil)
+    }
+
+    func delete(id: String) async throws -> OperationResult {
+        try record("delete \(id)")
+        return OperationResult(already: already, warning: nil)
+    }
+
+    func ensureProject(_ request: ProjectRequest) async throws -> EnsureProjectResult {
+        try record("ensure \(request.area)/\(request.project)")
+        return EnsureProjectResult(id: "p9", created: created, warning: nil)
+    }
+
+    func archiveProject(_ request: ProjectRequest) async throws -> OperationResult {
+        try record("archive \(request.area)/\(request.project)")
+        return OperationResult(already: already, warning: "journal")
+    }
+
+    func unarchiveProject(_ request: ProjectRequest) async throws -> OperationResult {
+        try record("unarchive \(request.area)/\(request.project)")
+        return OperationResult(already: already, warning: nil)
+    }
+}
+
 private func object(_ response: HTTPResponse) throws -> [String: Any] {
     try #require(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
 }
 
-private let validBody = Data(#"{"title":"T","area":"Сколково","project":"Хибины"}"#.utf8)
+private let taskBody = Data(#"{"title":"T","area":"Сколково","project":"Хибины"}"#.utf8)
+private let projectBody = Data(#"{"area":"RooX","project":"ИНДИД"}"#.utf8)
 
-private func endpoint(_ create: @escaping @Sendable (CreateTaskRequest) async throws -> CreateTaskResult) -> TodoistEndpoint {
-    TodoistEndpoint(create: create)
-}
-
-private let succeeding = endpoint { _ in
-    CreateTaskResult(id: "6hRv", projectID: "p1", createdProjects: ["Хибины"], warning: nil)
-}
-
-@Test func aCreatedTaskAnswers201WithItsId() async throws {
-    let response = await succeeding.respond(method: "POST", path: "/tasks", body: validBody)
-    #expect(response.status == 201)
-    let json = try object(response)
-    #expect(json["id"] as? String == "6hRv")
-    #expect(json["project_id"] as? String == "p1")
-    #expect(json["created_projects"] as? [String] == ["Хибины"])
-    #expect(json["warning"] == nil)
-}
-
-@Test func aWarningIsPassedOn() async throws {
-    let warned = endpoint { _ in CreateTaskResult(id: "t", projectID: "p", createdProjects: [], warning: "journal") }
-    let json = try object(await warned.respond(method: "POST", path: "/tasks", body: validBody))
-    #expect(json["warning"] as? String == "journal")
-}
-
-@Test func theRequestIsHandedOverDecoded() async throws {
-    let seen = SeenRequest()
-    let recording = endpoint { request in
-        await seen.set(request)
-        return CreateTaskResult(id: "t", projectID: "p", createdProjects: [], warning: nil)
-    }
-    _ = await recording.respond(method: "POST", path: "/tasks", body: validBody)
-    #expect(await seen.value == CreateTaskRequest(title: "T", description: nil, due: nil, area: "Сколково", project: "Хибины"))
-}
-
-private actor SeenRequest {
-    var value: CreateTaskRequest?
-    func set(_ request: CreateTaskRequest) { value = request }
-}
-
-@Test func aBadRequestIs400AndNeverReachesTodoist() async throws {
-    let untouchable = endpoint { _ in
-        Issue.record("must not be called")
-        throw TodoistError.tokenMissing
-    }
-    let response = await untouchable.respond(method: "POST", path: "/tasks", body: Data(#"{"area":"A"}"#.utf8))
-    #expect(response.status == 400)
-    #expect((try object(response)["error"] as? String)?.contains("title") == true)
-}
-
-@Test func aMissingTokenIs503() async {
-    let failing = endpoint { _ in throw TodoistError.tokenMissing }
-    #expect(await failing.respond(method: "POST", path: "/tasks", body: validBody).status == 503)
-}
-
-@Test func aKeychainRefusalIs503() async {
-    let failing = endpoint { _ in throw TodoistError.keychain("denied") }
-    #expect(await failing.respond(method: "POST", path: "/tasks", body: validBody).status == 503)
-}
-
-@Test func aTodoistFailureIs502WithItsStatus() async throws {
-    let failing = endpoint { _ in throw TodoistError.requestFailed(status: 429, message: "slow down") }
-    let response = await failing.respond(method: "POST", path: "/tasks", body: validBody)
-    #expect(response.status == 502)
-    let json = try object(response)
-    #expect(json["todoist_status"] as? Int == 429)
-    #expect((json["error"] as? String)?.contains("slow down") == true)
-}
-
-@Test func anUnreadableTodoistAnswerIs502() async {
-    let failing = endpoint { _ in throw TodoistError.unexpectedResponse("no id") }
-    #expect(await failing.respond(method: "POST", path: "/tasks", body: validBody).status == 502)
-}
-
-@Test func anUnknownOutcomeIs504WithAMarker() async throws {
-    let failing = endpoint { _ in throw TaskCreateError.outcomeUnknown("timed out") }
-    let response = await failing.respond(method: "POST", path: "/tasks", body: validBody)
-    #expect(response.status == 504)
-    let json = try object(response)
-    #expect(json["outcome"] as? String == "unknown")
-    #expect((json["error"] as? String)?.contains("Check Todoist before retrying") == true)
-}
-
-@Test func anAmbiguousProjectIs409() async {
-    let failing = endpoint { _ in throw ResolveError.ambiguousProject("Хибины") }
-    #expect(await failing.respond(method: "POST", path: "/tasks", body: validBody).status == 409)
-}
-
-@Test func anythingElseIs500() async {
-    let failing = endpoint { _ in throw URLError(.timedOut) }
-    #expect(await failing.respond(method: "POST", path: "/tasks", body: validBody).status == 500)
-}
-
-// The agent's first question after a failed request: is NoHands there at all.
 @Test func healthAnswers200() async throws {
-    let response = await succeeding.respond(method: "GET", path: "/health", body: Data())
+    let response = await TodoistEndpoint(operations: FakeOperations()).respond(method: "GET", path: "/health", body: Data())
     #expect(response.status == 200)
     #expect(try object(response)["ok"] as? Bool == true)
 }
 
+@Test func aCreatedTaskAnswers201WithItsId() async throws {
+    let response = await TodoistEndpoint(operations: FakeOperations()).respond(method: "POST", path: "/tasks", body: taskBody)
+    #expect(response.status == 201)
+    let json = try object(response)
+    #expect(json["id"] as? String == "6hRv")
+    #expect(json["created_projects"] as? [String] == ["Хибины"])
+}
+
+@Test func anUpdateAnswers200WithItsProjectAndMove() async throws {
+    let fake = FakeOperations()
+    let response = await TodoistEndpoint(operations: fake).respond(method: "PUT", path: "/tasks/t1", body: taskBody)
+    #expect(response.status == 200)
+    let json = try object(response)
+    #expect(json["project_id"] as? String == "p2")
+    #expect(json["moved"] as? Bool == true)
+    #expect(await fake.calls == ["update t1 T"])
+}
+
+@Test func closeAndDeleteRouteByMethodAndPath() async throws {
+    let fake = FakeOperations()
+    let endpoint = TodoistEndpoint(operations: fake)
+    #expect(await endpoint.respond(method: "POST", path: "/tasks/t1/close", body: Data()).status == 200)
+    #expect(await endpoint.respond(method: "DELETE", path: "/tasks/t1", body: Data()).status == 200)
+    #expect(await fake.calls == ["close t1", "delete t1"])
+}
+
+@Test func alreadyGoneIsPassedOn() async throws {
+    let response = await TodoistEndpoint(operations: FakeOperations(already: true))
+        .respond(method: "POST", path: "/tasks/t1/close", body: Data())
+    #expect(response.status == 200)
+    #expect(try object(response)["already"] as? Bool == true)
+}
+
+@Test func ensureProjectAnswers201WhenCreatedAnd200WhenFound() async throws {
+    let created = await TodoistEndpoint(operations: FakeOperations(created: true))
+        .respond(method: "POST", path: "/projects", body: projectBody)
+    #expect(created.status == 201)
+    #expect(try object(created)["id"] as? String == "p9")
+    let found = await TodoistEndpoint(operations: FakeOperations(created: false))
+        .respond(method: "POST", path: "/projects", body: projectBody)
+    #expect(found.status == 200)
+    #expect(try object(found)["created"] as? Bool == false)
+}
+
+@Test func archiveAndUnarchiveRoute() async throws {
+    let fake = FakeOperations()
+    let endpoint = TodoistEndpoint(operations: fake)
+    let archived = await endpoint.respond(method: "POST", path: "/projects/archive", body: projectBody)
+    #expect(archived.status == 200)
+    #expect(try object(archived)["warning"] as? String == "journal")
+    #expect(await endpoint.respond(method: "POST", path: "/projects/unarchive", body: projectBody).status == 200)
+    #expect(await fake.calls == ["archive RooX/ИНДИД", "unarchive RooX/ИНДИД"])
+}
+
+@Test func aBadBodyIs400AndNeverReachesTodoist() async throws {
+    let fake = FakeOperations()
+    let endpoint = TodoistEndpoint(operations: fake)
+    #expect(await endpoint.respond(method: "POST", path: "/tasks", body: Data(#"{"area":"A"}"#.utf8)).status == 400)
+    #expect(await endpoint.respond(method: "PUT", path: "/tasks/t1", body: Data("[]".utf8)).status == 400)
+    #expect(await endpoint.respond(method: "POST", path: "/projects", body: Data(#"{"area":"A"}"#.utf8)).status == 400)
+    #expect(await fake.calls.isEmpty)
+}
+
+// The id goes into a Todoist URL; only plain ASCII letters and digits are let through.
+@Test(arguments: ["a%2Fb", "t-1", "..", "ид"])
+func aStrangeIdIs400(id: String) async {
+    let fake = FakeOperations()
+    let response = await TodoistEndpoint(operations: fake).respond(method: "DELETE", path: "/tasks/\(id)", body: Data())
+    #expect(response.status == 400)
+    #expect(await fake.calls.isEmpty)
+}
+
+@Test func errorsMapToStatusCodes() async {
+    let cases: [(any Error, Int)] = [
+        (RequestError.missingField("x"), 400),
+        (OperationError.taskNotFound("t1"), 404),
+        (OperationError.projectNotFound("P"), 404),
+        (TodoistError.notFound, 404),
+        (ResolveError.ambiguousProject("P"), 409),
+        (TodoistError.requestFailed(status: 429, message: "slow"), 502),
+        (TodoistError.unexpectedResponse("x"), 502),
+        (TodoistError.tokenMissing, 503),
+        (TodoistError.keychain("denied"), 503),
+        (TaskCreateError.outcomeUnknown("x"), 504),
+        (URLError(.timedOut), 500),
+    ]
+    for (error, status) in cases {
+        let response = await TodoistEndpoint(operations: FakeOperations(error: error))
+            .respond(method: "PUT", path: "/tasks/t1", body: taskBody)
+        #expect(response.status == status, "\(error)")
+    }
+}
+
+@Test func aTodoistFailureCarriesItsStatus() async throws {
+    let response = await TodoistEndpoint(operations: FakeOperations(error: TodoistError.requestFailed(status: 429, message: "slow")))
+        .respond(method: "POST", path: "/tasks/t1/close", body: Data())
+    #expect(try object(response)["todoist_status"] as? Int == 429)
+}
+
+@Test func anUnknownOutcomeSaysSo() async throws {
+    let response = await TodoistEndpoint(operations: FakeOperations(error: TaskCreateError.outcomeUnknown("x")))
+        .respond(method: "POST", path: "/tasks", body: taskBody)
+    #expect(try object(response)["outcome"] as? String == "unknown")
+}
+
 @Test func theWrongMethodIs405() async {
-    #expect(await succeeding.respond(method: "GET", path: "/tasks", body: Data()).status == 405)
+    let endpoint = TodoistEndpoint(operations: FakeOperations())
+    #expect(await endpoint.respond(method: "GET", path: "/tasks", body: Data()).status == 405)
+    #expect(await endpoint.respond(method: "POST", path: "/tasks/t1", body: Data()).status == 405)
+    #expect(await endpoint.respond(method: "GET", path: "/tasks/t1/close", body: Data()).status == 405)
+    #expect(await endpoint.respond(method: "GET", path: "/projects/archive", body: Data()).status == 405)
+    #expect(await endpoint.respond(method: "POST", path: "/health", body: Data()).status == 405)
 }
 
 @Test func anUnknownPathIs404() async {
-    #expect(await succeeding.respond(method: "POST", path: "/nope", body: Data()).status == 404)
+    let endpoint = TodoistEndpoint(operations: FakeOperations())
+    #expect(await endpoint.respond(method: "POST", path: "/nope", body: Data()).status == 404)
+    #expect(await endpoint.respond(method: "POST", path: "/tasks/t1/reopen", body: Data()).status == 404)
+    #expect(await endpoint.respond(method: "POST", path: "/projects/rename", body: Data()).status == 404)
 }

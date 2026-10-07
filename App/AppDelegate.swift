@@ -143,7 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startTodoistSync() async {
         guard todoistServer == nil else { return }
         let operations = TodoistOperations(api: todoistClient, journal: ActionJournal(url: ActionJournal.defaultURL))
-        let endpoint = TodoistEndpoint(create: { try await operations.create($0) })
+        let endpoint = TodoistEndpoint(operations: operations)
         let server = LocalHTTPServer(port: TodoistSyncConfig.port) { method, path, body in
             await endpoint.respond(method: method, path: path, body: body)
         }
