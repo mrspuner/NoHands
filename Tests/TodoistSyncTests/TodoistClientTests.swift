@@ -248,3 +248,18 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
     ])
     #expect(transport.requests.allSatisfy { $0.httpMethod == "POST" })
 }
+
+@Test(arguments: [
+    ("a/b?c", "a%2Fb%3Fc"), ("..", "%2E%2E"), ("a#b", "a%23b"), ("a%2Fb", "a%252Fb"), ("ид", "%D0%B8%D0%B4"), ("t1", "t1"),
+])
+func anIdCannotEscapeItsPathSegment(id: String, encoded: String) async throws {
+    let transport = FakeTransport([(200, #"{"id":"t1","project_id":"p9"}"#)])
+    _ = try await client(transport).task(id: id)
+    #expect(transport.requests[0].url!.absoluteString == "https://api.todoist.com/api/v1/tasks/\(encoded)")
+}
+
+@Test func aProjectIdIsEncodedToo() async throws {
+    let transport = FakeTransport([(200, "{}")])
+    try await client(transport).archiveProject(id: "a/b?c")
+    #expect(transport.requests[0].url!.absoluteString == "https://api.todoist.com/api/v1/projects/a%2Fb%3Fc/archive")
+}

@@ -136,13 +136,24 @@ public actor TodoistClient: TodoistAPI {
         _ = try await send(method: "POST", url: Self.projectURL(id, "unarchive"), body: nil)
     }
 
+    /// ASCII letters and digits pass; everything else, `.` included, is percent-encoded, so an id
+    /// can never add, drop or reinterpret a path segment.
+    private static let segmentAllowed = CharacterSet(
+        charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+    )
+
+    private static func segment(_ id: String) -> String {
+        id.addingPercentEncoding(withAllowedCharacters: segmentAllowed)?
+            .replacingOccurrences(of: ".", with: "%2E") ?? id
+    }
+
     private static func taskURL(_ id: String, _ action: String? = nil) -> URL {
-        let url = base.appendingPathComponent("tasks").appendingPathComponent(id)
-        return action.map { url.appendingPathComponent($0) } ?? url
+        let path = "tasks/\(segment(id))" + (action.map { "/\($0)" } ?? "")
+        return URL(string: base.absoluteString + path)!
     }
 
     private static func projectURL(_ id: String, _ action: String) -> URL {
-        base.appendingPathComponent("projects").appendingPathComponent(id).appendingPathComponent(action)
+        URL(string: base.absoluteString + "projects/\(segment(id))/\(action)")!
     }
 
     private func send(method: String, url: URL, body: [String: Any]?) async throws -> Data {

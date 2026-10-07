@@ -147,6 +147,9 @@ public struct TodoistEndpoint: Sendable {
                 return .json(502, ["error": error.localizedDescription])
             }
         case let error as OperationError:
+            if case .taskNotFound = error {
+                return .json(404, ["error": error.localizedDescription, "task_missing": true])
+            }
             return .json(404, ["error": error.localizedDescription])
         case let error as TaskCreateError:
             return .json(504, ["error": error.localizedDescription, "outcome": "unknown"])

@@ -8,11 +8,15 @@ private actor FakeOperations: TodoistOperating {
     var error: (any Error)?
     var already = false
     var created = true
+    var warning: String?
+    var createdRequest: CreateTaskRequest?
+    var updatedRequest: CreateTaskRequest?
 
-    init(error: (any Error)? = nil, already: Bool = false, created: Bool = true) {
+    init(error: (any Error)? = nil, already: Bool = false, created: Bool = true, warning: String? = nil) {
         self.error = error
         self.already = already
         self.created = created
+        self.warning = warning
     }
 
     private func record(_ call: String) throws {
@@ -21,11 +25,13 @@ private actor FakeOperations: TodoistOperating {
     }
 
     func create(_ request: CreateTaskRequest) async throws -> CreateTaskResult {
+        createdRequest = request
         try record("create \(request.title)")
-        return CreateTaskResult(id: "6hRv", projectID: "p1", createdProjects: ["Хибины"], warning: nil)
+        return CreateTaskResult(id: "6hRv", projectID: "p1", createdProjects: ["Хибины"], warning: warning)
     }
 
     func update(id: String, _ request: CreateTaskRequest) async throws -> UpdateTaskResult {
+        updatedRequest = request
         try record("update \(id) \(request.title)")
         return UpdateTaskResult(projectID: "p2", moved: true, createdProjects: [], warning: nil)
     }
@@ -61,6 +67,12 @@ private func object(_ response: HTTPResponse) throws -> [String: Any] {
 }
 
 private let taskBody = Data(#"{"title":"T","area":"Сколково","project":"Хибины"}"#.utf8)
+private let fullBody = Data(
+    #"{"title":"T","description":"D","due":"2026-10-10","area":"Сколково","project":"Хибины"}"#.utf8
+)
+private let fullRequest = CreateTaskRequest(
+    title: "T", description: "D", due: "2026-10-10", area: "Сколково", project: "Хибины"
+)
 private let projectBody = Data(#"{"area":"RooX","project":"ИНДИД"}"#.utf8)
 
 @Test func healthAnswers200() async throws {
@@ -75,6 +87,47 @@ private let projectBody = Data(#"{"area":"RooX","project":"ИНДИД"}"#.utf8)
     let json = try object(response)
     #expect(json["id"] as? String == "6hRv")
     #expect(json["created_projects"] as? [String] == ["Хибины"])
+    #expect(json["project_id"] as? String == "p1")
+}
+
+@Test func aCreateWarningIsPassedOnAndOmittedWhenAbsent() async throws {
+    let warned = await TodoistEndpoint(operations: FakeOperations(warning: "journal"))
+        .respond(method: "POST", path: "/tasks", body: taskBody)
+    #expect(try object(warned)["warning"] as? String == "journal")
+    let clean = await TodoistEndpoint(operations: FakeOperations())
+        .respond(method: "POST", path: "/tasks", body: taskBody)
+    #expect(try object(clean).keys.contains("warning") == false)
+}
+
+@Test func theDecodedRequestReachesCreateAndUpdate() async {
+    let fake = FakeOperations()
+    let endpoint = TodoistEndpoint(operations: fake)
+    _ = await endpoint.respond(method: "POST", path: "/tasks", body: fullBody)
+    _ = await endpoint.respond(method: "PUT", path: "/tasks/t1", body: fullBody)
+    #expect(await fake.createdRequest == fullRequest)
+    #expect(await fake.updatedRequest == fullRequest)
+}
+
+@Test func aMissingFieldIsNamedInThe400() async throws {
+    let response = await TodoistEndpoint(operations: FakeOperations())
+        .respond(method: "POST", path: "/tasks", body: Data(#"{"area":"A"}"#.utf8))
+    #expect(response.status == 400)
+    #expect((try object(response)["error"] as? String)?.contains("title") == true)
+}
+
+@Test func aMissingTaskIsFlaggedAndOtherNotFoundsAreNot() async throws {
+    let missing = await TodoistEndpoint(operations: FakeOperations(error: OperationError.taskNotFound("t1")))
+        .respond(method: "PUT", path: "/tasks/t1", body: taskBody)
+    #expect(missing.status == 404)
+    #expect(try object(missing)["task_missing"] as? Bool == true)
+    for error: any Error in [OperationError.projectNotFound("P"), TodoistError.notFound] {
+        let other = await TodoistEndpoint(operations: FakeOperations(error: error))
+            .respond(method: "PUT", path: "/tasks/t1", body: taskBody)
+        #expect(other.status == 404)
+        #expect(try object(other).keys.contains("task_missing") == false)
+    }
+    let route = await TodoistEndpoint(operations: FakeOperations()).respond(method: "POST", path: "/nope", body: Data())
+    #expect(try object(route).keys.contains("task_missing") == false)
 }
 
 @Test func anUpdateAnswers200WithItsProjectAndMove() async throws {
