@@ -3,6 +3,7 @@ import Core
 import Dictation
 import Inbox
 import Meetings
+import TodoistSync
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -45,6 +46,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// same three system sounds without a second copy of the config. Nil until the first build
     /// finishes — and the hotkey does not exist until then either.
     private var sounds: SoundPlayer?
+    /// Built once and kept: the port is fixed, and a second server could not bind it anyway.
+    /// Nil until it has started — a failed start is retried by «Перечитать конфиг».
+    private var todoistServer: LocalHTTPServer?
+    /// Why the local Todoist door is closed, for the menu's status line. Nil when it is open.
+    private var todoistNote: String?
+    private let todoistClient = TodoistClient()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let menu = StatusMenu(
@@ -118,6 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         buildTask = Task { [weak self] in
+            await self?.startTodoistSync()
             // Meetings are rebuilt first and awaited before the dictation build starts, rather
             // than synchronously before this task the way they used to be: `rebuildMeetings` now
             // has to cross into `MeetingQueue`'s isolation to reconfigure it in place, and that
@@ -128,6 +136,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await self?.buildCoordinator(menu: menu, meetingsNote: meetingsNote)
             self?.buildTask = nil
         }
+    }
+
+    /// Opens the local door BigHead's agent uses to create Todoist tasks. Started inside the build
+    /// task, before meetings, so its failure lands on the same status line as everything else.
+    private func startTodoistSync() async {
+        guard todoistServer == nil else { return }
+        let creator = TaskCreator(api: todoistClient, journal: ActionJournal(url: ActionJournal.defaultURL))
+        let endpoint = TodoistEndpoint(create: { try await creator.create($0) })
+        let server = LocalHTTPServer(port: TodoistSyncConfig.port) { method, path, body in
+            await endpoint.respond(method: method, path: path, body: body)
+        }
+        do {
+            _ = try await server.start()
+            todoistServer = server
+            todoistNote = nil
+        } catch {
+            todoistNote = "todoist: порт \(TodoistSyncConfig.port) не открылся — \(error.localizedDescription)"
+            return
+        }
+        // Raises the Keychain dialog now, while the owner is at the machine, instead of in the
+        // middle of the first task an agent creates. Deliberately not awaited: a pending dialog
+        // must not hold up the build task, and with it dictation and meetings.
+        Task { [todoistClient] in await todoistClient.warmUp() }
     }
 
     /// Builds the meeting coordinator, or returns the line saying why it did not.
@@ -292,9 +323,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return nil
     }
 
-    /// The menu has one status line and, on a bad day, two things to say on it.
-    private static func status(_ dictation: String, _ meetings: String?) -> String {
-        [dictation, meetings].compactMap { $0 }.joined(separator: " · ")
+    /// The menu has one status line and, on a bad day, several things to say on it.
+    private static func status(_ parts: String?...) -> String {
+        parts.compactMap { $0 }.joined(separator: " · ")
     }
 
     private func buildCoordinator(menu: StatusMenu, meetingsNote: String?) async {
@@ -350,7 +381,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 coordinator.isBlocked = true
             }
             self.coordinator = coordinator
-            menu.setStatus(Self.status("Готов", meetingsNote))
+            menu.setStatus(Self.status("Готов", meetingsNote, todoistNote))
             // Reaching the Keychain raises an authorization dialog the first time this
             // application reads the key. Doing it here, once the hotkey is already live, puts
             // that dialog where waiting costs nothing — rather than in the middle of the first
@@ -358,7 +389,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // `warmUp()`.
             await cleaner.warmUp()
         } catch {
-            menu.setStatus(Self.status(error.localizedDescription, meetingsNote))
+            menu.setStatus(Self.status(error.localizedDescription, meetingsNote, todoistNote))
         }
     }
 }
