@@ -77,14 +77,16 @@ public enum InboundEvents {
             return (root.name, projectID == rootID ? nil : placing[projectID]?.name)
         }
 
-        func isEcho(_ id: String, updatedAt: String?) -> Bool {
-            guard let updatedAt, let changed = date(updatedAt, formatter) else { return false }
+        // The later of the two: the owner may close a task long after our last touch of it.
+        func isEcho(_ id: String, updatedAt: String?, completedAt: String?) -> Bool {
+            let times = [updatedAt, completedAt].compactMap { $0.flatMap { date($0, formatter) } }
+            guard let changed = times.max() else { return false }
             return (journalTimes[id] ?? []).contains { $0 >= changed.addingTimeInterval(-echoWindow) }
         }
 
         var tasks: [InboundEvent] = []
         for item in response.items {
-            guard let place = placement(item.projectID), !isEcho(item.id, updatedAt: item.updatedAt) else { continue }
+            guard let place = placement(item.projectID), !isEcho(item.id, updatedAt: item.updatedAt, completedAt: item.completedAt) else { continue }
             let snapshot = TaskSnapshot(
                 id: item.id, title: item.content, description: item.description, due: item.dueDate,
                 area: place.area, project: place.project, addedAt: item.addedAt, updatedAt: item.updatedAt

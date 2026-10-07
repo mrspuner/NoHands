@@ -10,9 +10,10 @@ private let map: [String: ProjectInfo] = [
 ]
 
 private func item(_ id: String, project: String = "k", checked: Bool = false, deleted: Bool = false,
-                  updated: String? = "2026-10-07T15:00:00.123456Z") -> SyncItem {
+                  updated: String? = "2026-10-07T15:00:00.123456Z", completed: String? = nil) -> SyncItem {
     SyncItem(id: id, content: "T \(id)", description: "D", dueDate: "2026-10-12", projectID: project,
-             checked: checked, isDeleted: deleted, addedAt: "2026-10-07T14:00:00.000001Z", updatedAt: updated)
+             checked: checked, isDeleted: deleted, addedAt: "2026-10-07T14:00:00.000001Z", updatedAt: updated,
+             completedAt: completed)
 }
 
 private func build(_ items: [SyncItem] = [], projects: [SyncProject] = [], ignored: Set<String> = [],
@@ -130,4 +131,18 @@ private func build(_ items: [SyncItem] = [], projects: [SyncProject] = [], ignor
 @Test func theEchoWindowBoundaryIsInclusive() {
     let edge = [ActionJournal.Entry(time: "2026-10-07T14:59:55Z", action: "task.updated", todoistID: "1", name: nil)]
     #expect(build([item("1")], journal: edge).tasks.isEmpty)
+}
+
+// The owner closed the task later than its last update: our earlier create is not the cause.
+@Test func completionTimeCountsForTheEchoFilter() {
+    let journal = [ActionJournal.Entry(time: "2026-10-07T15:00:02Z", action: "task.created", todoistID: "1", name: nil)]
+    let closedLater = item("1", checked: true, updated: "2026-10-07T15:00:00.000000Z", completed: "2026-10-07T15:10:00.000000Z")
+    #expect(build([closedLater], journal: journal).tasks.count == 1)
+    let closedByUs = item("1", checked: true, updated: "2026-10-07T15:00:00.000000Z", completed: "2026-10-07T15:00:01.000000Z")
+    #expect(build([closedByUs], journal: journal).tasks.isEmpty)
+}
+
+@Test func anItemWithNoTimesIsNeverAnEcho() {
+    let journal = [ActionJournal.Entry(time: "2026-10-07T15:00:02Z", action: "task.created", todoistID: "1", name: nil)]
+    #expect(build([item("1", updated: nil, completed: nil)], journal: journal).tasks.count == 1)
 }

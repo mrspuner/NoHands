@@ -58,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `todoist` section of the config is incomplete.
     private var inboundPoller: InboundPoller?
     private var inboundTimer: Timer?
+    private var inboundPollSeconds: Double = 0
     /// Why changes in Todoist are not reaching BigHead, for the status line. Nil when they are.
     private var todoistInboundNote: String?
     /// The dictation half of the status line, kept so the inbound note can refresh it alone.
@@ -155,7 +156,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startTodoistSync() async {
         // A reload retries the poll's setup too: the owner may have just completed the config.
         guard todoistServer == nil else {
-            if inboundPoller == nil { startInbound(store: todoistStateStore, journal: todoistJournal) }
+            if let poller = inboundPoller {
+                await reloadInbound(poller)
+            } else {
+                startInbound(store: todoistStateStore, journal: todoistJournal)
+            }
             return
         }
         let operations = TodoistOperations(api: todoistClient, journal: todoistJournal, ignoredStore: todoistStateStore)
@@ -207,14 +212,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         inboundPoller = poller
         todoistInboundNote = nil
+        scheduleInboundTimer(poller, seconds: config.pollSeconds)
+        Task { await poller.tick() }
+    }
+
+    /// «Перечитать конфиг» with a poller already running: hand it the fresh settings. Never
+    /// builds a second poller or timer.
+    private func reloadInbound(_ poller: InboundPoller) async {
+        let config: TodoistInboundConfig
+        do {
+            config = try TodoistInboundConfig.loadOrCreate()
+        } catch {
+            stopInboundTimer()
+            todoistInboundNote = "todoist-входящие: \(error.localizedDescription)"
+            return
+        }
+        guard config.isComplete else {
+            stopInboundTimer()
+            todoistInboundNote = "todoist-входящие: не настроены (раздел todoist в config.json)"
+            return
+        }
+        await poller.update(config: config)
+        todoistInboundNote = nil
+        if inboundTimer == nil || inboundPollSeconds != config.pollSeconds {
+            scheduleInboundTimer(poller, seconds: config.pollSeconds)
+        }
+    }
+
+    private func scheduleInboundTimer(_ poller: InboundPoller, seconds: Double) {
         inboundTimer?.invalidate()
-        let timer = Timer.scheduledTimer(withTimeInterval: config.pollSeconds, repeats: true) { _ in
+        let timer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: true) { _ in
             Task { await poller.tick() }
         }
         // `.common`: a default-mode timer stops while the menu is open — see the sweep timer.
         RunLoop.main.add(timer, forMode: .common)
         inboundTimer = timer
-        Task { await poller.tick() }
+        inboundPollSeconds = seconds
+    }
+
+    private func stopInboundTimer() {
+        inboundTimer?.invalidate()
+        inboundTimer = nil
     }
 
     private func refreshStatus() {

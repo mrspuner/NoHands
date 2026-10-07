@@ -93,18 +93,22 @@ public struct SyncItem: Equatable, Sendable, Decodable {
     public let isDeleted: Bool
     public let addedAt: String?
     public let updatedAt: String?
+    /// When the task was checked off; a close by the owner may come well after `updatedAt`.
+    public let completedAt: String?
 
     public init(id: String, content: String, description: String?, dueDate: String?, projectID: String,
-                checked: Bool, isDeleted: Bool, addedAt: String?, updatedAt: String?) {
+                checked: Bool, isDeleted: Bool, addedAt: String?, updatedAt: String?, completedAt: String? = nil) {
         self.id = id; self.content = content; self.description = description; self.dueDate = dueDate
         self.projectID = projectID; self.checked = checked; self.isDeleted = isDeleted
-        self.addedAt = addedAt; self.updatedAt = updatedAt
+        self.addedAt = addedAt; self.updatedAt = updatedAt; self.completedAt = completedAt
     }
 
-    private struct Due: Decodable { let date: String }
+    /// `date` is optional: a due without it must not fail the whole response.
+    private struct Due: Decodable { let date: String? }
     private enum CodingKeys: String, CodingKey {
         case id, content, description, due, checked
         case projectID = "project_id", isDeleted = "is_deleted", addedAt = "added_at", updatedAt = "updated_at"
+        case completedAt = "completed_at"
     }
 
     public init(from decoder: Decoder) throws {
@@ -115,12 +119,13 @@ public struct SyncItem: Equatable, Sendable, Decodable {
             id: try c.decode(String.self, forKey: .id),
             content: try c.decodeIfPresent(String.self, forKey: .content) ?? "",
             description: (description?.isEmpty ?? true) ? nil : description,
-            dueDate: due.map { String($0.date.prefix(10)) },
+            dueDate: due?.date.map { String($0.prefix(10)) },
             projectID: try c.decode(String.self, forKey: .projectID),
             checked: try c.decodeIfPresent(Bool.self, forKey: .checked) ?? false,
             isDeleted: try c.decodeIfPresent(Bool.self, forKey: .isDeleted) ?? false,
             addedAt: try c.decodeIfPresent(String.self, forKey: .addedAt),
-            updatedAt: try c.decodeIfPresent(String.self, forKey: .updatedAt)
+            updatedAt: try c.decodeIfPresent(String.self, forKey: .updatedAt),
+            completedAt: try c.decodeIfPresent(String.self, forKey: .completedAt)
         )
     }
 }

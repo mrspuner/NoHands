@@ -65,8 +65,8 @@ public struct SystemProcessRunner: ProcessRunning {
 public struct IngestRunner: Sendable {
     private let claude: URL
     private let bighead: URL
-    private let runner: any ProcessRunning
-    private let timeout: TimeInterval
+    let runner: any ProcessRunning
+    let timeout: TimeInterval
 
     public init(claude: URL, bighead: URL, runner: any ProcessRunning, timeout: TimeInterval = 600) {
         self.claude = claude
@@ -96,9 +96,12 @@ public struct IngestRunner: Sendable {
 
     static func prompt(rawFile: String) -> String {
         """
-        Сделай ingest файла \(rawFile) по разделу «Todoist → входящие» в AGENTS.md. \
-        Это автоматический запуск из NoHands: вопросов не задавай, в Todoist ничего не отправляй, \
-        обработай только этот файл, запиши ingest в wiki/log.md.
+        Сделай ingest по разделу «Todoist → входящие» в AGENTS.md. \
+        Обработай ВСЕ ещё не обработанные raw-файлы вида todoist в порядке имён файлов по возрастанию, \
+        файл \(rawFile) — последним. \
+        Это автоматический запуск из NoHands: вопросов не задавай, в Todoist ничего не отправляй. \
+        Существующие страницы правь через Edit, не перезаписывай их через Write. \
+        Для каждого файла запиши отдельную запись ingest в wiki/log.md.
         """
     }
 }

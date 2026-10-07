@@ -28,6 +28,8 @@ private let bighead = URL(fileURLWithPath: "/tmp/BigHead")
     #expect(args[0] == "-p")
     #expect(args[1].contains("raw/2026-10-07-todoist-190640.md"))
     #expect(args[1].contains("Todoist → входящие"))
+    #expect(args[1].contains("по возрастанию"))
+    #expect(args[1].contains("Edit"))
     #expect(Array(args[2...]) == ["--restricted", "--strict-mcp-config", "--permission-mode", "acceptEdits",
                                   "--tools", "Read,Edit,Write,Glob,Grep"])
 }

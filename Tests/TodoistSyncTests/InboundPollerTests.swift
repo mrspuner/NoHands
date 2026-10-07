@@ -36,9 +36,13 @@ private struct Setup {
         runner = RecordingRunner(exit)
     }
 
+    func config(areas: [String] = ["Сколково"]) -> TodoistInboundConfig {
+        TodoistInboundConfig(bigheadPath: dir.appendingPathComponent("BigHead").path,
+                             areas: areas, claudePath: "/usr/local/bin/claude", pollSeconds: 60)
+    }
+
     func poller(_ sync: any TodoistSyncing) -> InboundPoller {
-        let config = TodoistInboundConfig(bigheadPath: dir.appendingPathComponent("BigHead").path,
-                                          areas: ["Сколково"], claudePath: "/usr/local/bin/claude", pollSeconds: 60)
+        let config = config()
         return InboundPoller(config: config, sync: sync, store: store, journal: journal,
                              ingest: IngestRunner(claude: URL(fileURLWithPath: config.claudePath),
                                                   bighead: URL(fileURLWithPath: config.bigheadPath), runner: runner),
@@ -161,6 +165,43 @@ private let baseline = SyncResponse(syncToken: "t1", fullSync: true, items: [clo
     await poller.tick()
     await poller.tick()
     #expect(s.rawFiles.isEmpty)
+}
+
+// «Перечитать конфиг» must reach the running poller: areas change from the next tick on.
+@Test func updatedConfigChangesTheAreas() async throws {
+    let s = try Setup()
+    let all = projects + [
+        SyncProject(id: "r", name: "RooX", parentID: nil, isArchived: false, isDeleted: false),
+        SyncProject(id: "rp", name: "Проект", parentID: "r", isArchived: false, isDeleted: false),
+    ]
+    func item(_ id: String, _ project: String) -> SyncItem {
+        SyncItem(id: id, content: "T", description: nil, dueDate: nil, projectID: project, checked: true,
+                 isDeleted: false, addedAt: nil, updatedAt: "2026-10-07T15:00:00.000000Z")
+    }
+    let base = SyncResponse(syncToken: "t1", fullSync: true, items: [], projects: all)
+    let next = SyncResponse(syncToken: "t2", fullSync: false, items: [item("s", "k"), item("r1", "rp")], projects: [])
+    let poller = s.poller(FakeSync([.success(base), .success(next)]))
+    await poller.tick()
+    await poller.update(config: s.config(areas: ["RooX"]))
+    await poller.tick()
+    #expect(s.rawFiles.count == 1)
+    let text = try String(contentsOf: s.raw.appendingPathComponent(s.rawFiles[0]), encoding: .utf8)
+    #expect(text.contains("RooX"))
+    #expect(!text.contains("Сколково"))
+}
+
+// Nothing new: the state file is not rewritten.
+@Test func anUnchangedEmptyPollDoesNotSaveState() async throws {
+    let s = try Setup()
+    let same = SyncResponse(syncToken: "t1", fullSync: false, items: [], projects: [])
+    let poller = s.poller(FakeSync([.success(baseline), .success(same)]))
+    await poller.tick()
+    let stateURL = s.dir.appendingPathComponent("state.json")
+    let old = Date(timeIntervalSince1970: 1_000_000)
+    try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: stateURL.path)
+    await poller.tick()
+    let after = try FileManager.default.attributesOfItem(atPath: stateURL.path)[.modificationDate] as? Date
+    #expect(after == old)
 }
 
 // A tick that arrives while the previous one is still running is skipped, not queued.

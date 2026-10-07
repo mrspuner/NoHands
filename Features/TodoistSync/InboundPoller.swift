@@ -7,11 +7,11 @@ import os
 public actor InboundPoller {
     private static let logger = Logger(subsystem: "com.nohands.app", category: "todoist-inbound")
 
-    private let config: TodoistInboundConfig
+    private var config: TodoistInboundConfig
     private let sync: any TodoistSyncing
     private let store: SyncStateStore
     private let journal: ActionJournal
-    private let ingest: IngestRunner
+    private var ingest: IngestRunner
     private let now: @Sendable () -> Date
     private let report: @Sendable (String?) -> Void
     private var running = false
@@ -26,6 +26,14 @@ public actor InboundPoller {
         self.ingest = ingest
         self.now = now
         self.report = report
+    }
+
+    /// Takes effect from the next tick; a poll already running keeps the settings it started with.
+    public func update(config: TodoistInboundConfig) {
+        self.config = config
+        ingest = IngestRunner(claude: URL(fileURLWithPath: config.claudePath),
+                              bighead: URL(fileURLWithPath: config.bigheadPath),
+                              runner: ingest.runner, timeout: ingest.timeout)
     }
 
     public func tick() async {
@@ -70,6 +78,8 @@ public actor InboundPoller {
             Self.logger.error("todoist journal unreadable: \(String(describing: type(of: error)), privacy: .public)")
             entries = []
         }
+        let config = self.config
+        let ingest = self.ingest
         let batch = InboundEvents.build(response: response, previous: state.projects, areas: config.areas,
                                         ignored: Set(state.ignored), journal: entries)
         let rawDirectory = URL(fileURLWithPath: config.bigheadPath).appendingPathComponent("raw")
@@ -86,7 +96,12 @@ public actor InboundPoller {
         }
         // Saved before the agent runs: a crash during ingest must not fetch the same changes
         // again and write them twice.
-        try await store.saveSync(token: response.syncToken, projects: batch.projectMap)
+        // Skipped when nothing moved: most polls are empty, and each save rewrites the file.
+        let unchanged = response.syncToken == state.syncToken && batch.tasks.isEmpty
+            && batch.projects.isEmpty && batch.projectMap == state.projects
+        if !unchanged {
+            try await store.saveSync(token: response.syncToken, projects: batch.projectMap)
+        }
         Self.logger.info("todoist poll: \(batch.tasks.count, privacy: .public) task events, \(batch.projects.count, privacy: .public) new projects")
 
         if let taskFile {
