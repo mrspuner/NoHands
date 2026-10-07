@@ -55,6 +55,7 @@ public struct EnsureProjectResult: Equatable, Sendable {
 public enum OperationError: Error, Equatable, LocalizedError {
     case taskNotFound(String)
     case projectNotFound(String)
+    case ignoreUnavailable
 
     public var errorDescription: String? {
         switch self {
@@ -62,6 +63,8 @@ public enum OperationError: Error, Equatable, LocalizedError {
             return "Todoist has no task \(id); it was probably deleted there"
         case .projectNotFound(let name):
             return "Todoist has no project called \"\(name)\" at this level"
+        case .ignoreUnavailable:
+            return "Declined projects cannot be stored: the inbound sync is not set up"
         }
     }
 }
@@ -74,6 +77,7 @@ public protocol TodoistOperating: Sendable {
     func ensureProject(_ request: ProjectRequest) async throws -> EnsureProjectResult
     func archiveProject(_ request: ProjectRequest) async throws -> OperationResult
     func unarchiveProject(_ request: ProjectRequest) async throws -> OperationResult
+    func ignoreProject(_ request: ProjectRequest) async throws -> String
 }
 
 /// Every change NoHands makes in Todoist, behind one queue. Finds or creates the area and
@@ -84,11 +88,13 @@ public protocol TodoistOperating: Sendable {
 public actor TodoistOperations: TodoistOperating {
     private let api: any TodoistAPI
     private let journal: ActionJournal
+    private let ignoredStore: (any IgnoredProjectsStore)?
     private var tail: Task<Void, Never>?
 
-    public init(api: any TodoistAPI, journal: ActionJournal) {
+    public init(api: any TodoistAPI, journal: ActionJournal, ignoredStore: (any IgnoredProjectsStore)? = nil) {
         self.api = api
         self.journal = journal
+        self.ignoredStore = ignoredStore
     }
 
     /// One queue for every operation: actor methods interleave at each `await`, so without it
@@ -129,6 +135,23 @@ public actor TodoistOperations: TodoistOperating {
 
     public func unarchiveProject(_ request: ProjectRequest) async throws -> OperationResult {
         try await enqueue { try await self.performArchive(request, archive: false) }
+    }
+
+    public func ignoreProject(_ request: ProjectRequest) async throws -> String {
+        try await enqueue { try await self.performIgnore(request) }
+    }
+
+    private func performIgnore(_ request: ProjectRequest) async throws -> String {
+        guard let ignoredStore else { throw OperationError.ignoreUnavailable }
+        let active = try await api.projects()
+        guard let area = try Self.find(request.area, parentID: nil, in: active) else {
+            throw OperationError.projectNotFound(request.area)
+        }
+        guard let project = try Self.find(request.project, parentID: area.id, in: active) else {
+            throw OperationError.projectNotFound(request.project)
+        }
+        try await ignoredStore.ignore(projectID: project.id)
+        return project.id
     }
 
     private struct Progress {

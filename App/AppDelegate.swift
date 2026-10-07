@@ -52,6 +52,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Why the local Todoist door is closed, for the menu's status line. Nil when it is open.
     private var todoistNote: String?
     private let todoistClient = TodoistClient()
+    private let todoistStateStore = SyncStateStore(url: SyncStateStore.defaultURL)
+    private let todoistJournal = ActionJournal(url: ActionJournal.defaultURL)
+    /// The poll of Todoist for changes made there. Built once with the server; nil when the
+    /// `todoist` section of the config is incomplete.
+    private var inboundPoller: InboundPoller?
+    private var inboundTimer: Timer?
+    /// Why changes in Todoist are not reaching BigHead, for the status line. Nil when they are.
+    private var todoistInboundNote: String?
+    /// The dictation half of the status line, kept so the inbound note can refresh it alone.
+    private var dictationStatus = "Загружаю модель…"
+    /// The meetings half of the status line, kept for the same reason.
+    private var meetingsNote: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let menu = StatusMenu(
@@ -132,8 +144,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // crossing needs `await`. It still costs nothing next to loading a 470 MB model, so
             // meetings are ready long before `buildCoordinator` finishes — the property this
             // ordering exists to keep.
-            let meetingsNote = await self?.rebuildMeetings() ?? nil
-            await self?.buildCoordinator(menu: menu, meetingsNote: meetingsNote)
+            self?.meetingsNote = await self?.rebuildMeetings() ?? nil
+            await self?.buildCoordinator(menu: menu)
             self?.buildTask = nil
         }
     }
@@ -141,8 +153,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Opens the local door BigHead's agent uses to create Todoist tasks. Started inside the build
     /// task, before meetings, so its failure lands on the same status line as everything else.
     private func startTodoistSync() async {
-        guard todoistServer == nil else { return }
-        let operations = TodoistOperations(api: todoistClient, journal: ActionJournal(url: ActionJournal.defaultURL))
+        // A reload retries the poll's setup too: the owner may have just completed the config.
+        guard todoistServer == nil else {
+            if inboundPoller == nil { startInbound(store: todoistStateStore, journal: todoistJournal) }
+            return
+        }
+        let operations = TodoistOperations(api: todoistClient, journal: todoistJournal, ignoredStore: todoistStateStore)
         let endpoint = TodoistEndpoint(operations: operations)
         let server = LocalHTTPServer(port: TodoistSyncConfig.port) { method, path, body in
             await endpoint.respond(method: method, path: path, body: body)
@@ -159,6 +175,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // middle of the first task an agent creates. Deliberately not awaited: a pending dialog
         // must not hold up the build task, and with it dictation and meetings.
         Task { [todoistClient] in await todoistClient.warmUp() }
+        startInbound(store: todoistStateStore, journal: todoistJournal)
+    }
+
+    private func startInbound(store: SyncStateStore, journal: ActionJournal) {
+        let config: TodoistInboundConfig
+        do {
+            config = try TodoistInboundConfig.loadOrCreate()
+        } catch {
+            todoistInboundNote = "todoist-входящие: \(error.localizedDescription)"
+            return
+        }
+        guard config.isComplete else {
+            todoistInboundNote = "todoist-входящие: не настроены (раздел todoist в config.json)"
+            return
+        }
+        let poller = InboundPoller(
+            config: config,
+            sync: todoistClient,
+            store: store,
+            journal: journal,
+            ingest: IngestRunner(claude: URL(fileURLWithPath: config.claudePath),
+                                 bighead: URL(fileURLWithPath: config.bigheadPath),
+                                 runner: SystemProcessRunner()),
+            report: { [weak self] note in
+                Task { @MainActor in
+                    self?.todoistInboundNote = note
+                    self?.refreshStatus()
+                }
+            }
+        )
+        inboundPoller = poller
+        todoistInboundNote = nil
+        inboundTimer?.invalidate()
+        let timer = Timer.scheduledTimer(withTimeInterval: config.pollSeconds, repeats: true) { _ in
+            Task { await poller.tick() }
+        }
+        // `.common`: a default-mode timer stops while the menu is open — see the sweep timer.
+        RunLoop.main.add(timer, forMode: .common)
+        inboundTimer = timer
+        Task { await poller.tick() }
+    }
+
+    private func refreshStatus() {
+        statusMenu?.setStatus(Self.status(dictationStatus, meetingsNote, todoistNote, todoistInboundNote))
     }
 
     /// Builds the meeting coordinator, or returns the line saying why it did not.
@@ -328,11 +388,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         parts.compactMap { $0 }.joined(separator: " · ")
     }
 
-    private func buildCoordinator(menu: StatusMenu, meetingsNote: String?) async {
+    private func buildCoordinator(menu: StatusMenu) async {
         // Set here, in the one entry point both launch and «Перечитать конфиг» go through: the
         // reload path used to tear the tap down and reload the model for several seconds while
         // the menu still read the old status — "Готов" while dictation was, in fact, dead.
-        menu.setStatus("Загружаю модель…")
+        dictationStatus = "Загружаю модель…"
+        refreshStatus()
         coordinator?.stop()
         coordinator = nil
         do {
@@ -381,7 +442,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 coordinator.isBlocked = true
             }
             self.coordinator = coordinator
-            menu.setStatus(Self.status("Готов", meetingsNote, todoistNote))
+            dictationStatus = "Готов"
+            refreshStatus()
             // Reaching the Keychain raises an authorization dialog the first time this
             // application reads the key. Doing it here, once the hotkey is already live, puts
             // that dialog where waiting costs nothing — rather than in the middle of the first
@@ -389,7 +451,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // `warmUp()`.
             await cleaner.warmUp()
         } catch {
-            menu.setStatus(Self.status(error.localizedDescription, meetingsNote, todoistNote))
+            dictationStatus = error.localizedDescription
+            refreshStatus()
         }
     }
 }

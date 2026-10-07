@@ -372,3 +372,30 @@ private let brandsim = TodoistProject(id: "c", name: "Бренд симулят�
 
     #expect(await account.projectList.filter { $0.name == "Сколково" }.count == 1)
 }
+
+private actor RecordingIgnored: IgnoredProjectsStore {
+    var ids: [String] = []
+    func ignore(projectID: String) async throws { ids.append(projectID) }
+}
+
+@Test func ignoringAProjectRemembersItsId() async throws {
+    let store = RecordingIgnored()
+    let id = try await TodoistOperations(api: FakeAccount([skolkovo, khibiny]), journal: journal(), ignoredStore: store)
+        .ignoreProject(ProjectRequest(area: "Сколково", project: "Хибины"))
+    #expect(id == "b")
+    #expect(await store.ids == ["b"])
+}
+
+@Test func ignoringAnUnknownProjectIsProjectNotFound() async {
+    await #expect(throws: OperationError.projectNotFound("Нет")) {
+        _ = try await TodoistOperations(api: FakeAccount([skolkovo]), journal: journal(), ignoredStore: RecordingIgnored())
+            .ignoreProject(ProjectRequest(area: "Сколково", project: "Нет"))
+    }
+}
+
+@Test func ignoringWithoutAStoreIsUnavailable() async {
+    await #expect(throws: OperationError.ignoreUnavailable) {
+        _ = try await TodoistOperations(api: FakeAccount([skolkovo, khibiny]), journal: journal())
+            .ignoreProject(ProjectRequest(area: "Сколково", project: "Хибины"))
+    }
+}

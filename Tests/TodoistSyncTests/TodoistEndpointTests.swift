@@ -60,6 +60,11 @@ private actor FakeOperations: TodoistOperating {
         try record("unarchive \(request.area)/\(request.project)")
         return OperationResult(already: already, warning: nil)
     }
+
+    func ignoreProject(_ request: ProjectRequest) async throws -> String {
+        try record("ignore \(request.area)/\(request.project)")
+        return "p7"
+    }
 }
 
 private func object(_ response: HTTPResponse) throws -> [String: Any] {
@@ -241,4 +246,18 @@ func aStrangeIdIs400(id: String) async {
     #expect(await endpoint.respond(method: "POST", path: "/nope", body: Data()).status == 404)
     #expect(await endpoint.respond(method: "POST", path: "/tasks/t1/reopen", body: Data()).status == 404)
     #expect(await endpoint.respond(method: "POST", path: "/projects/rename", body: Data()).status == 404)
+}
+
+@Test func ignoreRoutes() async throws {
+    let fake = FakeOperations()
+    let response = await TodoistEndpoint(operations: fake).respond(method: "POST", path: "/projects/ignore", body: projectBody)
+    #expect(response.status == 200)
+    #expect(try object(response)["id"] as? String == "p7")
+    #expect(await fake.calls == ["ignore RooX/ИНДИД"])
+}
+
+@Test func ignoringWithoutAStoreAnswers500() async {
+    let response = await TodoistEndpoint(operations: FakeOperations(error: OperationError.ignoreUnavailable))
+        .respond(method: "POST", path: "/projects/ignore", body: projectBody)
+    #expect(response.status == 500)
 }
