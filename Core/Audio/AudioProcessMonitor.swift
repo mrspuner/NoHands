@@ -34,10 +34,16 @@ public enum AudioProcessMonitor {
         return objects.compactMap { object in
             let pid = pid(of: object)
             guard pid > 0 else { return nil }
+            // The bundle ID comes from the process object, read in the same pass as the pid and
+            // the flags. LaunchServices is a second source with its own timing: it answered `nil`
+            // for a running Telemost for a quarter of a second, the watcher lost the match, and the
+            // coordinator read that as the application quitting — cutting a live meeting in two.
+            // The name has no such source in CoreAudio and stays with LaunchServices; the watcher
+            // already falls back to the trigger's slug when it is missing.
             let app = NSRunningApplication(processIdentifier: pid)
             return State(
                 pid: pid,
-                bundleID: app?.bundleIdentifier,
+                bundleID: bundleID(of: object) ?? app?.bundleIdentifier,
                 name: app?.localizedName,
                 isRunningInput: flag(object, kAudioProcessPropertyIsRunningInput),
                 isRunningOutput: flag(object, kAudioProcessPropertyIsRunningOutput)
@@ -82,6 +88,23 @@ public enum AudioProcessMonitor {
             return -1
         }
         return value
+    }
+
+    /// `nil` for a failed call or a process without a bundle — a bare daemon. An empty string is
+    /// folded into `nil` too: a name nobody can match a trigger against is no name.
+    private static func bundleID(of object: AudioObjectID) -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioProcessPropertyBundleID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        guard AudioObjectGetPropertyData(object, &address, 0, nil, &size, &value) == noErr,
+              let string = value?.takeRetainedValue() as String?,
+              !string.isEmpty
+        else { return nil }
+        return string
     }
 
     private static func flag(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector) -> Bool {
