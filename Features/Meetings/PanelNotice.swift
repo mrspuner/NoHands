@@ -73,16 +73,23 @@ public struct PanelNotice: Equatable, Sendable {
     /// A broken state file names the feature rather than a meeting, since it belongs to none.
     public static func forIngest(_ outcome: MeetingIngest.Outcome) -> PanelNotice? {
         guard let failure = outcome.failure else { return nil }
-        let reason = switch failure {
-        case .exitCode(let code): "код выхода \(code)"
-        case .timedOut(let seconds): "не уложился в \(Int(seconds / 60)) мин"
-        case .agentError(let terminal): "ошибка claude: \(terminal)"
-        case .unreadableResult: "непонятный ответ claude"
-        case .launchFailed(let detail): "не запустился: \(detail)"
+        let text: String
+        switch failure {
+        case .stateUnreadable:
+            text = "Созвоны → Башка: файл состояния не читается, передача остановлена"
+        case .notMarked:
+            text = "Созвон \(outcome.file) передан, но не отмечен: состояние не сохранилось — "
+                + "передастся снова при следующем запуске"
+        case .agent(let failure):
+            let reason = switch failure {
+            case .exitCode(let code, let terminal): "код выхода \(code)" + (terminal.map { " (\($0))" } ?? "")
+            case .timedOut(let seconds): "не уложился в \(Int(seconds / 60)) мин"
+            case .agentError(let terminal): "ошибка claude: \(terminal)"
+            case .unreadableResult: "непонятный ответ claude"
+            case .launchFailed(let detail): "не запустился: \(detail)"
+            }
+            text = "Созвон \(outcome.file) не обработан: \(reason)"
         }
-        let text = outcome.file.isEmpty
-            ? "Созвоны → Башка: \(reason)"
-            : "Созвон \(outcome.file) не обработан: \(reason)"
         return PanelNotice(text: text, isFailure: true)
     }
 }

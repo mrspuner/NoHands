@@ -22,13 +22,24 @@ public actor MeetingIngest {
         }
     }
 
+    public enum Failure: Equatable, Sendable {
+        /// The agent's run did not succeed: BigHead may not have the meeting.
+        case agent(AgentFailure)
+        /// The agent succeeded, but the mark was not saved: BigHead has the meeting, and the next
+        /// launch will hand it over again. Kept apart from `agent` because "не обработан" would
+        /// be false here.
+        case notMarked
+        /// The state file exists but does not load; nothing is queued over it.
+        case stateUnreadable
+    }
+
     public struct Outcome: Equatable, Sendable {
-        /// The file name; empty when the failure is the state file, which belongs to no meeting.
+        /// The file name; empty for `stateUnreadable`, which belongs to no meeting.
         public var file: String
         /// `nil` means the file was handed over and marked.
-        public var failure: AgentFailure?
+        public var failure: Failure?
 
-        public init(file: String, failure: AgentFailure?) {
+        public init(file: String, failure: Failure?) {
             self.file = file
             self.failure = failure
         }
@@ -87,7 +98,10 @@ public actor MeetingIngest {
             // its `enabledAt` is the one thing keeping the old archive out.
             state = try await store.load()
         } catch {
-            report(Outcome(file: "", failure: .launchFailed("state unreadable: \(error.localizedDescription)")))
+            // Foundation's text goes to the log, not the panel: it is English and names a file
+            // error, not meeting content.
+            Self.logger.error("state unreadable: \(error.localizedDescription, privacy: .public)")
+            report(Outcome(file: "", failure: .stateUnreadable))
             return
         }
         let marked = Set(state.handedOver).union(handedOver)
@@ -135,7 +149,8 @@ public actor MeetingIngest {
                 directory: settings.bighead,
                 timeout: settings.timeout
             )
-            var failure = result.failure
+            var failure = result.failure.map(Failure.agent)
+            Self.log(name: name, result: result)
             if failure == nil {
                 do {
                     try await store.markHandedOver(name)
@@ -143,10 +158,12 @@ public actor MeetingIngest {
                 } catch {
                     // The run happened but nothing remembers it: next launch hands it over again.
                     // Said rather than swallowed, and kept out of this session's passes.
-                    failure = .launchFailed("state not saved: \(error.localizedDescription)")
+                    Self.logger.error("""
+                        \(name, privacy: .public) not marked: \(error.localizedDescription, privacy: .public)
+                        """)
+                    failure = .notMarked
                 }
             }
-            Self.log(name: name, result: result, failure: failure)
             if failure != nil { failed.insert(name) }
             running = nil
             report(Outcome(file: name, failure: failure))
@@ -154,17 +171,21 @@ public actor MeetingIngest {
         worker = nil
     }
 
-    /// Only the name, exit code, duration and, on failure, `terminal_reason` and the first stderr
-    /// line. Never the prompt and never the agent's answer.
-    private static func log(name: String, result: AgentReport, failure: AgentFailure?) {
+    /// Only the name, exit code, duration, `terminal_reason` when the result carried one and, on
+    /// failure, the first stderr line. Never the prompt and never the agent's answer.
+    private static func log(name: String, result: AgentReport) {
         let code = result.exitCode.map(String.init) ?? "none"
         let duration = Int(result.duration.rounded())
-        guard let failure else {
-            logger.info("handed over \(name, privacy: .public): exit \(code, privacy: .public), \(duration, privacy: .public) s")
+        // Read from the report rather than the failure: on a non-zero exit the code wins the
+        // classification, and the reason — `api_error` with empty stderr — would be lost.
+        let reason = result.terminalReason ?? "none"
+        guard result.failure != nil else {
+            logger.info("""
+                handed over \(name, privacy: .public): exit \(code, privacy: .public), \
+                \(duration, privacy: .public) s, terminal_reason \(reason, privacy: .public)
+                """)
             return
         }
-        let reason: String
-        if case .agentError(let terminal) = failure { reason = terminal } else { reason = "none" }
         let stderr = result.stderrLine ?? ""
         logger.error("""
             not handed over \(name, privacy: .public): exit \(code, privacy: .public), \

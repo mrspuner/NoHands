@@ -76,7 +76,7 @@ import Testing
 }
 
 private func ingestNotice(_ failure: AgentFailure?, file: String = "2026-10-19-1430-telemost.md") -> PanelNotice? {
-    PanelNotice.forIngest(MeetingIngest.Outcome(file: file, failure: failure))
+    PanelNotice.forIngest(MeetingIngest.Outcome(file: file, failure: failure.map { .agent($0) }))
 }
 
 // Success is visible in BigHead itself; the panel stays quiet about it.
@@ -85,8 +85,13 @@ private func ingestNotice(_ failure: AgentFailure?, file: String = "2026-10-19-1
 }
 
 @Test func anIngestExitCodeIsNamed() {
-    #expect(ingestNotice(.exitCode(1)) == PanelNotice(
+    #expect(ingestNotice(.exitCode(1, reason: nil)) == PanelNotice(
         text: "Созвон 2026-10-19-1430-telemost.md не обработан: код выхода 1", isFailure: true))
+}
+
+@Test func anIngestExitCodeCarriesTheTerminalReasonWhenThereIsOne() {
+    #expect(ingestNotice(.exitCode(1, reason: "api_error")) == PanelNotice(
+        text: "Созвон 2026-10-19-1430-telemost.md не обработан: код выхода 1 (api_error)", isFailure: true))
 }
 
 @Test func anIngestTimeoutIsInMinutes() {
@@ -111,6 +116,15 @@ private func ingestNotice(_ failure: AgentFailure?, file: String = "2026-10-19-1
 
 // A broken state file belongs to no meeting, so the line names the feature instead.
 @Test func aBrokenIngestStateNamesTheFeature() {
-    #expect(ingestNotice(.launchFailed("state unreadable"), file: "") == PanelNotice(
-        text: "Созвоны → Башка: не запустился: state unreadable", isFailure: true))
+    #expect(PanelNotice.forIngest(MeetingIngest.Outcome(file: "", failure: .stateUnreadable)) == PanelNotice(
+        text: "Созвоны → Башка: файл состояния не читается, передача остановлена", isFailure: true))
+}
+
+// The agent ran and BigHead has the file; only the mark is missing. "Не обработан" would be false.
+@Test func anUnsavedMarkSaysTheMeetingWasHandedOver() {
+    #expect(PanelNotice.forIngest(MeetingIngest.Outcome(file: "2026-10-19-1430-telemost.md", failure: .notMarked))
+        == PanelNotice(
+            text: "Созвон 2026-10-19-1430-telemost.md передан, но не отмечен: состояние не сохранилось — "
+                + "передастся снова при следующем запуске",
+            isFailure: true))
 }

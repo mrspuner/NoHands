@@ -39,7 +39,8 @@ private actor Gate {
     }
 }
 
-/// Records every launch and answers by file name: names in `failing` exit with code 1.
+/// Records every launch and answers by file name: names in `failing` fail the way claude was seen
+/// failing live — exit 1, `is_error: true`, `terminal_reason: "api_error"`.
 private final class FakeRunner: ProcessRunning, @unchecked Sendable {
     struct Call: Equatable {
         var arguments: [String]
@@ -75,7 +76,8 @@ private final class FakeRunner: ProcessRunning, @unchecked Sendable {
         onRun?(name)
         await gate?.wait()
         if failing.contains(name) {
-            return AgentRun(exitCode: 1, result: nil, stderrLine: "boom")
+            return AgentRun(exitCode: 1, result: AgentResult(isError: true, terminalReason: "api_error"),
+                            stderrLine: nil)
         }
         return AgentRun(exitCode: 0, result: AgentResult(isError: false, terminalReason: nil), stderrLine: nil)
     }
@@ -199,7 +201,7 @@ private struct Fixture {
     let name = "2026-10-19-1430-telemost.md"
     let fixture = try Fixture(files: [name: meeting], runner: FakeRunner(failing: [name]))
     await fixture.scanned()
-    #expect(fixture.reports.all == [MeetingIngest.Outcome(file: name, failure: .exitCode(1))])
+    #expect(fixture.reports.all == [MeetingIngest.Outcome(file: name, failure: .agent(.exitCode(1, reason: "api_error")))])
     #expect(try await fixture.handedOver() == [])
 
     await fixture.scanned()
@@ -244,13 +246,32 @@ private struct Fixture {
     try Data("{ not json".utf8).write(to: fixture.stateURL)
     await fixture.scanned()
     #expect(fixture.runner.calls.isEmpty)
-    #expect(fixture.reports.all.count == 1)
-    #expect(fixture.reports.all.first?.file == "")
-    if case .launchFailed = fixture.reports.all.first?.failure {} else {
-        Issue.record("expected launchFailed, got \(String(describing: fixture.reports.all.first?.failure))")
-    }
+    #expect(fixture.reports.all == [MeetingIngest.Outcome(file: "", failure: .stateUnreadable)])
     // The broken file is left as it was: replacing it would move `enabledAt` to today.
     #expect(try String(contentsOf: fixture.stateURL, encoding: .utf8) == "{ not json")
+}
+
+@Test func anUnsavedMarkAfterASuccessfulRunIsReportedAndNotRerunThisSession() async throws {
+    let name = "2026-10-19-1430-telemost.md"
+    let runner = FakeRunner()
+    let fixture = try Fixture(files: [name: meeting], runner: runner)
+    let stateURL = fixture.stateURL
+    // The scan has loaded the state by the time the agent runs. A directory in the state file's
+    // place makes the mark's own load, and so the mark, fail.
+    runner.onRun = { _ in
+        try? FileManager.default.removeItem(at: stateURL)
+        try? FileManager.default.createDirectory(at: stateURL, withIntermediateDirectories: true)
+    }
+    await fixture.scanned()
+    #expect(fixture.reports.all == [MeetingIngest.Outcome(file: name, failure: .notMarked)])
+
+    // Back to a missing state file: the next load starts afresh and remembers nothing, so only
+    // this session's memory keeps the file from being handed over twice.
+    runner.onRun = nil
+    try FileManager.default.removeItem(at: stateURL)
+    #expect(try await fixture.handedOver() == [])
+    await fixture.scanned()
+    #expect(runner.calls.count == 1)
 }
 
 @Test func nilSettingsRunNothing() async throws {

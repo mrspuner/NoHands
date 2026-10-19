@@ -2,7 +2,9 @@ import Darwin
 import Foundation
 
 public enum AgentFailure: Error, Equatable, LocalizedError {
-    case exitCode(Int32)
+    /// Carries `terminal_reason` when stdout still held a result: claude exits 1 on an API error
+    /// with empty stderr, and the reason is then the only thing that says why.
+    case exitCode(Int32, reason: String?)
     /// The agent finished but reported an error; carries `terminal_reason`, or `"unknown"` without one.
     case agentError(String)
     /// Exit code 0, but stdout held no result JSON: nothing says the work was done.
@@ -13,7 +15,8 @@ public enum AgentFailure: Error, Equatable, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .exitCode(let code): "BigHead agent exited with code \(code)"
+        case .exitCode(let code, let reason):
+            "BigHead agent exited with code \(code)" + (reason.map { " (\($0))" } ?? "")
         case .agentError(let reason): "BigHead agent reported an error: \(reason)"
         case .unreadableResult: "BigHead agent printed no readable result"
         case .timedOut(let timeout): "BigHead agent did not finish within \(Int(timeout)) s"
@@ -28,13 +31,18 @@ public struct AgentReport: Equatable, Sendable {
     /// `nil` when the process never exited on its own (timeout, launch failure).
     public var exitCode: Int32?
     public var stderrLine: String?
+    /// The result's `terminal_reason`, whatever the classification: a non-zero exit wins over
+    /// `is_error`, and without this field the reason it hid would be lost.
+    public var terminalReason: String?
     /// Time spent running, not waiting in the queue.
     public var duration: TimeInterval
 
-    public init(failure: AgentFailure?, exitCode: Int32?, stderrLine: String?, duration: TimeInterval) {
+    public init(failure: AgentFailure?, exitCode: Int32?, stderrLine: String?, terminalReason: String? = nil,
+                duration: TimeInterval) {
         self.failure = failure
         self.exitCode = exitCode
         self.stderrLine = stderrLine
+        self.terminalReason = terminalReason
         self.duration = duration
     }
 }
@@ -88,6 +96,7 @@ public actor BigHeadAgent {
             let run = try await runner.run(executable: executable, arguments: arguments, directory: directory,
                                            timeout: timeout, pidFile: pidFile)
             return AgentReport(failure: classify(run), exitCode: run.exitCode, stderrLine: run.stderrLine,
+                               terminalReason: run.result?.terminalReason,
                                duration: clock().timeIntervalSince(started))
         } catch AgentLaunchError.timedOut {
             return AgentReport(failure: .timedOut(timeout), exitCode: nil, stderrLine: nil,
@@ -103,7 +112,7 @@ public actor BigHeadAgent {
 
     /// A non-zero exit wins over `is_error`: the code is what the process itself says about the run.
     static func classify(_ run: AgentRun) -> AgentFailure? {
-        if run.exitCode != 0 { return .exitCode(run.exitCode) }
+        if run.exitCode != 0 { return .exitCode(run.exitCode, reason: run.result?.terminalReason) }
         guard let result = run.result else { return .unreadableResult }
         if result.isError { return .agentError(result.terminalReason ?? "unknown") }
         return nil

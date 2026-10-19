@@ -56,7 +56,7 @@ private let bighead = URL(fileURLWithPath: "/tmp/BigHead")
 
 @Test func aNonZeroExitIsAFailure() async {
     let runner = FakeRunner(.success(AgentRun(exitCode: 1, result: nil, stderrLine: nil)))
-    await #expect(throws: AgentFailure.exitCode(1)) {
+    await #expect(throws: AgentFailure.exitCode(1, reason: nil)) {
         try await IngestRunner(claude: claude, bighead: bighead, agent: agent(runner)).ingest(rawFile: "raw/x.md")
     }
 }

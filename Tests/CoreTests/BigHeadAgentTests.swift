@@ -63,14 +63,30 @@ private func report(_ outcome: Result<AgentRun, AgentLaunchError>, timeout: Time
 @Test func aNonZeroExitIsAFailureEvenWhenTheResultSaysError() async {
     let result = await report(.success(AgentRun(exitCode: 1, result: AgentResult(isError: true, terminalReason: "api_error"),
                                                 stderrLine: "boom")))
-    #expect(result.failure == .exitCode(1))
+    #expect(result.failure == .exitCode(1, reason: "api_error"))
     #expect(result.exitCode == 1)
     #expect(result.stderrLine == "boom")
 }
 
+// The failure seen live: exit 1, `is_error: true`, `terminal_reason: "api_error"`, empty stderr.
+// The code still wins the classification, but the reason is the only thing that says why.
+@Test func theTerminalReasonIsKeptWhenTheExitCodeWins() async {
+    let result = await report(.success(AgentRun(exitCode: 1, result: AgentResult(isError: true, terminalReason: "api_error"),
+                                                stderrLine: nil)))
+    #expect(result.terminalReason == "api_error")
+}
+
+@Test func theTerminalReasonIsKeptOnSuccessToo() async {
+    let result = await report(.success(AgentRun(exitCode: 0, result: AgentResult(isError: false, terminalReason: "completed"),
+                                                stderrLine: nil)))
+    #expect(result.failure == nil)
+    #expect(result.terminalReason == "completed")
+}
+
 @Test func aNonZeroExitWithoutAResultIsAnExitCodeFailure() async {
     let result = await report(.success(AgentRun(exitCode: 1, result: nil, stderrLine: nil)))
-    #expect(result.failure == .exitCode(1))
+    #expect(result.failure == .exitCode(1, reason: nil))
+    #expect(result.terminalReason == nil)
 }
 
 @Test func anErrorResultCarriesTheTerminalReason() async {
@@ -112,7 +128,9 @@ private func report(_ outcome: Result<AgentRun, AgentLaunchError>, timeout: Time
 }
 
 @Test func failuresDescribeThemselvesInEnglish() {
-    #expect(AgentFailure.exitCode(1).errorDescription?.contains("1") == true)
+    #expect(AgentFailure.exitCode(1, reason: nil).errorDescription == "BigHead agent exited with code 1")
+    #expect(AgentFailure.exitCode(1, reason: "api_error").errorDescription
+        == "BigHead agent exited with code 1 (api_error)")
     #expect(AgentFailure.timedOut(900).errorDescription?.contains("900") == true)
     #expect(AgentFailure.agentError("api_error").errorDescription?.contains("api_error") == true)
 }

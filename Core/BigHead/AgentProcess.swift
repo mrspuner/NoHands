@@ -110,7 +110,6 @@ public struct SystemProcessRunner: ProcessRunning {
             }
 
             // Exactly one branch below runs, so the continuation resumes exactly once.
-            let deadline = DispatchTime.now() + timeout
             DispatchQueue.global().async {
                 // Removed before resuming, not in a `defer`: the caller must never see the file after return.
                 func dropPIDFile() { if let pidFile { try? FileManager.default.removeItem(at: pidFile) } }
@@ -125,10 +124,13 @@ public struct SystemProcessRunner: ProcessRunning {
                     continuation.resume(throwing: AgentLaunchError.timedOut)
                 } else {
                     // A grandchild may inherit the pipes and keep them open after the child exits, so
-                    // EOF is awaited only until the original deadline. On a miss the snapshot taken so
-                    // far is used as is: claude prints its result JSON before exiting, so a finished
-                    // run must not be called a failure because something lingers.
-                    _ = readers.wait(timeout: deadline)
+                    // EOF is awaited for two seconds after the exit — not until the run's deadline,
+                    // which would hold a finished run, and the shared queue behind it, for up to the
+                    // whole timeout, and would leave a child exiting just before it no time to drain.
+                    // On a miss the snapshot taken so far is used as is: claude prints its result
+                    // JSON before exiting, so a finished run must not be called a failure because
+                    // something lingers.
+                    _ = readers.wait(timeout: .now() + 2)
                     let (data, overflowed) = out.snapshot()
                     dropPIDFile()
                     continuation.resume(returning: AgentRun(

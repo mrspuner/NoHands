@@ -87,12 +87,14 @@ private let tmp = FileManager.default.temporaryDirectory
     }
 }
 
+// The grandchild holds the pipes for 60 s and the timeout is 30 s: the call must come back about
+// two seconds after the child exits, not at the timeout — a finished run holds the shared queue.
 @Test func aLingeringGrandchildDoesNotHoldTheCallPastTheTimeout() async throws {
     let started = Date()
     let run = try await SystemProcessRunner().run(
-        executable: sh, arguments: ["-c", #"sleep 30 & echo "{\"is_error\":false}""#],
-        directory: tmp, timeout: 2, pidFile: nil)
-    #expect(Date().timeIntervalSince(started) < 3)
+        executable: sh, arguments: ["-c", #"sleep 60 & echo "{\"is_error\":false}""#],
+        directory: tmp, timeout: 30, pidFile: nil)
+    #expect(Date().timeIntervalSince(started) < 5)
     #expect(run.exitCode == 0)
     #expect(run.result == AgentResult(isError: false, terminalReason: nil))
 }
