@@ -47,6 +47,11 @@ nohands meeting diarize <папка встречи> [--threshold 0.NN] [--write]
     их речь в секундах и косинус между каждой парой — инструмент подбора порога
     voiceMatchThreshold. --write переписывает транскрипт файла и базу отпечатков;
     без него архив не трогается.
+
+nohands meeting ingest <файл встречи.md>
+    Передаёт один файл встречи агенту Башки напрямую, без очереди и состояния приложения.
+    Печатает код выхода и длительность; ответ агента не печатается. Инструмент ручной
+    проверки: запускать, пока приложение не передаёт тот же файл само.
 """
 
 func fail(_ message: String) -> Never {
@@ -119,6 +124,8 @@ struct NoHands {
                     try await runMeetingSummarize(parsed.path)
                 case .diarize:
                     try await runMeetingDiarize(parsed.path, threshold: parsed.threshold, write: parsed.write)
+                case .ingest:
+                    try await runMeetingIngest(parsed.path)
                 }
             default:
                 fail("Неизвестная команда: \(command)\n\n\(usage)")
