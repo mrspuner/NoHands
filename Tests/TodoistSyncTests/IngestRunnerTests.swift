@@ -5,23 +5,27 @@ import Testing
 @testable import TodoistSync
 
 private final class FakeRunner: ProcessRunning, @unchecked Sendable {
-    let result: Result<Int32, any Error>
+    let result: Result<AgentRun, any Error>
     private let calls = OSAllocatedUnfairLock(initialState: [(URL, [String], URL, TimeInterval)]())
-    init(_ result: Result<Int32, any Error>) { self.result = result }
+    init(_ result: Result<AgentRun, any Error>) { self.result = result }
     var recorded: [(URL, [String], URL, TimeInterval)] { calls.withLock { $0 } }
     func run(executable: URL, arguments: [String], directory: URL, timeout: TimeInterval,
              pidFile: URL?) async throws -> AgentRun {
         calls.withLock { $0.append((executable, arguments, directory, timeout)) }
-        return AgentRun(exitCode: try result.get(), result: nil, stderrLine: nil)
+        return try result.get()
     }
 }
+
+private let ok = AgentRun(exitCode: 0, result: .init(isError: false, terminalReason: "completed"), stderrLine: nil)
+
+private func agent(_ runner: FakeRunner) -> BigHeadAgent { BigHeadAgent(runner: runner, pidFile: nil) }
 
 private let claude = URL(fileURLWithPath: "/usr/local/bin/claude")
 private let bighead = URL(fileURLWithPath: "/tmp/BigHead")
 
 @Test func theAgentIsRunInBigHeadWithFileToolsOnly() async throws {
-    let runner = FakeRunner(.success(0))
-    try await IngestRunner(claude: claude, bighead: bighead, runner: runner).ingest(rawFile: "raw/2026-10-07-todoist-190640.md")
+    let runner = FakeRunner(.success(ok))
+    try await IngestRunner(claude: claude, bighead: bighead, agent: agent(runner)).ingest(rawFile: "raw/2026-10-07-todoist-190640.md")
     let call = try #require(runner.recorded.first)
     #expect(call.0 == claude)
     #expect(call.2 == bighead)
@@ -33,7 +37,7 @@ private let bighead = URL(fileURLWithPath: "/tmp/BigHead")
     #expect(args[1].contains("по возрастанию"))
     #expect(args[1].contains("Edit"))
     #expect(Array(args[2...]) == ["--restricted", "--strict-mcp-config", "--permission-mode", "acceptEdits",
-                                  "--tools", "Read,Edit,Write,Glob,Grep"])
+                                  "--tools", "Read,Edit,Write,Glob,Grep", "--output-format", "json"])
 }
 
 // The agent must reach neither a shell nor MCP connectors (NoHands among them),
@@ -51,13 +55,23 @@ private let bighead = URL(fileURLWithPath: "/tmp/BigHead")
 }
 
 @Test func aNonZeroExitIsAFailure() async {
-    await #expect(throws: IngestError.failed(1)) {
-        try await IngestRunner(claude: claude, bighead: bighead, runner: FakeRunner(.success(1))).ingest(rawFile: "raw/x.md")
+    let runner = FakeRunner(.success(AgentRun(exitCode: 1, result: nil, stderrLine: nil)))
+    await #expect(throws: AgentFailure.exitCode(1)) {
+        try await IngestRunner(claude: claude, bighead: bighead, agent: agent(runner)).ingest(rawFile: "raw/x.md")
     }
 }
 
 @Test func aTimeoutIsPassedOn() async {
-    await #expect(throws: IngestError.timedOut) {
-        try await IngestRunner(claude: claude, bighead: bighead, runner: FakeRunner(.failure(AgentLaunchError.timedOut))).ingest(rawFile: "raw/x.md")
+    let runner = FakeRunner(.failure(AgentLaunchError.timedOut))
+    await #expect(throws: AgentFailure.timedOut(600)) {
+        try await IngestRunner(claude: claude, bighead: bighead, agent: agent(runner)).ingest(rawFile: "raw/x.md")
+    }
+}
+
+@Test func anAgentErrorWithZeroExitIsAFailure() async {
+    let runner = FakeRunner(.success(AgentRun(exitCode: 0, result: .init(isError: true, terminalReason: "api_error"),
+                                              stderrLine: nil)))
+    await #expect(throws: AgentFailure.agentError("api_error")) {
+        try await IngestRunner(claude: claude, bighead: bighead, agent: agent(runner)).ingest(rawFile: "raw/x.md")
     }
 }

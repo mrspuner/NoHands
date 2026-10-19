@@ -46,7 +46,8 @@ private struct Setup {
         let config = config()
         return InboundPoller(config: config, sync: sync, store: store, journal: journal,
                              ingest: IngestRunner(claude: URL(fileURLWithPath: config.claudePath),
-                                                  bighead: URL(fileURLWithPath: config.bigheadPath), runner: runner),
+                                                  bighead: URL(fileURLWithPath: config.bigheadPath),
+                                                  agent: BigHeadAgent(runner: runner, pidFile: nil)),
                              report: { [reports] in reports.add($0) })
     }
 
@@ -63,7 +64,9 @@ private final class RecordingRunner: ProcessRunning, @unchecked Sendable {
     func run(executable: URL, arguments: [String], directory: URL, timeout: TimeInterval,
              pidFile: URL?) async throws -> AgentRun {
         lock.withLock { $0.append(arguments) }
-        return AgentRun(exitCode: try result.get(), result: nil, stderrLine: nil)
+        let code = try result.get()
+        return AgentRun(exitCode: code, result: code == 0 ? .init(isError: false, terminalReason: "completed") : nil,
+                        stderrLine: nil)
     }
 }
 

@@ -1,3 +1,4 @@
+import Core
 import Foundation
 import os
 
@@ -33,7 +34,7 @@ public actor InboundPoller {
         self.config = config
         ingest = IngestRunner(claude: URL(fileURLWithPath: config.claudePath),
                               bighead: URL(fileURLWithPath: config.bigheadPath),
-                              runner: ingest.runner, timeout: ingest.timeout)
+                              agent: ingest.agent, timeout: ingest.timeout)
     }
 
     public func tick() async {
@@ -43,12 +44,9 @@ public actor InboundPoller {
         do {
             try await poll()
             report(nil)
-        } catch let error as IngestError {
-            switch error {
-            case .failed(let code): Self.logger.error("todoist ingest failed: exit code \(code, privacy: .public)")
-            case .timedOut: Self.logger.error("todoist ingest failed: timed out")
-            case .launchFailed: Self.logger.error("todoist ingest failed: could not launch")
-            }
+        } catch let error as AgentFailure {
+            // Only codes and reasons, never agent output.
+            Self.logger.error("todoist ingest failed: \(error.localizedDescription, privacy: .public)")
             report("todoist: ingest не прошёл — \(error.localizedDescription)")
         } catch {
             Self.logger.error("todoist poll failed: \(String(describing: type(of: error)), privacy: .public)")

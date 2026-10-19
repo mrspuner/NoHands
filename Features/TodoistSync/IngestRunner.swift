@@ -1,45 +1,25 @@
 import Core
 import Foundation
 
-public enum IngestError: Error, Equatable, LocalizedError {
-    case failed(Int32)
-    case timedOut
-    case launchFailed(String)
-
-    public var errorDescription: String? {
-        switch self {
-        case .failed(let code): return "BigHead ingest exited with code \(code)"
-        case .timedOut: return "BigHead ingest did not finish in time and was stopped"
-        case .launchFailed(let reason): return "BigHead ingest could not start: \(reason)"
-        }
-    }
-}
-
 /// Runs BigHead's agent on one raw file, with file tools only.
 public struct IngestRunner: Sendable {
     private let claude: URL
     private let bighead: URL
-    let runner: any ProcessRunning
+    let agent: BigHeadAgent
     let timeout: TimeInterval
 
-    public init(claude: URL, bighead: URL, runner: any ProcessRunning, timeout: TimeInterval = 600) {
+    public init(claude: URL, bighead: URL, agent: BigHeadAgent, timeout: TimeInterval = 600) {
         self.claude = claude
         self.bighead = bighead
-        self.runner = runner
+        self.agent = agent
         self.timeout = timeout
     }
 
+    /// Throws `AgentFailure` when the shared queue's run did not end in a successful result.
     public func ingest(rawFile: String) async throws {
-        let run: AgentRun
-        do {
-            run = try await runner.run(executable: claude, arguments: Self.arguments(rawFile: rawFile),
-                                       directory: bighead, timeout: timeout, pidFile: nil)
-        } catch AgentLaunchError.timedOut {
-            throw IngestError.timedOut
-        } catch AgentLaunchError.launchFailed(let reason) {
-            throw IngestError.launchFailed(reason)
-        }
-        guard run.exitCode == 0 else { throw IngestError.failed(run.exitCode) }
+        let report = await agent.run(executable: claude, arguments: Self.arguments(rawFile: rawFile),
+                                     directory: bighead, timeout: timeout)
+        if let failure = report.failure { throw failure }
     }
 
     /// - `-p <prompt>`: non-interactive run; the prompt stays right after `-p`.
@@ -50,9 +30,11 @@ public struct IngestRunner: Sendable {
     /// - `--permission-mode acceptEdits`: file edits need no prompt in an unattended run.
     /// - `--tools`: restricts the built-in set to file tools. (`--allowedTools` would only
     ///   pre-approve, not remove, tools such as Bash.) Not `--bare`: it disables OAuth login.
+    /// - `--output-format json`: stdout is one result object, so the shared queue can tell an agent
+    ///   error from a success even when the exit code is 0.
     static func arguments(rawFile: String) -> [String] {
         ["-p", prompt(rawFile: rawFile), "--restricted", "--strict-mcp-config",
-         "--permission-mode", "acceptEdits", "--tools", "Read,Edit,Write,Glob,Grep"]
+         "--permission-mode", "acceptEdits", "--tools", "Read,Edit,Write,Glob,Grep", "--output-format", "json"]
     }
 
     static func prompt(rawFile: String) -> String {

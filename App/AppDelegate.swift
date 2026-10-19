@@ -202,7 +202,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             journal: journal,
             ingest: IngestRunner(claude: URL(fileURLWithPath: config.claudePath),
                                  bighead: URL(fileURLWithPath: config.bigheadPath),
-                                 runner: SystemProcessRunner()),
+                                 agent: BigHeadAgent(runner: SystemProcessRunner())),
             report: { [weak self] note in
                 Task { @MainActor in
                     self?.todoistInboundNote = note
