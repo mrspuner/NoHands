@@ -42,10 +42,12 @@ private let tmp = FileManager.default.temporaryDirectory
     let pidFile = tmp.appendingPathComponent("agent-\(UUID().uuidString).pid")
     // The child sleeps first: the PID is written right after `run()` returns in the parent.
     let run = try await SystemProcessRunner().run(
-        executable: sh, arguments: ["-c", #"sleep 0.2; echo "{\"is_error\":false,\"terminal_reason\":\"$(cat "$0")\"}""#, pidFile.path],
+        executable: sh, arguments: ["-c", #"sleep 0.2; echo "{\"is_error\":false,\"terminal_reason\":\"$(cat "$0") $$\"}""#, pidFile.path],
         directory: tmp, timeout: 5, pidFile: pidFile)
-    let pid = try #require(run.result?.terminalReason)
-    #expect(Int32(pid) != nil)
+    let parts = try #require(run.result?.terminalReason).split(separator: " ")
+    #expect(parts.count == 2)
+    #expect(Int32(parts[0]) != nil)
+    #expect(parts[0] == parts[1])
     #expect(!FileManager.default.fileExists(atPath: pidFile.path))
 }
 
@@ -72,4 +74,14 @@ private let tmp = FileManager.default.temporaryDirectory
     } catch {
         Issue.record("wrong error type: \(error)")
     }
+}
+
+@Test func aLingeringGrandchildDoesNotHoldTheCallPastTheTimeout() async throws {
+    let started = Date()
+    let run = try await SystemProcessRunner().run(
+        executable: sh, arguments: ["-c", #"sleep 30 & echo "{\"is_error\":false}""#],
+        directory: tmp, timeout: 2, pidFile: nil)
+    #expect(Date().timeIntervalSince(started) < 3)
+    #expect(run.exitCode == 0)
+    #expect(run.result == AgentResult(isError: false, terminalReason: nil))
 }
