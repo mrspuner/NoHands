@@ -24,6 +24,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// why ordering them at the call site, as this used to do, is not the same thing as
     /// serializing them. Built once, alongside the two passes it holds.
     private var archivePasses: ArchivePasses?
+    /// Hands finished meeting files to BigHead's agent. Built once, before `archivePasses`, whose
+    /// rounds end by scanning it; a reload only `update`s its settings, because a second instance
+    /// would hand the same file over twice.
+    private var meetingIngest: MeetingIngest?
+    /// The one agent gate for the whole app, shared by Todoist ingest and meeting ingest: both edit
+    /// the same `~/BigHead` files, and two agents at once would race over them.
+    private let bigHeadAgent = BigHeadAgent(runner: SystemProcessRunner())
+    /// Set once the agent orphaned by the previous session has been dealt with. See `startBuild`.
+    private var leftoverAgentStopped = false
     /// One store for `~/Meetings/.voices.json`, shared by the queue and the naming pass. `VoiceStore`
     /// is an actor specifically so that concurrent read-modify-write cycles over that one file
     /// serialize against each other; two separate instances would each hold the file open to
@@ -138,6 +147,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         buildTask = Task { [weak self] in
+            // An agent the previous session left running would edit `~/BigHead` alongside ours, so
+            // it is stopped before anything here can launch one. Off the main actor because it can
+            // block for two seconds of grace; once per launch because on a reload the agent in the
+            // PID file is the one this session started, and killing it would lose its work.
+            if self?.leftoverAgentStopped == false {
+                await Task.detached { LeftoverAgent.stop(pidFile: BigHeadAgent.defaultPIDFile) }.value
+                self?.leftoverAgentStopped = true
+            }
             await self?.startTodoistSync()
             // Meetings are rebuilt first and awaited before the dictation build starts, rather
             // than synchronously before this task the way they used to be: `rebuildMeetings` now
@@ -202,7 +219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             journal: journal,
             ingest: IngestRunner(claude: URL(fileURLWithPath: config.claudePath),
                                  bighead: URL(fileURLWithPath: config.bigheadPath),
-                                 runner: SystemProcessRunner()),
+                                 agent: bigHeadAgent),
             report: { [weak self] note in
                 Task { @MainActor in
                     self?.todoistInboundNote = note
@@ -335,8 +352,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard let speakerNaming else { return nil }
 
+        // Hand-over settings come from two sections: the switch and timeout from meetings, the
+        // agent's paths from `todoist`, where Todoist ingest already keeps them. `nil` settings
+        // switch the hand-over off; the note says why, unless the owner switched it off himself.
+        var ingestSettings: MeetingIngest.Settings?
+        var ingestNote: String?
+        if config.ingestEnabled {
+            do {
+                let inbound = try TodoistInboundConfig.loadOrCreate()
+                if inbound.claudePath.isEmpty || inbound.bigheadPath.isEmpty {
+                    ingestNote = "созвоны → Башка: не настроены (claudePath, bigheadPath в разделе todoist)"
+                } else {
+                    ingestSettings = MeetingIngest.Settings(
+                        claude: URL(fileURLWithPath: inbound.claudePath),
+                        bighead: URL(fileURLWithPath: inbound.bigheadPath),
+                        timeout: config.ingestTimeoutSeconds
+                    )
+                }
+            } catch {
+                ingestNote = "созвоны → Башка: \(error.localizedDescription)"
+            }
+        }
+        // A reload is the owner's "try again": failures remembered this session are forgotten, and
+        // the `scanArchive` at the end of this method starts the next attempt.
+        if let existing = meetingIngest {
+            await existing.update(settings: ingestSettings)
+            await existing.clearFailures()
+        } else {
+            meetingIngest = MeetingIngest(
+                store: MeetingIngestStore(url: MeetingIngestStore.defaultURL),
+                agent: bigHeadAgent,
+                settings: ingestSettings,
+                report: { [panel] outcome in
+                    // A success says nothing: the file is already in the archive, and the panel
+                    // speaks only about what needs the owner.
+                    guard let notice = PanelNotice.forIngest(outcome) else { return }
+                    Task { @MainActor in
+                        panel.show(notice: notice)
+                        panel.hideNotice(after: PanelNotice.dwell)
+                    }
+                }
+            )
+        }
+        guard let ingest = meetingIngest else { return nil }
+
         if archivePasses == nil {
-            archivePasses = ArchivePasses(summarizer: summarizer, naming: speakerNaming)
+            archivePasses = ArchivePasses(summarizer: summarizer, naming: speakerNaming,
+                                          afterRound: { await ingest.scan() })
         }
         guard let archivePasses else { return nil }
 
@@ -418,7 +480,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // surfaces.
         RunLoop.main.add(timer, forMode: .common)
         sweepTimer = timer
-        return nil
+        return ingestNote
     }
 
     /// The menu has one status line and, on a bad day, several things to say on it.

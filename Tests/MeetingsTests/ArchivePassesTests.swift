@@ -94,3 +94,55 @@ private func archive() throws -> URL {
     // already summarised and skips it, exactly as `MeetingSummarizer` already does on its own.
     #expect(calls.count == 1)
 }
+
+/// The hand-off to the agent has to see the file the way the owner will: summary written and
+/// speaker names already applied. So `afterRound` must fire after both passes, once per round —
+/// and a request coalesced into a second round gets its own call.
+@Test func afterRoundRunsAfterBothPasses() async throws {
+    let directory = try archive()
+    let file = directory.appendingPathComponent("2026-09-04-1053-telemost.md")
+    let store = VoiceStore(url: directory.appendingPathComponent(".voices.json"))
+    var initialBook = VoiceBook.empty
+    let voiceId = initialBook.remember(
+        VoicePrint(vector: [1, 0]), meeting: "2026-09-04-1053-telemost",
+        seconds: 120, as: nil, maxPrints: 10
+    )
+    initialBook.record(
+        MeetingLabels(
+            file: file.lastPathComponent,
+            labels: [MeetingLabels.Label(position: 1, voiceId: voiceId, renderedName: "Собеседник 1")]
+        )
+    )
+    try await store.save(initialBook)
+
+    let summarizer = MeetingSummarizer(
+        archive: directory, config: .default,
+        makeRunner: { SlowRunner(calls: SlowRunner.Counter()) },
+        report: { _ in }
+    )
+    let naming = SpeakerNaming(archive: directory, store: store, report: { _ in })
+
+    // Records what the file looked like each time the hook fired.
+    final class Seen: @unchecked Sendable {
+        private let lock = NSLock()
+        private var items: [String] = []
+        func add(_ text: String) { lock.lock(); items.append(text); lock.unlock() }
+        var all: [String] { lock.lock(); defer { lock.unlock() }; return items }
+    }
+    let seen = Seen()
+    let passes = ArchivePasses(summarizer: summarizer, naming: naming, afterRound: {
+        seen.add((try? String(contentsOf: file, encoding: .utf8)) ?? "")
+    })
+
+    async let first: Void = passes.scanArchive()
+    try await Task.sleep(for: .milliseconds(20))
+    await passes.scanArchive()
+    await first
+
+    // Two overlapping requests coalesce into exactly two rounds, one hook call each.
+    #expect(seen.all.count == 2)
+    for text in seen.all {
+        #expect(text.contains("## Саммари"))
+        #expect(text.contains("[00:00:03] Настя: привет"))
+    }
+}

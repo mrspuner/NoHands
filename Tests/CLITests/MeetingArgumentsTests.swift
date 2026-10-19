@@ -59,3 +59,9 @@ import Testing
         try MeetingArguments.parse(["meeting", "diarize", "/tmp/встреча", "--threshold", "почти"])
     }
 }
+
+@Test func ingestTakesAFile() throws {
+    let parsed = try MeetingArguments.parse(["meeting", "ingest", "/x/a.md"])
+    #expect(parsed.subcommand == .ingest)
+    #expect(parsed.path.path == "/x/a.md")
+}

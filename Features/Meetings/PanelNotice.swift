@@ -1,3 +1,4 @@
+import Core
 import Foundation
 
 /// One line the panel says about something that has already happened.
@@ -66,5 +67,29 @@ public struct PanelNotice: Equatable, Sendable {
         var seen = Set<String>()
         let unique = outcome.named.filter { seen.insert($0).inserted }
         return PanelNotice(text: "Названо: \(unique.joined(separator: ", "))", isFailure: false)
+    }
+
+    /// `MeetingIngest`'s outcome. Success says nothing: its result shows up in BigHead itself.
+    /// A broken state file names the feature rather than a meeting, since it belongs to none.
+    public static func forIngest(_ outcome: MeetingIngest.Outcome) -> PanelNotice? {
+        guard let failure = outcome.failure else { return nil }
+        let text: String
+        switch failure {
+        case .stateUnreadable:
+            text = "Созвоны → Башка: файл состояния не читается, передача остановлена"
+        case .notMarked:
+            text = "Созвон \(outcome.file) передан, но не отмечен: состояние не сохранилось — "
+                + "передастся снова при следующем запуске"
+        case .agent(let failure):
+            let reason = switch failure {
+            case .exitCode(let code, let terminal): "код выхода \(code)" + (terminal.map { " (\($0))" } ?? "")
+            case .timedOut(let seconds): "не уложился в \(Int(seconds / 60)) мин"
+            case .agentError(let terminal): "ошибка claude: \(terminal)"
+            case .unreadableResult: "непонятный ответ claude"
+            case .launchFailed(let detail): "не запустился: \(detail)"
+            }
+            text = "Созвон \(outcome.file) не обработан: \(reason)"
+        }
+        return PanelNotice(text: text, isFailure: true)
     }
 }

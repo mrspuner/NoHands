@@ -146,6 +146,14 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
     /// averaged: averaging blurs a voice the more often the person is met, which is backwards.
     public var maxVoicePrints: Int
 
+    /// Whether finished meeting files are handed to the BigHead agent. A switch, like
+    /// `summaryEnabled`: if the hand-over gets in the way, the archive keeps filling regardless.
+    public var ingestEnabled: Bool
+    /// Ceiling for one agent run over one meeting file. Generous for the same reason as
+    /// `summaryTimeoutSeconds`: a run that is cut off is retried, not lost, but a guess that is
+    /// too low would cut off every run of a long meeting.
+    public var ingestTimeoutSeconds: Double
+
     /// Both identifiers are read off the applications installed on the owner's machine, not
     /// guessed from their names — `ru.yandex.telemost` was a guess, and the desktop client calls
     /// itself `ru.yandex.desktop.telemost`. The difference is invisible everywhere except a
@@ -192,7 +200,9 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         diarizationEnabled: true,
         voiceMatchThreshold: 0.7,
         minVoicePrintSeconds: 30,
-        maxVoicePrints: 10
+        maxVoicePrints: 10,
+        ingestEnabled: true,
+        ingestTimeoutSeconds: 900
     )
 
     public init(
@@ -218,7 +228,9 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         diarizationEnabled: Bool = true,
         voiceMatchThreshold: Double = 0.7,
         minVoicePrintSeconds: Double = 30,
-        maxVoicePrints: Int = 10
+        maxVoicePrints: Int = 10,
+        ingestEnabled: Bool = true,
+        ingestTimeoutSeconds: Double = 900
     ) {
         self.triggerApps = triggerApps
         self.excludedApps = excludedApps
@@ -243,6 +255,8 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
         self.voiceMatchThreshold = voiceMatchThreshold
         self.minVoicePrintSeconds = minVoicePrintSeconds
         self.maxVoicePrints = maxVoicePrints
+        self.ingestEnabled = ingestEnabled
+        self.ingestTimeoutSeconds = ingestTimeoutSeconds
     }
 
     public init(from decoder: any Decoder) throws {
@@ -293,6 +307,10 @@ public struct MeetingsConfig: Equatable, Sendable, Codable {
             ?? fallback.minVoicePrintSeconds
         maxVoicePrints = try container.decodeIfPresent(Int.self, forKey: .maxVoicePrints)
             ?? fallback.maxVoicePrints
+        ingestEnabled = try container.decodeIfPresent(Bool.self, forKey: .ingestEnabled)
+            ?? fallback.ingestEnabled
+        ingestTimeoutSeconds = try container.decodeIfPresent(Double.self, forKey: .ingestTimeoutSeconds)
+            ?? fallback.ingestTimeoutSeconds
     }
 
     public static func decode(_ data: Data) throws -> MeetingsConfig {

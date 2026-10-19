@@ -8,6 +8,7 @@ struct MeetingArguments {
         case levels
         case summarize
         case diarize
+        case ingest
     }
 
     enum ParseError: Error, Equatable {
@@ -15,7 +16,7 @@ struct MeetingArguments {
     }
 
     var subcommand: Subcommand
-    /// A folder for `process`, `levels` and `diarize`, a file for `summarize` — hence the
+    /// A folder for `process`, `levels` and `diarize`, a file for `summarize` and `ingest` — hence the
     /// neutral name.
     var path: URL
     /// `diarize` only: overrides `voiceMatchThreshold` for this run without touching the config.
@@ -26,12 +27,12 @@ struct MeetingArguments {
     static func parse(_ arguments: [String]) throws -> MeetingArguments {
         guard arguments.count >= 3 else {
             throw ParseError.message(
-                "Использование: nohands meeting <process|levels|summarize|diarize> <папка встречи или файл>"
+                "Использование: nohands meeting <process|levels|summarize|diarize|ingest> <папка встречи или файл>"
             )
         }
         guard let subcommand = Subcommand(rawValue: arguments[1]) else {
             throw ParseError.message(
-                "Неизвестная подкоманда: \(arguments[1]). Поддерживаются process, levels, summarize и diarize"
+                "Неизвестная подкоманда: \(arguments[1]). Поддерживаются process, levels, summarize, diarize и ingest"
             )
         }
         var result = MeetingArguments(

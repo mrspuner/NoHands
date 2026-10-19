@@ -2,6 +2,7 @@ import Core
 import Dictation
 import Foundation
 import Meetings
+import TodoistSync
 
 /// `nohands meeting process` — re-run a single folder.
 func runMeetingProcess(_ folder: URL) async throws {
@@ -345,4 +346,33 @@ private func trackURL(in folder: URL, named name: String) -> URL? {
     if FileManager.default.fileExists(atPath: raw.path) { return raw }
     let compressed = raw.deletingPathExtension().appendingPathExtension("m4a")
     return FileManager.default.fileExists(atPath: compressed.path) ? compressed : nil
+}
+
+/// `nohands meeting ingest` — hand one meeting file to the BigHead agent, the way the app does,
+/// but without the queue and without touching the state file: the command exists to check the
+/// feature by hand, and a mark written here would make the app skip the file afterwards.
+func runMeetingIngest(_ file: URL) async throws {
+    let meetings = try MeetingsConfig.loadOrCreate()
+    let todoist = try TodoistInboundConfig.loadOrCreate()
+    guard FileManager.default.fileExists(atPath: file.path) else {
+        fail("Файл не найден: \(file.path)")
+    }
+    guard !todoist.claudePath.isEmpty, !todoist.bigheadPath.isEmpty else {
+        fail("В секции todoist конфига не заданы claudePath и bigheadPath: \(TodoistInboundConfig.configFileURL.path)")
+    }
+
+    let agent = BigHeadAgent(runner: SystemProcessRunner(), pidFile: nil)
+    note("запускаю агента Башки на \(file.lastPathComponent)")
+    let report = await agent.run(
+        executable: URL(fileURLWithPath: todoist.claudePath),
+        arguments: MeetingIngest.arguments(file: file, meetings: MeetingFolder.archiveURL),
+        directory: URL(fileURLWithPath: todoist.bigheadPath),
+        timeout: meetings.ingestTimeoutSeconds
+    )
+    note("код выхода: \(report.exitCode.map(String.init) ?? "нет"), \(Int(report.duration)) с")
+    if let failure = report.failure {
+        note("сбой: \(failure.localizedDescription)")
+        if let line = report.stderrLine { note("stderr: \(line)") }
+        exit(1)
+    }
 }

@@ -190,3 +190,16 @@ import Testing
     #expect(config.summaryChunkSeconds == 600)
     #expect(config.summaryChunkTurns == 25)
 }
+
+@Test func ingestDefaultsWhenAbsent() throws {
+    let config = try MeetingsConfig.decode(Data("{}".utf8))
+    #expect(config.ingestEnabled)
+    #expect(config.ingestTimeoutSeconds == 900)
+}
+
+@Test func ingestKeysAreRead() throws {
+    let json = #"{"ingestEnabled": false, "ingestTimeoutSeconds": 60}"#
+    let config = try MeetingsConfig.decode(Data(json.utf8))
+    #expect(!config.ingestEnabled)
+    #expect(config.ingestTimeoutSeconds == 60)
+}

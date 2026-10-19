@@ -1,3 +1,4 @@
+import Core
 import Foundation
 import Testing
 @testable import Meetings
@@ -72,4 +73,58 @@ import Testing
         SpeakerNaming.Outcome(file: "a.md", named: ["Настя", "Настя"], failure: nil)
     )
     #expect(notice.text == "Названо: Настя")
+}
+
+private func ingestNotice(_ failure: AgentFailure?, file: String = "2026-10-19-1430-telemost.md") -> PanelNotice? {
+    PanelNotice.forIngest(MeetingIngest.Outcome(file: file, failure: failure.map { .agent($0) }))
+}
+
+// Success is visible in BigHead itself; the panel stays quiet about it.
+@Test func aHandedOverMeetingSaysNothing() {
+    #expect(ingestNotice(nil) == nil)
+}
+
+@Test func anIngestExitCodeIsNamed() {
+    #expect(ingestNotice(.exitCode(1, reason: nil)) == PanelNotice(
+        text: "Созвон 2026-10-19-1430-telemost.md не обработан: код выхода 1", isFailure: true))
+}
+
+@Test func anIngestExitCodeCarriesTheTerminalReasonWhenThereIsOne() {
+    #expect(ingestNotice(.exitCode(1, reason: "api_error")) == PanelNotice(
+        text: "Созвон 2026-10-19-1430-telemost.md не обработан: код выхода 1 (api_error)", isFailure: true))
+}
+
+@Test func anIngestTimeoutIsInMinutes() {
+    #expect(ingestNotice(.timedOut(900)) == PanelNotice(
+        text: "Созвон 2026-10-19-1430-telemost.md не обработан: не уложился в 15 мин", isFailure: true))
+}
+
+@Test func anIngestAgentErrorCarriesTheTerminalReason() {
+    #expect(ingestNotice(.agentError("api_error")) == PanelNotice(
+        text: "Созвон 2026-10-19-1430-telemost.md не обработан: ошибка claude: api_error", isFailure: true))
+}
+
+@Test func anUnreadableIngestResultIsNamed() {
+    #expect(ingestNotice(.unreadableResult) == PanelNotice(
+        text: "Созвон 2026-10-19-1430-telemost.md не обработан: непонятный ответ claude", isFailure: true))
+}
+
+@Test func anIngestLaunchFailureIsNamed() {
+    #expect(ingestNotice(.launchFailed("no such file")) == PanelNotice(
+        text: "Созвон 2026-10-19-1430-telemost.md не обработан: не запустился: no such file", isFailure: true))
+}
+
+// A broken state file belongs to no meeting, so the line names the feature instead.
+@Test func aBrokenIngestStateNamesTheFeature() {
+    #expect(PanelNotice.forIngest(MeetingIngest.Outcome(file: "", failure: .stateUnreadable)) == PanelNotice(
+        text: "Созвоны → Башка: файл состояния не читается, передача остановлена", isFailure: true))
+}
+
+// The agent ran and BigHead has the file; only the mark is missing. "Не обработан" would be false.
+@Test func anUnsavedMarkSaysTheMeetingWasHandedOver() {
+    #expect(PanelNotice.forIngest(MeetingIngest.Outcome(file: "2026-10-19-1430-telemost.md", failure: .notMarked))
+        == PanelNotice(
+            text: "Созвон 2026-10-19-1430-telemost.md передан, но не отмечен: состояние не сохранилось — "
+                + "передастся снова при следующем запуске",
+            isFailure: true))
 }
