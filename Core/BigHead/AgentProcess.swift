@@ -45,7 +45,8 @@ public enum AgentLaunchError: Error, Equatable {
 }
 
 public protocol ProcessRunning: Sendable {
-    /// - Parameter pidFile: when set, holds the child's PID for exactly as long as it runs.
+    /// - Parameter pidFile: when set, holds the child's PID and resolved executable path, one per line,
+    ///   for exactly as long as it runs.
     /// - Returns: the exit code with whatever could be read from the child's output. Throws
     ///   `AgentLaunchError.timedOut` after terminating a child that outlived `timeout`,
     ///   `AgentLaunchError.launchFailed` when it could not start.
@@ -86,7 +87,10 @@ public struct SystemProcessRunner: ProcessRunning {
             try? stdout.fileHandleForWriting.close()
             try? stderr.fileHandleForWriting.close()
             if let pidFile {
-                try? Data("\(process.processIdentifier)".utf8).write(to: pidFile, options: .atomic)
+                // The path lets a later session tell this agent from an unrelated process that
+                // reused the PID. It is the resolved one, because that is what the kernel reports.
+                let contents = "\(process.processIdentifier)\n\(Self.resolvedPath(of: executable))"
+                try? Data(contents.utf8).write(to: pidFile, options: .atomic)
             }
 
             // Each pipe is drained to EOF on its own thread: a pipe nobody reads fills up at 64 KB
@@ -134,6 +138,18 @@ public struct SystemProcessRunner: ProcessRunning {
                 }
             }
         }
+    }
+
+    /// The executable's real path, as `proc_pidpath` reports it for the running process.
+    /// `~/.local/bin/claude` is a symlink into a versions folder, so its own path never matches.
+    /// `realpath` rather than `resolvingSymlinksInPath`: the latter drops the `/private` prefix
+    /// of `/var` and `/tmp`, which the kernel keeps.
+    static func resolvedPath(of executable: URL) -> String {
+        guard let resolved = realpath(executable.path, nil) else {
+            return executable.resolvingSymlinksInPath().path
+        }
+        defer { free(resolved) }
+        return String(decoding: UnsafeRawBufferPointer(start: resolved, count: strlen(resolved)), as: UTF8.self)
     }
 
     static func firstLine(_ data: Data) -> String? {

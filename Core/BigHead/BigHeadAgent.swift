@@ -114,14 +114,17 @@ public actor BigHeadAgent {
 /// `applicationWillTerminate` never runs and the child `claude` keeps editing `~/BigHead` while the
 /// new session starts its own. Called at launch, before the first run.
 public enum LeftoverAgent {
-    public static func stop(pidFile: URL, isAgent: (pid_t) -> Bool = LeftoverAgent.isClaude) {
+    /// - Parameter isAgent: given the live PID and the executable path the runner recorded for it.
+    public static func stop(pidFile: URL,
+                            isAgent: (pid_t, String) -> Bool = LeftoverAgent.isRecordedExecutable) {
         guard let data = try? Data(contentsOf: pidFile) else { return }
         // Removed first and in every case: a PID that is not the agent now never becomes one, and an
         // unparsable file can never be acted on.
         try? FileManager.default.removeItem(at: pidFile)
-        let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        // The PID may have been reused by an unrelated process since; only `claude` is touched.
-        guard let pid = pid_t(text), pid > 0, isAlive(pid), isAgent(pid) else { return }
+        let lines = String(decoding: data, as: UTF8.self)
+            .split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+        guard lines.count == 2, let pid = pid_t(lines[0]), pid > 0, !lines[1].isEmpty,
+              isAlive(pid), isAgent(pid, lines[1]) else { return }
 
         // Same shape as the runner's timeout: terminate, two seconds of grace, then kill.
         kill(pid, SIGTERM)
@@ -130,13 +133,15 @@ public enum LeftoverAgent {
         if isAlive(pid) { kill(pid, SIGKILL) }
     }
 
-    public static func isClaude(_ pid: pid_t) -> Bool {
+    /// The PID may have been reused by an unrelated process since, so it is the agent only while it
+    /// still runs the recorded binary. The recorded path is the resolved one, not `claudePath`:
+    /// claude updates the symlink between sessions, and the orphan keeps running the old version.
+    public static func isRecordedExecutable(_ pid: pid_t, _ recordedPath: String) -> Bool {
         // PROC_PIDPATHINFO_MAXSIZE is a macro Swift does not import: 4 * MAXPATHLEN.
         var buffer = [UInt8](repeating: 0, count: 4 * Int(MAXPATHLEN))
         let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
         guard length > 0 else { return false }
-        let path = String(decoding: buffer.prefix(Int(length)), as: UTF8.self)
-        return URL(fileURLWithPath: path).lastPathComponent == "claude"
+        return String(decoding: buffer.prefix(Int(length)), as: UTF8.self) == recordedPath
     }
 
     private static func isAlive(_ pid: pid_t) -> Bool { kill(pid, 0) == 0 }

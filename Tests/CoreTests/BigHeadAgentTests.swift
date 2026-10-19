@@ -133,31 +133,72 @@ private func isAlive(_ pid: pid_t) -> Bool {
     defer { if sleeper.isRunning { kill(sleeper.processIdentifier, SIGKILL) } }
     let pid = sleeper.processIdentifier
     let file = pidFile()
-    try Data("\(pid)".utf8).write(to: file)
+    let contents = Data("\(pid)\n/bin/sleep".utf8)
+    try contents.write(to: file)
 
-    LeftoverAgent.stop(pidFile: file, isAgent: { _ in false })
+    LeftoverAgent.stop(pidFile: file, isAgent: { _, _ in false })
     #expect(isAlive(pid))
     // The file is gone either way: a PID that is not the agent will never become one.
     #expect(!FileManager.default.fileExists(atPath: file.path))
 
-    try Data("\(pid)".utf8).write(to: file)
-    LeftoverAgent.stop(pidFile: file, isAgent: { _ in true })
+    try contents.write(to: file)
+    LeftoverAgent.stop(pidFile: file, isAgent: { _, _ in true })
     sleeper.waitUntilExit()
     #expect(!sleeper.isRunning)
     #expect(!FileManager.default.fileExists(atPath: file.path))
 }
 
-@Test func aMissingPIDFileIsNothingToStop() {
-    LeftoverAgent.stop(pidFile: pidFile(), isAgent: { _ in Issue.record("must not be asked"); return true })
-}
+/// The real case: the runner launches the agent through a symlink, the way `~/.local/bin/claude`
+/// points into a versions folder, and the default check must still recognise it.
+@Test func anAgentLaunchedThroughASymlinkIsRecognisedAndStopped() async throws {
+    let dir = tmp.appendingPathComponent("leftover-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let link = dir.appendingPathComponent("claude")
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: URL(fileURLWithPath: "/bin/sleep"))
+    let file = dir.appendingPathComponent("bighead-agent.pid")
 
-@Test func anUnparsablePIDFileIsRemoved() throws {
-    let file = pidFile()
-    try Data("not a pid".utf8).write(to: file)
-    LeftoverAgent.stop(pidFile: file, isAgent: { _ in Issue.record("must not be asked"); return true })
+    let started = Date()
+    let run = Task {
+        try await SystemProcessRunner().run(executable: link, arguments: ["30"], directory: dir, timeout: 30, pidFile: file)
+    }
+    while !FileManager.default.fileExists(atPath: file.path) { try await Task.sleep(for: .milliseconds(20)) }
+    try await Task.sleep(for: .milliseconds(50))
+
+    LeftoverAgent.stop(pidFile: file)
+    let finished = try await run.value
+    #expect(finished.exitCode == SIGTERM)
+    #expect(Date().timeIntervalSince(started) < 10)
     #expect(!FileManager.default.fileExists(atPath: file.path))
 }
 
-@Test func onlyClaudeIsTheAgent() {
-    #expect(!LeftoverAgent.isClaude(getpid()))
+@Test func aLiveProcessAtAnotherPathIsLeftAlone() throws {
+    let sleeper = Process()
+    sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep")
+    sleeper.arguments = ["30"]
+    try sleeper.run()
+    defer { if sleeper.isRunning { kill(sleeper.processIdentifier, SIGKILL) } }
+    let file = pidFile()
+    try Data("\(sleeper.processIdentifier)\n/usr/local/bin/claude".utf8).write(to: file)
+
+    LeftoverAgent.stop(pidFile: file)
+    #expect(isAlive(sleeper.processIdentifier))
+    #expect(!FileManager.default.fileExists(atPath: file.path))
+}
+
+@Test func aMissingPIDFileIsNothingToStop() {
+    LeftoverAgent.stop(pidFile: pidFile(), isAgent: { _, _ in Issue.record("must not be asked"); return true })
+}
+
+@Test func anUnparsablePIDFileIsRemoved() throws {
+    for contents in ["not a pid", "\(getpid())"] {
+        let file = pidFile()
+        try Data(contents.utf8).write(to: file)
+        LeftoverAgent.stop(pidFile: file, isAgent: { _, _ in Issue.record("must not be asked"); return true })
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+    }
+}
+
+@Test func onlyTheRecordedExecutableIsTheAgent() {
+    #expect(!LeftoverAgent.isRecordedExecutable(getpid(), "/usr/local/bin/claude"))
 }

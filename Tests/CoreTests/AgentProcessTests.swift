@@ -42,13 +42,24 @@ private let tmp = FileManager.default.temporaryDirectory
     let pidFile = tmp.appendingPathComponent("agent-\(UUID().uuidString).pid")
     // The child sleeps first: the PID is written right after `run()` returns in the parent.
     let run = try await SystemProcessRunner().run(
-        executable: sh, arguments: ["-c", #"sleep 0.2; echo "{\"is_error\":false,\"terminal_reason\":\"$(cat "$0") $$\"}""#, pidFile.path],
+        executable: sh,
+        arguments: ["-c", #"sleep 0.2; echo "{\"is_error\":false,\"terminal_reason\":\"$(head -n 1 "$0")|$$|$(tail -n 1 "$0")\"}""#, pidFile.path],
         directory: tmp, timeout: 5, pidFile: pidFile)
-    let parts = try #require(run.result?.terminalReason).split(separator: " ")
-    #expect(parts.count == 2)
+    let parts = try #require(run.result?.terminalReason).split(separator: "|", omittingEmptySubsequences: false)
+    #expect(parts.count == 3)
     #expect(Int32(parts[0]) != nil)
     #expect(parts[0] == parts[1])
+    #expect(String(parts[2]) == SystemProcessRunner.resolvedPath(of: sh))
     #expect(!FileManager.default.fileExists(atPath: pidFile.path))
+}
+
+@Test func aResolvedPathFollowsSymlinks() throws {
+    let dir = tmp.appendingPathComponent("resolve-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let link = dir.appendingPathComponent("claude")
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: URL(fileURLWithPath: "/bin/sleep"))
+    #expect(SystemProcessRunner.resolvedPath(of: link) == "/bin/sleep")
 }
 
 @Test func theSystemRunnerReportsExitCodes() async throws {
