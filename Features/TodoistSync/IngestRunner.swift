@@ -1,10 +1,5 @@
+import Core
 import Foundation
-
-public protocol ProcessRunning: Sendable {
-    /// - Returns: the exit code. Throws `IngestError.timedOut` after terminating a child that
-    ///   outlived `timeout`, `IngestError.launchFailed` when it could not start.
-    func run(executable: URL, arguments: [String], directory: URL, timeout: TimeInterval) async throws -> Int32
-}
 
 public enum IngestError: Error, Equatable, LocalizedError {
     case failed(Int32)
@@ -16,47 +11,6 @@ public enum IngestError: Error, Equatable, LocalizedError {
         case .failed(let code): return "BigHead ingest exited with code \(code)"
         case .timedOut: return "BigHead ingest did not finish in time and was stopped"
         case .launchFailed(let reason): return "BigHead ingest could not start: \(reason)"
-        }
-    }
-}
-
-public struct SystemProcessRunner: ProcessRunning {
-    public init() {}
-
-    public func run(executable: URL, arguments: [String], directory: URL, timeout: TimeInterval) async throws -> Int32 {
-        let process = Process()
-        process.executableURL = executable
-        process.arguments = arguments
-        process.currentDirectoryURL = directory
-        // Output goes nowhere: a pipe nobody drains fills up and hangs the child.
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        process.standardInput = FileHandle.nullDevice
-
-        return try await withCheckedThrowingContinuation { continuation in
-            let finished = DispatchSemaphore(value: 0)
-            process.terminationHandler = { _ in finished.signal() }
-            do {
-                try process.run()
-            } catch {
-                // Launch failed: the waiter below is never started, so this is the only resume.
-                continuation.resume(throwing: IngestError.launchFailed(error.localizedDescription))
-                return
-            }
-            // Exactly one branch below runs, so the continuation resumes exactly once.
-            DispatchQueue.global().async {
-                if finished.wait(timeout: .now() + timeout) == .timedOut {
-                    process.terminate()
-                    if finished.wait(timeout: .now() + 2) == .timedOut {
-                        kill(process.processIdentifier, SIGKILL)
-                        // Foundation reaps the child; wait for it so no zombie outlives the call.
-                        _ = finished.wait(timeout: .now() + 2)
-                    }
-                    continuation.resume(throwing: IngestError.timedOut)
-                } else {
-                    continuation.resume(returning: process.terminationStatus)
-                }
-            }
         }
     }
 }
@@ -76,9 +30,16 @@ public struct IngestRunner: Sendable {
     }
 
     public func ingest(rawFile: String) async throws {
-        let code = try await runner.run(executable: claude, arguments: Self.arguments(rawFile: rawFile),
-                                        directory: bighead, timeout: timeout)
-        guard code == 0 else { throw IngestError.failed(code) }
+        let run: AgentRun
+        do {
+            run = try await runner.run(executable: claude, arguments: Self.arguments(rawFile: rawFile),
+                                       directory: bighead, timeout: timeout, pidFile: nil)
+        } catch AgentLaunchError.timedOut {
+            throw IngestError.timedOut
+        } catch AgentLaunchError.launchFailed(let reason) {
+            throw IngestError.launchFailed(reason)
+        }
+        guard run.exitCode == 0 else { throw IngestError.failed(run.exitCode) }
     }
 
     /// - `-p <prompt>`: non-interactive run; the prompt stays right after `-p`.

@@ -1,4 +1,5 @@
 import Foundation
+import Core
 import os
 import Testing
 @testable import TodoistSync
@@ -8,9 +9,10 @@ private final class FakeRunner: ProcessRunning, @unchecked Sendable {
     private let calls = OSAllocatedUnfairLock(initialState: [(URL, [String], URL, TimeInterval)]())
     init(_ result: Result<Int32, any Error>) { self.result = result }
     var recorded: [(URL, [String], URL, TimeInterval)] { calls.withLock { $0 } }
-    func run(executable: URL, arguments: [String], directory: URL, timeout: TimeInterval) async throws -> Int32 {
+    func run(executable: URL, arguments: [String], directory: URL, timeout: TimeInterval,
+             pidFile: URL?) async throws -> AgentRun {
         calls.withLock { $0.append((executable, arguments, directory, timeout)) }
-        return try result.get()
+        return AgentRun(exitCode: try result.get(), result: nil, stderrLine: nil)
     }
 }
 
@@ -56,31 +58,6 @@ private let bighead = URL(fileURLWithPath: "/tmp/BigHead")
 
 @Test func aTimeoutIsPassedOn() async {
     await #expect(throws: IngestError.timedOut) {
-        try await IngestRunner(claude: claude, bighead: bighead, runner: FakeRunner(.failure(IngestError.timedOut))).ingest(rawFile: "raw/x.md")
-    }
-}
-
-@Test func theSystemRunnerReportsExitCodes() async throws {
-    let code = try await SystemProcessRunner().run(executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", "exit 3"],
-                                                   directory: FileManager.default.temporaryDirectory, timeout: 5)
-    #expect(code == 3)
-}
-
-@Test func theSystemRunnerKillsAHungChild() async {
-    await #expect(throws: IngestError.timedOut) {
-        _ = try await SystemProcessRunner().run(executable: URL(fileURLWithPath: "/bin/sleep"), arguments: ["30"],
-                                                directory: FileManager.default.temporaryDirectory, timeout: 0.5)
-    }
-}
-
-@Test func aMissingExecutableIsALaunchFailure() async {
-    do {
-        _ = try await SystemProcessRunner().run(executable: URL(fileURLWithPath: "/nonexistent/claude"), arguments: [],
-                                                directory: FileManager.default.temporaryDirectory, timeout: 5)
-        Issue.record("expected a launch failure")
-    } catch let error as IngestError {
-        guard case .launchFailed = error else { Issue.record("wrong error: \(error)"); return }
-    } catch {
-        Issue.record("wrong error type: \(error)")
+        try await IngestRunner(claude: claude, bighead: bighead, runner: FakeRunner(.failure(AgentLaunchError.timedOut))).ingest(rawFile: "raw/x.md")
     }
 }

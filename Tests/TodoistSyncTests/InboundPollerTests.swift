@@ -1,3 +1,4 @@
+import Core
 import Foundation
 import os
 import Testing
@@ -59,9 +60,10 @@ private final class RecordingRunner: ProcessRunning, @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock(initialState: [[String]]())
     init(_ result: Result<Int32, any Error>) { self.result = result }
     var calls: [[String]] { lock.withLock { $0 } }
-    func run(executable: URL, arguments: [String], directory: URL, timeout: TimeInterval) async throws -> Int32 {
+    func run(executable: URL, arguments: [String], directory: URL, timeout: TimeInterval,
+             pidFile: URL?) async throws -> AgentRun {
         lock.withLock { $0.append(arguments) }
-        return try result.get()
+        return AgentRun(exitCode: try result.get(), result: nil, stderrLine: nil)
     }
 }
 
