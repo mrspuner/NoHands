@@ -14,15 +14,26 @@ import Foundation
 /// Carries the same deferred-repeat trick `MeetingSummarizer` uses internally: a request that
 /// arrives while a round is already running is not dropped, it is remembered for exactly one more
 /// round afterwards, never an overlapping one.
+///
+/// `afterRound` runs at the end of every round, after the naming pass and not before it: the
+/// BigHead agent should receive the file with the summary written and the speaker names already
+/// applied, the way the owner will read it, not a half-finished copy that gets rewritten a moment
+/// later. Because it sits inside the round, it is serialized with both passes for free.
 public actor ArchivePasses {
     private let summarizer: MeetingSummarizer
     private let naming: SpeakerNaming
+    private let afterRound: @Sendable () async -> Void
     private var scanning = false
     private var rescanRequested = false
 
-    public init(summarizer: MeetingSummarizer, naming: SpeakerNaming) {
+    public init(
+        summarizer: MeetingSummarizer,
+        naming: SpeakerNaming,
+        afterRound: @escaping @Sendable () async -> Void = {}
+    ) {
         self.summarizer = summarizer
         self.naming = naming
+        self.afterRound = afterRound
     }
 
     public func scanArchive() async {
@@ -36,6 +47,7 @@ public actor ArchivePasses {
             rescanRequested = false
             await summarizer.scanArchive()
             await naming.scanArchive()
+            await afterRound()
         } while rescanRequested
     }
 }
