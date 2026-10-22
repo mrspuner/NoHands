@@ -219,7 +219,7 @@ public actor ReplyAgent {
     }
 
     /// One block per reply: the time as a heading, `ref` and the quote when present, then the text.
-    static func render(_ batch: [Reply]) -> String {
+    public static func render(_ batch: [Reply]) -> String {
         let time = formatter("yyyy-MM-dd HH:mm:ss")
         return batch.map { reply in
             var lines = ["## \(time.string(from: reply.at))"]
