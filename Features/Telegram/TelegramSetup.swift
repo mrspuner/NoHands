@@ -23,15 +23,19 @@ public enum TelegramSetup {
         case notRunning(String)
     }
 
-    /// The token is read last, and only for a bot that is switched on and has an owner and an
-    /// inbox: a Keychain dialog for a feature the owner has not turned on would be noise.
-    public static func bot(config: TelegramConfig, bigheadPath: String,
+    /// The token is read last, and only for a bot that is switched on and has an owner, an inbox
+    /// and an agent: a Keychain dialog for a feature the owner has not turned on would be noise.
+    /// Without `claudePath` the bot would answer «Принял» to replies nothing can run.
+    public static func bot(config: TelegramConfig, claudePath: String, bigheadPath: String,
                            readToken: () throws -> String?) -> Outcome {
         guard config.isComplete, let ownerID = config.ownerUserId else {
             return .notRunning("телеграм: не настроен")
         }
         guard !bigheadPath.isEmpty else {
             return .notRunning("телеграм: не настроен (bigheadPath в разделе todoist)")
+        }
+        guard !claudePath.isEmpty else {
+            return .notRunning("телеграм: не настроен (claudePath в разделе todoist)")
         }
         let token: String?
         do {

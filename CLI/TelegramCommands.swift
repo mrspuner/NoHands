@@ -18,8 +18,7 @@ func runTelegramSend(_ file: URL) async throws {
     }
     let message = Outbox.parse(url: file, contents: readFile(file.path))
     let (body, buttons) = TelegramText.extractButtons(message.body)
-    // Same limit as `TelegramBot.partLimit`, which is internal to its module.
-    let parts = TelegramText.chunks(TelegramText.html(fromMarkdown: body), limit: 4000)
+    let parts = TelegramText.chunks(TelegramText.html(fromMarkdown: body), limit: TelegramBot.partLimit)
     guard !parts.isEmpty else { fail("Нечего отправлять: файл пуст") }
 
     let client = TelegramClient(token: token)

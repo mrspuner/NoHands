@@ -74,7 +74,8 @@ public actor ReplyAgent {
     private let now: @Sendable () -> Date
     private let newSessionID: @Sendable () -> UUID
     private let report: @Sendable (Outcome) -> Void
-    /// `nil` switches the feature off: batches are dropped without a launch.
+    /// `nil` switches the feature off: batches are dropped without a launch, each reported as a
+    /// failure — the owner has already been told «Принял».
     private var settings: Settings?
 
     private var pending: [Reply] = []
@@ -134,6 +135,7 @@ public actor ReplyAgent {
             // Snapshotted: actors are reentrant, and `update(settings:)` may land mid-run.
             guard let settings else {
                 Self.logger.info("dropped \(batch.count, privacy: .public) replies: agent is off")
+                report(Outcome(failure: .launchFailed("агент не настроен")))
                 continue
             }
             await run(batch, settings: settings)

@@ -335,7 +335,8 @@ private func value(after flag: String, in arguments: [String]) -> String? {
     await fixture.send(reply("никуда"))
 
     #expect(runner.calls.isEmpty)
-    #expect(fixture.reports.all.isEmpty)
+    // Not silent: the owner was told «Принял», so he hears that nothing will come of it.
+    #expect(fixture.reports.all == [ReplyAgent.Outcome(failure: .launchFailed("агент не настроен"))])
     #expect(!FileManager.default.fileExists(atPath: fixture.replies.path))
 
     // Dropped, not held back: switching on later runs only what arrives after.

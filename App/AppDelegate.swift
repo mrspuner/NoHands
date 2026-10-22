@@ -109,6 +109,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // leaves the draft a crash would, and the same prompt picks it up next launch.
                 // `MeetingCoordinator.stop` says why in full.
                 self?.meetings?.stop()
+                // Best effort: termination follows at once, and the process exit ends the loops
+                // anyway. Cancelling first only spares a long poll its abrupt end.
+                if let bot = self?.telegramBot {
+                    Task { await bot.stop() }
+                }
             },
             // Re-reading means rebuilding: the thresholds live in the machine, the prompt and
             // the model live in the client, and none of them is consulted again after start.
@@ -364,9 +369,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Off the main actor: the first read raises the Keychain dialog and blocks until it is
         // answered.
+        let claudePath = inbound.claudePath
         let bigheadPath = inbound.bigheadPath
         let outcome = await Task.detached {
-            TelegramSetup.bot(config: config, bigheadPath: bigheadPath) {
+            TelegramSetup.bot(config: config, claudePath: claudePath, bigheadPath: bigheadPath) {
                 try Keychain.password(service: Keychain.telegramService, account: Keychain.telegramAccount)
             }
         }.value

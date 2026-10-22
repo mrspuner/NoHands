@@ -19,7 +19,7 @@ public enum Notice: Equatable, Sendable {
 /// Delivers BigHead's inbox items and outbox files to the owner's chat, and passes the owner's
 /// messages and button presses to the reply agent.
 public actor TelegramBot {
-    static let partLimit = 4000
+    public static let partLimit = 4000
     static let quietSeconds: TimeInterval = 5
     static let passInterval: TimeInterval = 3
     static let firstRetryPause: TimeInterval = 5

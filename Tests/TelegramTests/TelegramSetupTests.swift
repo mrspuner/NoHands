@@ -13,7 +13,7 @@ private struct Refused: LocalizedError {
     var asked = false
     let outcome = TelegramSetup.bot(
         config: TelegramConfig(enabled: false, ownerUserId: 42, replyTimeoutSeconds: 900),
-        bigheadPath: "/b", readToken: { asked = true; return "t" })
+        claudePath: "/c", bigheadPath: "/b", readToken: { asked = true; return "t" })
     #expect(outcome == .notRunning("телеграм: не настроен"))
     #expect(!asked)
 }
@@ -21,31 +21,40 @@ private struct Refused: LocalizedError {
 @Test func aMissingOwnerIsNotSetUp() {
     let outcome = TelegramSetup.bot(
         config: TelegramConfig(enabled: true, ownerUserId: nil, replyTimeoutSeconds: 900),
-        bigheadPath: "/b", readToken: { "t" })
+        claudePath: "/c", bigheadPath: "/b", readToken: { "t" })
     #expect(outcome == .notRunning("телеграм: не настроен"))
 }
 
 @Test func aMissingBigheadPathIsNamed() {
     var asked = false
-    let outcome = TelegramSetup.bot(config: complete, bigheadPath: "", readToken: { asked = true; return "t" })
+    let outcome = TelegramSetup.bot(config: complete, claudePath: "/c", bigheadPath: "", readToken: { asked = true; return "t" })
     #expect(outcome == .notRunning("телеграм: не настроен (bigheadPath в разделе todoist)"))
     #expect(!asked)
 }
 
+@Test func aMissingClaudePathIsNamed() {
+    // Otherwise the bot would answer «Принял» to replies no agent can ever run.
+    var asked = false
+    let outcome = TelegramSetup.bot(config: complete, claudePath: "", bigheadPath: "/b",
+                                    readToken: { asked = true; return "t" })
+    #expect(outcome == .notRunning("телеграм: не настроен (claudePath в разделе todoist)"))
+    #expect(!asked)
+}
+
 @Test func aMissingTokenIsNotSetUp() {
-    #expect(TelegramSetup.bot(config: complete, bigheadPath: "/b", readToken: { nil })
+    #expect(TelegramSetup.bot(config: complete, claudePath: "/c", bigheadPath: "/b", readToken: { nil })
         == .notRunning("телеграм: не настроен (нет токена в связке ключей)"))
-    #expect(TelegramSetup.bot(config: complete, bigheadPath: "/b", readToken: { "" })
+    #expect(TelegramSetup.bot(config: complete, claudePath: "/c", bigheadPath: "/b", readToken: { "" })
         == .notRunning("телеграм: не настроен (нет токена в связке ключей)"))
 }
 
 @Test func aKeychainFailureIsNamedRatherThanCalledMissing() {
-    let outcome = TelegramSetup.bot(config: complete, bigheadPath: "/b", readToken: { throw Refused() })
+    let outcome = TelegramSetup.bot(config: complete, claudePath: "/c", bigheadPath: "/b", readToken: { throw Refused() })
     #expect(outcome == .notRunning("телеграм: keychain refused"))
 }
 
 @Test func aCompleteSetupGivesTheBotItsInputs() {
-    let outcome = TelegramSetup.bot(config: complete, bigheadPath: "/Users/x/BigHead", readToken: { "t" })
+    let outcome = TelegramSetup.bot(config: complete, claudePath: "/c", bigheadPath: "/Users/x/BigHead", readToken: { "t" })
     #expect(outcome == .ready(TelegramSetup.BotInputs(
         token: "t", ownerID: 42, inbox: URL(fileURLWithPath: "/Users/x/BigHead/wiki/inbox.md"))))
 }
