@@ -1,6 +1,7 @@
 import Core
 import Dictation
 import Foundation
+import Telegram
 
 let usage = """
 nohands — инструмент прогонов фазы 0
@@ -52,6 +53,23 @@ nohands meeting ingest <файл встречи.md>
     Передаёт один файл встречи агенту Башки напрямую, без очереди и состояния приложения.
     Печатает код выхода и длительность; ответ агента не печатается. Инструмент ручной
     проверки: запускать, пока приложение не передаёт тот же файл само.
+
+nohands telegram send <файл.md>
+    Отправляет файл владельцу в Телеграм сразу, без outbox и состояния бота: блок кнопок
+    становится кнопками, длинный текст режется на части. Печатает число частей.
+    Токен — из связки ключей, ownerUserId — из секции telegram конфига.
+
+nohands telegram reply "<текст>" [--bighead <папка>]
+    Запускает агента ответа на одну реплику, без очереди и состояния приложения,
+    всегда в новой сессии. Итог агент пишет в outbox — его отправит работающее приложение.
+    Печатает код выхода и длительность. --bighead подменяет bigheadPath, чтобы проверить
+    ограничения агента на черновой папке, а не на настоящей Башке. Команды Bash агента
+    проходят через фильтр nohands telegram bash-hook. Не запускать, пока агент Башки
+    в приложении работает: два агента над одной Башкой правят одни и те же файлы.
+
+nohands telegram bash-hook
+    Фильтр команд Bash для агента ответа: читает запрос хука PreToolUse со стандартного
+    входа, пропускает только curl к http://127.0.0.1:41730/. Руками не запускается.
 """
 
 func fail(_ message: String) -> Never {
@@ -126,6 +144,21 @@ struct NoHands {
                     try await runMeetingDiarize(parsed.path, threshold: parsed.threshold, write: parsed.write)
                 case .ingest:
                     try await runMeetingIngest(parsed.path)
+                }
+            case "telegram":
+                let parsed: TelegramArguments
+                do {
+                    parsed = try TelegramArguments.parse(arguments)
+                } catch TelegramArguments.ParseError.message(let message) {
+                    fail(message)
+                }
+                switch parsed {
+                case .send(let file):
+                    try await runTelegramSend(file)
+                case .reply(let text, let bighead):
+                    try await runTelegramReply(text, bighead: bighead)
+                case .bashHook:
+                    BashGate.runHook()
                 }
             default:
                 fail("Неизвестная команда: \(command)\n\n\(usage)")

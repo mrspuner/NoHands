@@ -10,6 +10,7 @@ let package = Package(
         .library(name: "Inbox", targets: ["Inbox"]),
         .library(name: "Meetings", targets: ["Meetings"]),
         .library(name: "TodoistSync", targets: ["TodoistSync"]),
+        .library(name: "Telegram", targets: ["Telegram"]),
         .executable(name: "nohands", targets: ["CLI"]),
         .executable(name: "NoHandsApp", targets: ["App"]),
     ],
@@ -44,14 +45,19 @@ let package = Package(
             dependencies: ["Core"],
             path: "Features/TodoistSync"
         ),
+        .target(
+            name: "Telegram",
+            dependencies: ["Core"],
+            path: "Features/Telegram"
+        ),
         .executableTarget(
             name: "CLI",
-            dependencies: ["Core", "Dictation", "Meetings", "TodoistSync"],
+            dependencies: ["Core", "Dictation", "Meetings", "TodoistSync", "Telegram"],
             path: "CLI"
         ),
         .executableTarget(
             name: "App",
-            dependencies: ["Core", "Dictation", "Inbox", "Meetings", "TodoistSync"],
+            dependencies: ["Core", "Dictation", "Inbox", "Meetings", "TodoistSync", "Telegram"],
             path: "App",
             // Info.plist belongs to the bundle the script assembles, not to the binary; without
             // this SwiftPM treats it as an unhandled resource and warns on every build.
@@ -86,6 +92,11 @@ let package = Package(
             name: "TodoistSyncTests",
             dependencies: ["TodoistSync"],
             path: "Tests/TodoistSyncTests"
+        ),
+        .testTarget(
+            name: "TelegramTests",
+            dependencies: ["Telegram"],
+            path: "Tests/TelegramTests"
         ),
     ]
 )

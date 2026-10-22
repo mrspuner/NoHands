@@ -3,7 +3,11 @@ import Core
 import Dictation
 import Inbox
 import Meetings
+import os
+import Telegram
 import TodoistSync
+
+private let telegramLogger = Logger(subsystem: "com.nohands.app", category: "telegram")
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -74,6 +78,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var dictationStatus = "Загружаю модель…"
     /// The meetings half of the status line, kept for the same reason.
     private var meetingsNote: String?
+    /// One store for the bot's state file, shared by the bot and the reply agent: both write it,
+    /// and `TelegramStateStore` serializes those writes only within one instance.
+    private let telegramStore = TelegramStateStore(
+        url: FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/NoHands/telegram-state.json")
+    )
+    /// Built once; a reload only `update`s its settings, because a second instance would run its
+    /// own batches beside the first.
+    private var replyAgent: ReplyAgent?
+    /// Rebuilt only when what it was built from changes: a new token, owner or inbox. Nil while
+    /// the bot does not run.
+    private var telegramBot: TelegramBot?
+    private var telegramInputs: TelegramSetup.BotInputs?
+    /// Why the bot does not run, for the status line. Nil when it does.
+    private var telegramNote: String?
+    /// The last setup pass. A reload chains onto it, so two passes never interleave their stop
+    /// and start of the bot.
+    private var telegramSetup: Task<Void, Never>?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let menu = StatusMenu(
@@ -87,6 +109,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // leaves the draft a crash would, and the same prompt picks it up next launch.
                 // `MeetingCoordinator.stop` says why in full.
                 self?.meetings?.stop()
+                // Best effort: termination follows at once, and the process exit ends the loops
+                // anyway. Cancelling first only spares a long poll its abrupt end.
+                if let bot = self?.telegramBot {
+                    Task { await bot.stop() }
+                }
             },
             // Re-reading means rebuilding: the thresholds live in the machine, the prompt and
             // the model live in the client, and none of them is consulted again after start.
@@ -156,6 +183,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.leftoverAgentStopped = true
             }
             await self?.startTodoistSync()
+            // Not awaited, for the same reason as the Todoist token's warm-up: the Keychain dialog
+            // for the bot token must not hold up dictation and meetings.
+            self?.startTelegram()
             // Meetings are rebuilt first and awaited before the dictation build starts, rather
             // than synchronously before this task the way they used to be: `rebuildMeetings` now
             // has to cross into `MeetingQueue`'s isolation to reconfigure it in place, and that
@@ -273,7 +303,115 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func refreshStatus() {
-        statusMenu?.setStatus(Self.status(dictationStatus, meetingsNote, todoistNote, todoistInboundNote))
+        statusMenu?.setStatus(Self.status(dictationStatus, meetingsNote, todoistNote, todoistInboundNote,
+                                          telegramNote))
+    }
+
+    private func startTelegram() {
+        let previous = telegramSetup
+        telegramSetup = Task { [weak self] in
+            await previous?.value
+            await self?.configureTelegram()
+        }
+    }
+
+    /// Launch and «Перечитать конфиг» alike: refreshes the reply agent's settings, and replaces the
+    /// bot only when its inputs changed.
+    private func configureTelegram() async {
+        let config: TelegramConfig
+        let inbound: TodoistInboundConfig
+        do {
+            config = try TelegramConfig.loadOrCreate()
+            inbound = try TodoistInboundConfig.loadOrCreate()
+        } catch {
+            // Whatever runs keeps running, the same as meetings: a config that cannot be read is a
+            // reason to keep the settings that worked.
+            telegramNote = "телеграм: \(error.localizedDescription)"
+            refreshStatus()
+            return
+        }
+
+        // The hook is this binary itself; see `main.swift`.
+        let hook = [Bundle.main.executablePath ?? CommandLine.arguments[0], "--telegram-bash-hook"]
+        let settings = TelegramSetup.replySettings(claudePath: inbound.claudePath, bigheadPath: inbound.bigheadPath,
+                                                   timeout: config.replyTimeoutSeconds, hook: hook)
+        let agent: ReplyAgent
+        if let replyAgent {
+            agent = replyAgent
+            await agent.update(settings: settings)
+        } else {
+            agent = ReplyAgent(
+                agent: bigHeadAgent,
+                store: telegramStore,
+                settings: settings,
+                repliesFolder: FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent("Library/Application Support/NoHands/telegram-replies", isDirectory: true),
+                outbox: Outbox.defaultURL,
+                meetings: MeetingFolder.archiveURL,
+                report: { [panel] outcome in
+                    guard let failure = outcome.failure else { return }
+                    // Written by NoHands itself, not by an agent: the agent is what just failed.
+                    // The bot delivers it like any other outbox file.
+                    do {
+                        try Outbox.write(ref: nil, body: ReplyAgent.failureText(failure),
+                                         to: Outbox.defaultURL, now: Date())
+                    } catch {
+                        telegramLogger.error("failure message not written: \(error.localizedDescription, privacy: .public)")
+                    }
+                    Task { @MainActor in
+                        panel.show(notice: PanelNotice(text: ReplyAgent.panelText(failure), isFailure: true))
+                        panel.hideNotice(after: PanelNotice.dwell)
+                    }
+                }
+            )
+            replyAgent = agent
+        }
+
+        // Off the main actor: the first read raises the Keychain dialog and blocks until it is
+        // answered.
+        let claudePath = inbound.claudePath
+        let bigheadPath = inbound.bigheadPath
+        let outcome = await Task.detached {
+            TelegramSetup.bot(config: config, claudePath: claudePath, bigheadPath: bigheadPath) {
+                try Keychain.password(service: Keychain.telegramService, account: Keychain.telegramAccount)
+            }
+        }.value
+        let inputs: TelegramSetup.BotInputs?
+        switch outcome {
+        case .ready(let ready):
+            inputs = ready
+            telegramNote = nil
+        case .notRunning(let note):
+            inputs = nil
+            telegramNote = note
+        }
+        refreshStatus()
+        guard inputs != telegramInputs else { return }
+
+        await telegramBot?.stop()
+        telegramBot = nil
+        telegramInputs = inputs
+        guard let inputs else { return }
+        let bot = TelegramBot(
+            api: TelegramClient(token: inputs.token),
+            ownerID: inputs.ownerID,
+            inbox: inputs.inbox,
+            outbox: Outbox.defaultURL,
+            store: telegramStore,
+            replies: agent,
+            isAgentBusy: { [bigHeadAgent] in await bigHeadAgent.isBusy },
+            report: { [weak self, panel] notice in
+                Task { @MainActor in
+                    panel.show(notice: PanelNotice(text: notice.panelText, isFailure: true))
+                    panel.hideNotice(after: PanelNotice.dwell)
+                    // A bot stopped by its state file is restarted by the next reload, once the
+                    // owner has dealt with the file: forgetting its inputs makes them "changed".
+                    if notice == .stateUnreadable { self?.telegramInputs = nil }
+                }
+            }
+        )
+        await bot.start()
+        telegramBot = bot
     }
 
     /// Builds the meeting coordinator, or returns the line saying why it did not.

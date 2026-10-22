@@ -25,6 +25,19 @@ public enum AgentFailure: Error, Equatable, LocalizedError {
     }
 }
 
+extension AgentFailure {
+    /// The reason in the owner's language, for the panel and the Telegram chat.
+    public var ownerReason: String {
+        switch self {
+        case .exitCode(let code, let terminal): "код выхода \(code)" + (terminal.map { " (\($0))" } ?? "")
+        case .timedOut(let seconds): "не уложился в \(Int(seconds / 60)) мин"
+        case .agentError(let terminal): "ошибка claude: \(terminal)"
+        case .unreadableResult: "непонятный ответ claude"
+        case .launchFailed(let detail): "не запустился: \(detail)"
+        }
+    }
+}
+
 public struct AgentReport: Equatable, Sendable {
     /// `nil` means the run succeeded.
     public var failure: AgentFailure?
@@ -62,6 +75,10 @@ public actor BigHeadAgent {
     /// is reentrant, so a second call would start while the first is suspended in the runner.
     /// Each run waits for its predecessor instead, and the chain keeps the order of arrival.
     private var tail: Task<Void, Never>?
+    private var inFlight = 0
+
+    /// True while a run is executing or waiting its turn.
+    public var isBusy: Bool { inFlight > 0 }
 
     public init(runner: any ProcessRunning, pidFile: URL? = BigHeadAgent.defaultPIDFile,
                 clock: @escaping @Sendable () -> Date = Date.init) {
@@ -79,6 +96,8 @@ public actor BigHeadAgent {
                                       arguments: arguments, directory: directory, timeout: timeout)
         }
         tail = Task { _ = await task.value }
+        inFlight += 1
+        defer { inFlight -= 1 }
         return await task.value
     }
 
