@@ -28,6 +28,8 @@ public enum Keychain {
     public static let deepSeekAccount = "api-key"
     public static let todoistService = "nohands-todoist"
     public static let todoistAccount = "api-token"
+    public static let telegramService = "nohands-telegram"
+    public static let telegramAccount = "bot-token"
 
     /// - Returns: the secret, or nil when the keychain holds no such item.
     /// - Throws: `KeychainError` for every other outcome. Collapsing those into nil would

@@ -81,14 +81,7 @@ public struct PanelNotice: Equatable, Sendable {
             text = "Созвон \(outcome.file) передан, но не отмечен: состояние не сохранилось — "
                 + "передастся снова при следующем запуске"
         case .agent(let failure):
-            let reason = switch failure {
-            case .exitCode(let code, let terminal): "код выхода \(code)" + (terminal.map { " (\($0))" } ?? "")
-            case .timedOut(let seconds): "не уложился в \(Int(seconds / 60)) мин"
-            case .agentError(let terminal): "ошибка claude: \(terminal)"
-            case .unreadableResult: "непонятный ответ claude"
-            case .launchFailed(let detail): "не запустился: \(detail)"
-            }
-            text = "Созвон \(outcome.file) не обработан: \(reason)"
+            text = "Созвон \(outcome.file) не обработан: \(failure.ownerReason)"
         }
         return PanelNotice(text: text, isFailure: true)
     }

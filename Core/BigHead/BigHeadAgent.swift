@@ -25,6 +25,19 @@ public enum AgentFailure: Error, Equatable, LocalizedError {
     }
 }
 
+extension AgentFailure {
+    /// The reason in the owner's language, for the panel and the Telegram chat.
+    public var ownerReason: String {
+        switch self {
+        case .exitCode(let code, let terminal): "код выхода \(code)" + (terminal.map { " (\($0))" } ?? "")
+        case .timedOut(let seconds): "не уложился в \(Int(seconds / 60)) мин"
+        case .agentError(let terminal): "ошибка claude: \(terminal)"
+        case .unreadableResult: "непонятный ответ claude"
+        case .launchFailed(let detail): "не запустился: \(detail)"
+        }
+    }
+}
+
 public struct AgentReport: Equatable, Sendable {
     /// `nil` means the run succeeded.
     public var failure: AgentFailure?

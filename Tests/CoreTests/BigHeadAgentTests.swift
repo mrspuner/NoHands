@@ -220,3 +220,11 @@ private func isAlive(_ pid: pid_t) -> Bool {
 @Test func onlyTheRecordedExecutableIsTheAgent() {
     #expect(!LeftoverAgent.isRecordedExecutable(getpid(), "/usr/local/bin/claude"))
 }
+
+@Test func ownerReasonMatchesThePanelWording() {
+    #expect(AgentFailure.exitCode(1, reason: "api_error").ownerReason == "код выхода 1 (api_error)")
+    #expect(AgentFailure.timedOut(900).ownerReason == "не уложился в 15 мин")
+    #expect(AgentFailure.agentError("x").ownerReason == "ошибка claude: x")
+    #expect(AgentFailure.unreadableResult.ownerReason == "непонятный ответ claude")
+    #expect(AgentFailure.launchFailed("y").ownerReason == "не запустился: y")
+}
