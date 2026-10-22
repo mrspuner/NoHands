@@ -53,6 +53,33 @@ private func report(_ outcome: Result<AgentRun, AgentLaunchError>, timeout: Time
     #expect(runner.order == ["0", "1", "2", "3", "4"])
 }
 
+/// Holds every run until released.
+private final class GatedRunner: ProcessRunning, @unchecked Sendable {
+    private let state = OSAllocatedUnfairLock(initialState: (started: false, released: false))
+
+    var started: Bool { state.withLock { $0.started } }
+    func release() { state.withLock { $0.released = true } }
+
+    func run(executable: URL, arguments: [String], directory: URL, timeout: TimeInterval,
+             pidFile: URL?) async throws -> AgentRun {
+        state.withLock { $0.started = true }
+        while !state.withLock({ $0.released }) { try? await Task.sleep(for: .milliseconds(2)) }
+        return AgentRun(exitCode: 0, result: AgentResult(isError: false, terminalReason: nil), stderrLine: nil)
+    }
+}
+
+@Test func isBusyWhileARunIsInFlight() async {
+    let runner = GatedRunner()
+    let agent = BigHeadAgent(runner: runner, pidFile: nil)
+    #expect(await agent.isBusy == false)
+    let run = Task { await agent.run(executable: claude, arguments: [], directory: tmp, timeout: 5) }
+    while !runner.started { try? await Task.sleep(for: .milliseconds(2)) }
+    #expect(await agent.isBusy)
+    runner.release()
+    _ = await run.value
+    #expect(await agent.isBusy == false)
+}
+
 @Test func aCleanExitWithACleanResultIsSuccess() async {
     let result = await report(.success(AgentRun(exitCode: 0, result: AgentResult(isError: false, terminalReason: nil),
                                                 stderrLine: nil)))

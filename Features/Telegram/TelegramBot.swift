@@ -37,6 +37,7 @@ public actor TelegramBot {
     private let outbox: URL
     private let store: TelegramStateStore
     private let replies: any ReplySink
+    private let isAgentBusy: @Sendable () async -> Bool
     private let now: @Sendable () -> Date
     private let report: @Sendable (Notice) -> Void
 
@@ -45,6 +46,11 @@ public actor TelegramBot {
     private var stallReported = false
     /// Set once the state file fails to decode; nothing runs after that.
     private var stateBroken = false
+    /// Guards against a second pass or poll starting while one is suspended: the actor is reentrant.
+    private var delivering = false
+    private var polling = false
+    /// Logged once per episode, reset by the next successful read.
+    private var inboxUnreadableLogged = false
     private var loops: [Task<Void, Never>] = []
 
     private enum PassFailure: Error {
@@ -59,6 +65,7 @@ public actor TelegramBot {
         outbox: URL,
         store: TelegramStateStore,
         replies: any ReplySink,
+        isAgentBusy: @escaping @Sendable () async -> Bool = { false },
         now: @escaping @Sendable () -> Date = Date.init,
         report: @escaping @Sendable (Notice) -> Void
     ) {
@@ -68,6 +75,7 @@ public actor TelegramBot {
         self.outbox = outbox
         self.store = store
         self.replies = replies
+        self.isAgentBusy = isAgentBusy
         self.now = now
         self.report = report
     }
@@ -113,16 +121,18 @@ public actor TelegramBot {
 
     // MARK: - Delivery
 
-    /// One pass over the inbox, then the outbox. Returns `false` if a send or the state failed;
-    /// it never waits out a backoff itself, that is the loop's job.
+    /// One pass over the inbox, then the outbox. Returns `false` if a send or the state failed, or
+    /// if another pass is already running; it never waits out a backoff itself, that is the loop's job.
     @discardableResult
     public func deliverOnce() async -> Bool {
-        guard !stateBroken else { return false }
+        guard !stateBroken, !delivering else { return false }
+        delivering = true
+        defer { delivering = false }
         do {
             // Read up front so a broken state stops the pass before anything goes out.
-            let sentRefs = Set(try await readState().sentInboxRefs)
-            try await deliverInbox(skipping: sentRefs)
-            try await deliverOutbox()
+            let state = try await readState()
+            try await deliverInbox(skipping: Set(state.sentInboxRefs))
+            try await deliverOutbox(delivered: state.deliveredOutbox)
         } catch PassFailure.send {
             let since = failingSince ?? now()
             failingSince = since
@@ -140,29 +150,55 @@ public actor TelegramBot {
     }
 
     private func deliverInbox(skipping sent: Set<String>) async throws {
-        // No inbox yet is not an error: BigHead creates it with its first item.
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: inbox.path),
-              let modified = attributes[.modificationDate] as? Date,
-              let markdown = try? String(contentsOf: inbox, encoding: .utf8)
-        else { return }
-        // Still being written: a block appended in two writes must not go out half.
-        guard now().timeIntervalSince(modified) >= Self.quietSeconds else { return }
-
+        // A block is keyed by its heading, so one sent half-written is never sent whole. The agent
+        // can pause longer than the quiet window between edits; while it runs, the inbox waits.
+        guard await !isAgentBusy() else { return }
+        guard let markdown = readQuietInbox() else { return }
         for item in InboxItems.parse(markdown) where !sent.contains(item.ref) {
             try await deliver(markdown: item.text, ref: item.ref)
             try await withState { $0.sentInboxRefs.append(item.ref) }
         }
     }
 
-    private func deliverOutbox() async throws {
-        for message in Outbox.pending(in: outbox) {
+    /// The inbox text if it exists and has not changed for `quietSeconds`, checked on both sides
+    /// of the read so a write landing during it is not mistaken for a finished file.
+    private func readQuietInbox() -> String? {
+        func modified() -> Date? {
+            (try? FileManager.default.attributesOfItem(atPath: inbox.path))?[.modificationDate] as? Date
+        }
+        // No inbox yet is not an error: BigHead creates it with its first item.
+        guard let before = modified(), now().timeIntervalSince(before) >= Self.quietSeconds else { return nil }
+        guard let markdown = try? String(contentsOf: inbox, encoding: .utf8) else {
+            if FileManager.default.fileExists(atPath: inbox.path), !inboxUnreadableLogged {
+                inboxUnreadableLogged = true
+                Self.logger.error("inbox exists but is not readable as UTF-8")
+            }
+            return nil
+        }
+        inboxUnreadableLogged = false
+        guard modified() == before else { return nil }
+        return markdown
+    }
+
+    /// `delivered` lists files sent earlier whose removal failed: they are skipped, not resent.
+    /// Names whose file is gone are dropped from it.
+    private func deliverOutbox(delivered: [String]) async throws {
+        let pending = Outbox.pending(in: outbox)
+        let present = Set(pending.map(\.url.lastPathComponent))
+        if delivered.contains(where: { !present.contains($0) }) {
+            try await withState { $0.deliveredOutbox.removeAll { !present.contains($0) } }
+        }
+        let skip = Set(delivered)
+        for message in pending where !skip.contains(message.url.lastPathComponent) {
             try await deliver(markdown: message.body, ref: message.ref)
+            let name = message.url.lastPathComponent
+            // Recorded before the removal, so a failed removal (or a crash between the two)
+            // cannot send the file again.
+            try await withState { $0.deliveredOutbox.append(name) }
             do {
                 try FileManager.default.removeItem(at: message.url)
             } catch {
-                // Left in place it would be sent again on every pass.
-                Self.logger.error("outbox file not removed: \(error.localizedDescription, privacy: .public)")
-                throw PassFailure.state
+                Self.logger.error("outbox file sent but not removed, skipped from now on: \(error.localizedDescription, privacy: .public)")
             }
         }
     }
@@ -212,10 +248,13 @@ public actor TelegramBot {
 
     // MARK: - Receiving
 
-    /// One `getUpdates` call and its updates. Returns `false` if the call or the state failed.
+    /// One `getUpdates` call and its updates. Returns `false` if the call or the state failed, or if
+    /// another poll is already running.
     @discardableResult
     public func pollOnce() async -> Bool {
-        guard !stateBroken else { return false }
+        guard !stateBroken, !polling else { return false }
+        polling = true
+        defer { polling = false }
         let offset: Int64
         do {
             offset = try await readState().updateOffset

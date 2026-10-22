@@ -28,10 +28,15 @@ private actor FakeAPI: TelegramAPI {
     var offsets: [Int64] = []
     var failing = false
     var rejectTags = false
+    /// While set, sends wait until `release()`; `sendStarted` tells a test one is waiting.
+    var held = false
+    var sendStarted = false
     private var queued: [TelegramUpdate] = []
     private var nextID: Int64 = 100
 
     func setFailing(_ value: Bool) { failing = value }
+    func hold() { held = true }
+    func release() { held = false }
     func setRejectTags(_ value: Bool) { rejectTags = value }
     func queue(_ updates: [TelegramUpdate]) { queued += updates }
 
@@ -42,6 +47,8 @@ private actor FakeAPI: TelegramAPI {
     }
 
     func send(chatID: Int64, html: String, replyTo: Int64?, buttons: [String]) async throws -> Int64 {
+        sendStarted = true
+        while held { try? await Task.sleep(for: .milliseconds(2)) }
         if failing { throw TelegramError.transport("offline") }
         if rejectTags, html.contains("<") { throw TelegramError.api(code: 400, description: "can't parse entities") }
         sent.append(Sent(chatID: chatID, html: html, replyTo: replyTo, buttons: buttons))
@@ -74,6 +81,12 @@ private final class Notices: @unchecked Sendable {
     func append(_ notice: Notice) { value.withLock { $0.append(notice) } }
 }
 
+private final class Flag: @unchecked Sendable {
+    private let value = OSAllocatedUnfairLock(initialState: false)
+    var isSet: Bool { value.withLock { $0 } }
+    func set(_ new: Bool) { value.withLock { $0 = new } }
+}
+
 private struct Fixture {
     let dir: URL
     let inbox: URL
@@ -82,6 +95,7 @@ private struct Fixture {
     let api = FakeAPI()
     let clock = Clock()
     let notices = Notices()
+    let agentBusy = Flag()
     let replies: FakeReplies
     let bot: TelegramBot
 
@@ -92,10 +106,10 @@ private struct Fixture {
         try FileManager.default.createDirectory(at: outbox, withIntermediateDirectories: true)
         store = TelegramStateStore(url: dir.appendingPathComponent("telegram-state.json"))
         replies = FakeReplies(store: store)
-        let clock = clock, notices = notices
+        let clock = clock, notices = notices, agentBusy = agentBusy
         bot = TelegramBot(
             api: api, ownerID: owner, inbox: inbox, outbox: outbox, store: store, replies: replies,
-            now: { clock.now }, report: { notices.append($0) })
+            isAgentBusy: { agentBusy.isSet }, now: { clock.now }, report: { notices.append($0) })
     }
 
     /// Writes the inbox and backdates it by `age` seconds relative to the fake clock.
@@ -187,6 +201,63 @@ private let inboxA = """
     f.clock.advance(5)
     await f.bot.deliverOnce()
     #expect(await f.api.sent.count == 2)
+}
+
+@Test func inboxWaitsWhileAgentIsBusy() async throws {
+    let f = try Fixture()
+    defer { f.cleanUp() }
+    try f.writeInbox(inboxA)
+    try f.writeOutbox("20261022-120000-aaaaaa.md", "Ответ")
+    f.agentBusy.set(true)
+    #expect(await f.bot.deliverOnce())
+    // Only the inbox waits: the agent may be mid-way through a block, never through an outbox file.
+    #expect(await f.api.sent.map(\.html) == ["Ответ"])
+    f.agentBusy.set(false)
+    await f.bot.deliverOnce()
+    #expect(await f.api.sent.count == 2)
+}
+
+@Test func concurrentPassDoesNotSendTwice() async throws {
+    let f = try Fixture()
+    defer { f.cleanUp() }
+    try f.writeOutbox("20261022-120000-aaaaaa.md", "Ответ")
+    await f.api.hold()
+    let first = Task { await f.bot.deliverOnce() }
+    while await !f.api.sendStarted { try? await Task.sleep(for: .milliseconds(2)) }
+    #expect(await f.bot.deliverOnce() == false)
+    await f.api.release()
+    #expect(await first.value)
+    #expect(await f.api.sent.count == 1)
+}
+
+@Test func outboxFileThatCannotBeDeletedIsNotResent() async throws {
+    let f = try Fixture()
+    defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: f.outbox.path)
+        f.cleanUp()
+    }
+    let name = "20261022-120000-aaaaaa.md"
+    try f.writeOutbox(name, "Ответ")
+    try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: f.outbox.path)
+    #expect(await f.bot.deliverOnce())
+    #expect(await f.bot.deliverOnce())
+    #expect(await f.api.sent.count == 1)
+    #expect(try await f.store.load().deliveredOutbox == [name])
+
+    // Once the file is gone, the record of it goes too.
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: f.outbox.path)
+    try FileManager.default.removeItem(at: f.outbox.appendingPathComponent(name))
+    await f.bot.deliverOnce()
+    #expect(try await f.store.load().deliveredOutbox.isEmpty)
+}
+
+@Test func emptyBodyIsMarkedDoneWithoutSending() async throws {
+    let f = try Fixture()
+    defer { f.cleanUp() }
+    try f.writeOutbox("20261022-120000-aaaaaa.md", "<!-- кнопки\nДа\n-->")
+    #expect(await f.bot.deliverOnce())
+    #expect(await f.api.sent.isEmpty)
+    #expect(Outbox.pending(in: f.outbox).isEmpty)
 }
 
 @Test func outboxFileIsSentAndDeleted() async throws {

@@ -74,3 +74,28 @@ private func tempURL() -> URL {
     #expect(loaded.sentInboxRefs == ["x"])
     #expect(loaded.sentMessages.count == 1)
 }
+
+@Test func fileWithoutDeliveredOutboxLoads() async throws {
+    let url = tempURL()
+    let dir = url.deletingLastPathComponent()
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    try #"{"updateOffset": 5, "sentInboxRefs": ["a"], "sentMessages": {}}"#
+        .write(to: url, atomically: true, encoding: .utf8)
+    let state = try await TelegramStateStore(url: url).load()
+    #expect(state.updateOffset == 5)
+    #expect(state.sentInboxRefs == ["a"])
+    #expect(state.deliveredOutbox.isEmpty)
+}
+
+@Test func deliveredOutboxIsCappedOldestFirst() async throws {
+    let url = tempURL()
+    defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+    let store = TelegramStateStore(url: url)
+    var state = TelegramState()
+    state.deliveredOutbox = (0..<(TelegramState.maxDeliveredOutbox + 3)).map { "f\($0).md" }
+    try await store.save(state)
+    let loaded = try await store.load().deliveredOutbox
+    #expect(loaded.count == TelegramState.maxDeliveredOutbox)
+    #expect(loaded.first == "f3.md")
+}

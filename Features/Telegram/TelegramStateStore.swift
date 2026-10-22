@@ -30,10 +30,28 @@ public struct TelegramState: Codable, Equatable, Sendable {
     /// Keyed by `message_id` as a string; capped at `maxSentMessages`, oldest by `sentAt` dropped.
     public var sentMessages: [String: SentMessage] = [:]
     public var conversation: Conversation?
+    /// Outbox files already sent whose removal has not been seen yet, oldest first; capped at
+    /// `maxDeliveredOutbox`. A file that could not be deleted is skipped by name instead of resent.
+    public var deliveredOutbox: [String] = []
 
     public static let maxSentMessages = 500
+    public static let maxDeliveredOutbox = 100
 
     public init() {}
+
+    private enum CodingKeys: String, CodingKey {
+        case updateOffset, sentInboxRefs, sentMessages, conversation, deliveredOutbox
+    }
+
+    // Keys added later are optional, so a file written by an earlier build still loads.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        updateOffset = try c.decode(Int64.self, forKey: .updateOffset)
+        sentInboxRefs = try c.decode([String].self, forKey: .sentInboxRefs)
+        sentMessages = try c.decode([String: SentMessage].self, forKey: .sentMessages)
+        conversation = try c.decodeIfPresent(Conversation.self, forKey: .conversation)
+        deliveredOutbox = try c.decodeIfPresent([String].self, forKey: .deliveredOutbox) ?? []
+    }
 }
 
 /// Persists the bot state. Both the bot and the reply agent write it, so every
@@ -61,6 +79,7 @@ public actor TelegramStateStore {
                 .prefix(TelegramState.maxSentMessages)
             state.sentMessages = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
         }
+        state.deliveredOutbox = Array(state.deliveredOutbox.suffix(TelegramState.maxDeliveredOutbox))
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
