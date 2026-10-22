@@ -41,3 +41,23 @@ private func tempFolder() throws -> URL {
     #expect(found[0].body == "Тело")
     #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path).allSatisfy { !$0.hasPrefix(".") })
 }
+
+@Test func emptyFrontmatterDoesNotTrap() {
+    let url = URL(fileURLWithPath: "/x/a.md")
+    let m = Outbox.parse(url: url, contents: "---\n---\nтекст")
+    #expect(m.ref == nil)
+    #expect(m.body == "текст")
+}
+
+@Test func closingDelimiterAtEndOfFileAndCRLF() {
+    let url = URL(fileURLWithPath: "/x/a.md")
+    #expect(Outbox.parse(url: url, contents: "---\nref: a\n---") == OutboxMessage(url: url, ref: "a", body: ""))
+    #expect(Outbox.parse(url: url, contents: "---\r\nref: b\r\n---\r\nтекст\r\n") == OutboxMessage(url: url, ref: "b", body: "текст"))
+}
+
+@Test func newlineInRefIsFlattenedOnWrite() throws {
+    let dir = try tempFolder()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    try Outbox.write(ref: "a\nb", body: "Тело", to: dir, now: Date())
+    #expect(Outbox.pending(in: dir)[0].ref == "a b")
+}

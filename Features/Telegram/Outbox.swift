@@ -37,14 +37,14 @@ public enum Outbox {
     /// Optional frontmatter (`---`, `ref: <value>`, `---`) followed by the body.
     public static func parse(url: URL, contents: String) -> OutboxMessage {
         var ref: String?
-        var body = contents
-        if contents.hasPrefix("---\n"), let close = contents.range(of: "\n---\n", range: contents.index(contents.startIndex, offsetBy: 3)..<contents.endIndex) {
-            let header = contents[contents.index(contents.startIndex, offsetBy: 4)..<close.lowerBound]
-            for line in header.split(separator: "\n") where line.hasPrefix("ref:") {
+        var body = contents.replacingOccurrences(of: "\r\n", with: "\n")
+        let lines = body.split(separator: "\n", omittingEmptySubsequences: false)
+        if lines.first == "---", let close = lines.indices.dropFirst().first(where: { lines[$0] == "---" }) {
+            for line in lines[1..<close] where line.hasPrefix("ref:") {
                 let value = line.dropFirst(4).trimmingCharacters(in: .whitespaces)
                 if !value.isEmpty { ref = value }
             }
-            body = String(contents[close.upperBound...])
+            body = lines[(close + 1)...].joined(separator: "\n")
         }
         return OutboxMessage(url: url, ref: ref, body: body.trimmingCharacters(in: .whitespacesAndNewlines))
     }
@@ -60,12 +60,20 @@ public enum Outbox {
         let suffix = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(6))
         let name = "\(formatter.string(from: now))-\(suffix).md"
         var text = ""
-        if let ref { text += "---\nref: \(ref)\n---\n" }
+        if let ref {
+            let oneLine = ref.components(separatedBy: .newlines).joined(separator: " ")
+            text += "---\nref: \(oneLine)\n---\n"
+        }
         text += body + "\n"
         let temp = folder.appendingPathComponent(".\(name).tmp")
         let final = folder.appendingPathComponent(name)
         try text.write(to: temp, atomically: false, encoding: .utf8)
-        try FileManager.default.moveItem(at: temp, to: final)
+        do {
+            try FileManager.default.moveItem(at: temp, to: final)
+        } catch {
+            try? FileManager.default.removeItem(at: temp)
+            throw error
+        }
         return final
     }
 }
