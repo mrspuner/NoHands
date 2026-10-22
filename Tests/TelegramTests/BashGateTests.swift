@@ -60,6 +60,31 @@ func everythingElseIsDenied(_ command: String) {
     #expect(!allowed(command))
 }
 
+@Test(arguments: [
+    // bash reads backslash-CR as an escaped CR, and the LF then ends the command.
+    "curl -sS -d x\\\r\nid http://127.0.0.1:41730/x",
+    "curl -sS -H a \\\r\n http://127.0.0.1:41730/x",
+    "curl -sS\rhttp://127.0.0.1:41730/x",
+    "curl -sS http://127.0.0.1:41730/x\r",
+    "curl\u{0B}-sS http://127.0.0.1:41730/x",
+    "curl\u{0C}-sS http://127.0.0.1:41730/x",
+    "curl\u{A0}-sS http://127.0.0.1:41730/x",
+    "curl\u{2003}-sS http://127.0.0.1:41730/x",
+    "curl\u{2028}-sS http://127.0.0.1:41730/x",
+    "curl -sS\u{0} http://127.0.0.1:41730/x",
+    "curl -sS\u{200B} http://127.0.0.1:41730/x",
+    "curl -sS -d 'a\rb' http://127.0.0.1:41730/x",
+    "curl -sS -d 'a\u{0}b' http://127.0.0.1:41730/x",
+    "curl -sS -d \"a\u{1B}b\" http://127.0.0.1:41730/x",
+])
+func controlCharactersAndOddSpacesAreDenied(_ command: String) {
+    #expect(!allowed(command))
+}
+
+@Test func newlinesAndTabsInsideQuotesAreAllowed() {
+    #expect(allowed("curl -sS -d '{\"a\":\n\t\"б в\"}' http://127.0.0.1:41730/x"))
+}
+
 @Test func aDenialHasAReason() {
     guard case .deny(let reason) = BashGate.verdict("ls .") else {
         Issue.record("ls was allowed")
