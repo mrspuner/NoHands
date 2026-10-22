@@ -21,9 +21,9 @@ public enum TelegramText {
     }
 
     /// Splits at paragraph boundaries (`\n\n`); an oversized paragraph is split by lines, an oversized
-    /// line by characters. Length is counted in Swift `Character`s, which is close enough to Telegram's
-    /// count for the limit to hold with margin (4096 vs. the real UTF-16 based count after parsing).
-    public static func chunks(_ html: String, limit: Int = 4096) -> [String] {
+    /// line by characters. Length is counted in Swift `Character`s, not Telegram's UTF-16 count after
+    /// parsing, so callers pass `TelegramBot.partLimit` (4000), kept below Telegram's 4096 as margin.
+    public static func chunks(_ html: String, limit: Int) -> [String] {
         precondition(limit > 0)
         var result: [String] = []
         var current = ""

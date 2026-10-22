@@ -20,14 +20,14 @@ import Testing
 @Test func chunksRespectLimit() {
     let paragraphs = (0..<10).map { _ in String(repeating: "а", count: 1000) }
     let text = paragraphs.joined(separator: "\n\n")
-    let parts = TelegramText.chunks(text)
+    let parts = TelegramText.chunks(text, limit: 4000)
     #expect(parts.count > 1)
-    #expect(parts.allSatisfy { $0.count <= 4096 })
+    #expect(parts.allSatisfy { $0.count <= 4000 })
     #expect(parts.joined(separator: "\n\n") == text)
 }
 
 @Test func shortTextIsOneChunk() {
-    #expect(TelegramText.chunks("привет") == ["привет"])
+    #expect(TelegramText.chunks("привет", limit: 4000) == ["привет"])
 }
 
 @Test func oversizedParagraphIsSplitByLines() {
@@ -39,8 +39,8 @@ import Testing
 }
 
 @Test func oversizedLineIsHardSplit() {
-    let parts = TelegramText.chunks(String(repeating: "в", count: 10_000))
-    #expect(parts.allSatisfy { $0.count <= 4096 })
+    let parts = TelegramText.chunks(String(repeating: "в", count: 10_000), limit: 4000)
+    #expect(parts.allSatisfy { $0.count <= 4000 })
     #expect(parts.joined() == String(repeating: "в", count: 10_000))
 }
 

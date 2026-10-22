@@ -75,80 +75,56 @@ public enum BashGate {
         return .allow
     }
 
-    private struct TokenizeFailure: Error {
+    struct TokenizeFailure: Error {
         let reason: String
     }
 
-    /// A minimal shell-word splitter, over Unicode scalars rather than `Character`s: Swift folds
-    /// CR LF into one `Character`, and bash does not — it reads backslash-CR as an escaped CR and
-    /// the LF then ends the command, so the next line runs on its own.
+    /// Splits a one-line command into words the way bash would, for the little bash is allowed
+    /// here. Walks Unicode scalars, not `Character`s: Swift folds CR LF into one `Character`.
     ///
-    /// Outside quotes, words are separated only by space, tab and an unquoted backslash followed
-    /// directly by LF; any other control or space character fails. Single quotes are literal,
-    /// double quotes are literal as long as they hold no `$`, backtick or backslash; inside either,
-    /// control characters other than LF and tab fail too.
-    private static func tokenize(_ command: String) -> Result<[String], TokenizeFailure> {
-        enum Quote { case none, single, double }
+    /// No backslash and no line break anywhere, and no double quote outside single quotes, so
+    /// there is no escape and no continuation to model: two bypasses came through exactly those, and the fewer shell features
+    /// the gate admits, the fewer places its reading can differ from bash's. Words are separated by
+    /// space and tab. The only quoting is single quotes, literal to the next `'` in bash — `"`, `(`,
+    /// `&`, `!` and the rest are text inside them. Outside them, shell syntax and any other control
+    /// or space character fail, as does an unterminated quote.
+    static func tokenize(_ command: String) -> Result<[String], TokenizeFailure> {
         var words: [String] = []
         var word = String.UnicodeScalarView()
         var inWord = false
-        var quote = Quote.none
-        let scalars = Array(command.unicodeScalars)
-        var index = 0
+        var quoted = false
 
         func endWord() {
             if inWord { words.append(String(word)) }
             word = String.UnicodeScalarView()
             inWord = false
         }
-        let control = TokenizeFailure(reason: "управляющие символы и необычные пробелы запрещены")
 
-        while index < scalars.count {
-            let scalar = scalars[index]
-            switch quote {
-            case .single, .double:
-                if scalar.properties.generalCategory == .control, scalar != "\n", scalar != "\t" {
-                    return .failure(control)
-                }
-                if quote == .single {
-                    if scalar == "'" { quote = .none } else { word.append(scalar) }
-                } else if scalar == "\"" {
-                    quote = .none
-                } else if scalar == "$" || scalar == "`" || scalar == "\\" {
-                    return .failure(TokenizeFailure(reason: "в двойных кавычках нельзя $, ` и \\"))
-                } else {
-                    word.append(scalar)
-                }
-            case .none:
-                if scalar == " " || scalar == "\t" {
-                    endWord()
-                } else if scalar == "\\" {
-                    guard index + 1 < scalars.count, scalars[index + 1] == "\n" else {
-                        return .failure(TokenizeFailure(reason: "обратная косая черта разрешена только для переноса строки"))
-                    }
-                    endWord()
-                    index += 1
-                } else if scalar == "\n" {
-                    return .failure(TokenizeFailure(reason: "только одна команда"))
-                } else if isSpaceOrControl(scalar) {
-                    return .failure(control)
-                } else if scalar == "'" {
-                    quote = .single
-                    inWord = true
-                } else if scalar == "\"" {
-                    quote = .double
-                    inWord = true
-                } else if shellSyntax.contains(scalar) {
-                    return .failure(TokenizeFailure(
-                        reason: "символ \(scalar) вне кавычек запрещён: цепочки, подстановки и перенаправления нельзя"))
-                } else {
-                    word.append(scalar)
-                    inWord = true
-                }
+        for scalar in command.unicodeScalars {
+            if scalar == "\\" || scalar == "\n" || scalar == "\r" {
+                return .failure(TokenizeFailure(reason: "команда — одна строка без \\ и переносов"))
             }
-            index += 1
+            if scalar != " ", scalar != "\t", isSpaceOrControl(scalar) {
+                return .failure(TokenizeFailure(reason: "управляющие символы и необычные пробелы запрещены"))
+            }
+            if quoted {
+                if scalar == "'" { quoted = false } else { word.append(scalar) }
+            } else if scalar == " " || scalar == "\t" {
+                endWord()
+            } else if scalar == "'" {
+                quoted = true
+                inWord = true
+            } else if scalar == "\"" {
+                return .failure(TokenizeFailure(reason: "двойные кавычки запрещены, только одинарные"))
+            } else if shellSyntax.contains(scalar) {
+                return .failure(TokenizeFailure(
+                    reason: "символ \(scalar) вне кавычек запрещён: цепочки, подстановки и перенаправления нельзя"))
+            } else {
+                word.append(scalar)
+                inWord = true
+            }
         }
-        guard quote == .none else { return .failure(TokenizeFailure(reason: "незакрытая кавычка")) }
+        guard !quoted else { return .failure(TokenizeFailure(reason: "незакрытая кавычка")) }
         endWord()
         guard !words.isEmpty else { return .failure(TokenizeFailure(reason: "пустая команда")) }
         return .success(words)
