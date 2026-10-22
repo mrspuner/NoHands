@@ -291,7 +291,7 @@ private struct Fixture {
     #expect(arguments == [
         "-p", "Обработай созвон /Users/x/Meetings/a.md по разделу «Созвоны → входящие» в AGENTS.md.",
         "--restricted", "--strict-mcp-config",
-        "--tools", "Read,Edit,Write,Glob,Grep,ListAgents,SendMessage",
+        "--tools", "Read,Edit,Write,Glob,Grep",
         "--add-dir", "/Users/x/Meetings",
         "--permission-mode", "acceptEdits",
         "--output-format", "json",

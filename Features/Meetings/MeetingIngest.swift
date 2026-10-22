@@ -194,12 +194,13 @@ public actor MeetingIngest {
             """)
     }
 
-    /// The agent's command after the executable, in the exact order the spec gives it.
+    /// The agent's command after the executable, in the exact order the spec gives it. No `ListAgents` or
+    /// `SendMessage`: the digest is delivered by the Telegram bot from BigHead's inbox, not by the agent.
     public static func arguments(file: URL, meetings: URL) -> [String] {
         [
             "-p", "Обработай созвон \(file.path) по разделу «Созвоны → входящие» в AGENTS.md.",
             "--restricted", "--strict-mcp-config",
-            "--tools", "Read,Edit,Write,Glob,Grep,ListAgents,SendMessage",
+            "--tools", "Read,Edit,Write,Glob,Grep",
             "--add-dir", meetings.path,
             "--permission-mode", "acceptEdits",
             "--output-format", "json",
