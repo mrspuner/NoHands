@@ -326,8 +326,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // The hook is this binary itself; see `main.swift`.
+        let hook = [Bundle.main.executablePath ?? CommandLine.arguments[0], "--telegram-bash-hook"]
         let settings = TelegramSetup.replySettings(claudePath: inbound.claudePath, bigheadPath: inbound.bigheadPath,
-                                                   timeout: config.replyTimeoutSeconds)
+                                                   timeout: config.replyTimeoutSeconds, hook: hook)
         let agent: ReplyAgent
         if let replyAgent {
             agent = replyAgent

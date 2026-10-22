@@ -46,3 +46,13 @@ import Testing
         try TelegramArguments.parse(["telegram", "poll"])
     }
 }
+
+@Test func bashHookIsParsed() throws {
+    #expect(try TelegramArguments.parse(["telegram", "bash-hook"]) == .bashHook)
+}
+
+@Test func bashHookTakesNothingElse() {
+    #expect(throws: TelegramArguments.ParseError.self) {
+        try TelegramArguments.parse(["telegram", "bash-hook", "x"])
+    }
+}

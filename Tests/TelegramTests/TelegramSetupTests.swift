@@ -51,10 +51,11 @@ private struct Refused: LocalizedError {
 }
 
 @Test func replySettingsNeedBothPaths() {
-    #expect(TelegramSetup.replySettings(claudePath: "", bigheadPath: "/b", timeout: 900) == nil)
-    #expect(TelegramSetup.replySettings(claudePath: "/c", bigheadPath: "", timeout: 900) == nil)
-    #expect(TelegramSetup.replySettings(claudePath: "/c", bigheadPath: "/b", timeout: 60)
-        == ReplyAgent.Settings(claude: URL(fileURLWithPath: "/c"), bighead: URL(fileURLWithPath: "/b"), timeout: 60))
+    #expect(TelegramSetup.replySettings(claudePath: "", bigheadPath: "/b", timeout: 900, hook: ["/h"]) == nil)
+    #expect(TelegramSetup.replySettings(claudePath: "/c", bigheadPath: "", timeout: 900, hook: ["/h"]) == nil)
+    #expect(TelegramSetup.replySettings(claudePath: "/c", bigheadPath: "/b", timeout: 60, hook: ["/h", "-x"])
+        == ReplyAgent.Settings(claude: URL(fileURLWithPath: "/c"), bighead: URL(fileURLWithPath: "/b"), timeout: 60,
+                               hook: ["/h", "-x"]))
 }
 
 @Test func noticesHaveTheirPanelLines() {

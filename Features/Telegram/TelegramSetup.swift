@@ -51,11 +51,11 @@ public enum TelegramSetup {
 
     /// The agent's paths live in the `todoist` section, where the other two ingests read them.
     /// `nil` switches the reply agent off.
-    public static func replySettings(claudePath: String, bigheadPath: String,
-                                     timeout: TimeInterval) -> ReplyAgent.Settings? {
+    public static func replySettings(claudePath: String, bigheadPath: String, timeout: TimeInterval,
+                                     hook: [String]) -> ReplyAgent.Settings? {
         guard !claudePath.isEmpty, !bigheadPath.isEmpty else { return nil }
         return ReplyAgent.Settings(claude: URL(fileURLWithPath: claudePath),
-                                   bighead: URL(fileURLWithPath: bigheadPath), timeout: timeout)
+                                   bighead: URL(fileURLWithPath: bigheadPath), timeout: timeout, hook: hook)
     }
 }
 

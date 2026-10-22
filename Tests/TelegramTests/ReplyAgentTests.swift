@@ -6,7 +6,9 @@ import Testing
 
 private let claude = URL(fileURLWithPath: "/usr/local/bin/claude")
 private let bighead = URL(fileURLWithPath: "/Users/x/BigHead")
-private let settings = ReplyAgent.Settings(claude: claude, bighead: bighead, timeout: 900)
+/// Any executable will do: the agent only checks that the hook exists before launching.
+private let hook = ["/usr/bin/true", "--telegram-bash-hook"]
+private let settings = ReplyAgent.Settings(claude: claude, bighead: bighead, timeout: 900, hook: hook)
 private let now = Date(timeIntervalSince1970: 1_790_000_000)
 private let previous = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
 
@@ -279,7 +281,7 @@ private func value(after flag: String, in arguments: [String]) -> String? {
     let arguments = ReplyAgent.arguments(
         replyFile: URL(fileURLWithPath: "/R/20261022-143005.md"), session: .new(session),
         bighead: bighead, outbox: URL(fileURLWithPath: "/O"), meetings: URL(fileURLWithPath: "/M"),
-        replies: URL(fileURLWithPath: "/R"))
+        replies: URL(fileURLWithPath: "/R"), hook: ["/A B/NoHands", "--telegram-bash-hook"])
     #expect(arguments == [
         "-p",
         "Реплика владельца из Телеграма: /R/20261022-143005.md. Действуй по разделу «Телеграм» в AGENTS.md: "
@@ -289,6 +291,8 @@ private func value(after flag: String, in arguments: [String]) -> String? {
         "--allowedTools",
         "Bash(curl -sS -m 120 -X * http://127.0.0.1:41730/*)",
         "Bash(curl -sS http://127.0.0.1:41730/health)",
+        "--settings",
+        #"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"'/A B/NoHands' '--telegram-bash-hook'"}]}]}}"#,
         "--add-dir", "/M", "--add-dir", "/O", "--add-dir", "/R",
         "--session-id", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         "--permission-mode", "acceptEdits", "--output-format", "json",
@@ -296,8 +300,9 @@ private func value(after flag: String, in arguments: [String]) -> String? {
 
     let resumed = ReplyAgent.arguments(
         replyFile: URL(fileURLWithPath: "/R/a.md"), session: .resume(session), bighead: bighead,
-        outbox: URL(fileURLWithPath: "/O"), meetings: URL(fileURLWithPath: "/M"), replies: URL(fileURLWithPath: "/R"))
-    #expect(Array(resumed[15...16]) == ["--resume", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"])
+        outbox: URL(fileURLWithPath: "/O"), meetings: URL(fileURLWithPath: "/M"), replies: URL(fileURLWithPath: "/R"),
+        hook: hook)
+    #expect(Array(resumed[17...18]) == ["--resume", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"])
     #expect(!resumed.contains("--session-id"))
 }
 
@@ -339,6 +344,26 @@ private func value(after flag: String, in arguments: [String]) -> String? {
     #expect(runner.calls.count == 1)
     let text = try #require(runner.calls.first?.replyFile)
     #expect(text.contains("теперь") && !text.contains("никуда"))
+}
+
+@Test func aMissingHookLaunchesNothing() async throws {
+    let runner = FakeRunner()
+    let missing = ReplyAgent.Settings(claude: claude, bighead: bighead, timeout: 900,
+                                      hook: ["/nonexistent/NoHands", "--telegram-bash-hook"])
+    let fixture = try await Fixture(runner: runner, settings: missing)
+    await fixture.send(reply("текст"))
+
+    // Claude Code lets a call through when the hook command is not found, so no hook, no run.
+    #expect(runner.calls.isEmpty)
+    #expect(fixture.reports.all == [ReplyAgent.Outcome(
+        failure: .launchFailed("фильтр команд не найден: /nonexistent/NoHands"))])
+    #expect(try await fixture.conversation() == nil)
+}
+
+@Test func theHookIsQuotedForTheShell() {
+    #expect(ReplyAgent.hookSettings(["/it's here/x"]) == #"""
+        {"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"'/it'\\''s here/x'"}]}]}}
+        """#)
 }
 
 @Test func theFailureTextIsTheSpecOne() {

@@ -30,11 +30,14 @@ public actor ReplyAgent {
         /// The agent's working directory, `bigheadPath`.
         public var bighead: URL
         public var timeout: TimeInterval
+        /// The PreToolUse hook that filters the agent's Bash calls, as argv: executable, arguments.
+        public var hook: [String]
 
-        public init(claude: URL, bighead: URL, timeout: TimeInterval) {
+        public init(claude: URL, bighead: URL, timeout: TimeInterval, hook: [String]) {
             self.claude = claude
             self.bighead = bighead
             self.timeout = timeout
+            self.hook = hook
         }
     }
 
@@ -139,6 +142,14 @@ public actor ReplyAgent {
     }
 
     private func run(_ batch: [Reply], settings: Settings) async {
+        // Fail closed: Claude Code treats a hook it cannot run (exit 127) as non-blocking, so a
+        // missing hook would mean unfiltered Bash.
+        guard let hookPath = settings.hook.first, FileManager.default.isExecutableFile(atPath: hookPath) else {
+            let path = settings.hook.first ?? ""
+            Self.logger.error("bash hook not found, run skipped: \(path, privacy: .public)")
+            report(Outcome(failure: .launchFailed("фильтр команд не найден: \(path)")))
+            return
+        }
         let startedAt = now()
         // Read-only here; the write after the run goes through `update`. A state that does not
         // load gets a new session and no saved conversation: the bot reports the broken file itself.
@@ -172,7 +183,8 @@ public actor ReplyAgent {
         let result = await agent.run(
             executable: settings.claude,
             arguments: Self.arguments(replyFile: file, session: session, bighead: settings.bighead,
-                                      outbox: outbox, meetings: meetings, replies: repliesFolder),
+                                      outbox: outbox, meetings: meetings, replies: repliesFolder,
+                                      hook: settings.hook),
             directory: settings.bighead,
             timeout: settings.timeout
         )
@@ -272,7 +284,7 @@ public actor ReplyAgent {
     /// The agent's command after the executable, in the exact order the spec gives it. `bighead` is
     /// the run's working directory, passed as `directory`, not as an argument.
     public static func arguments(replyFile: URL, session: SessionChoice, bighead: URL, outbox: URL,
-                                 meetings: URL, replies: URL) -> [String] {
+                                 meetings: URL, replies: URL, hook: [String]) -> [String] {
         let prompt = "Реплика владельца из Телеграма: \(replyFile.path). Действуй по разделу «Телеграм» "
             + "в AGENTS.md: сначала всё, что схема требует при любом контакте, потом сама реплика. "
             + "Итог — в outbox \(outbox.path)."
@@ -288,10 +300,26 @@ public actor ReplyAgent {
             "--allowedTools",
             "Bash(curl -sS -m 120 -X * http://127.0.0.1:41730/*)",
             "Bash(curl -sS http://127.0.0.1:41730/health)",
+            // `--allowedTools` only pre-approves: the hook is what denies everything else.
+            // User settings are ignored under `--restricted`, so it is passed here.
+            "--settings", hookSettings(hook),
             "--add-dir", meetings.path, "--add-dir", outbox.path, "--add-dir", replies.path,
         ] + sessionArguments + [
             "--permission-mode", "acceptEdits",
             "--output-format", "json",
         ]
+    }
+
+    /// The `--settings` JSON that installs `hook` as the PreToolUse hook for Bash. The argv is
+    /// single-quoted for the shell Claude Code runs it in: the app's path has spaces.
+    public static func hookSettings(_ hook: [String]) -> String {
+        let command = hook.map { "'" + $0.replacingOccurrences(of: "'", with: #"'\''"#) + "'" }
+            .joined(separator: " ")
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        // Encoding a lone string cannot fail.
+        let quoted = (try? encoder.encode(command)).flatMap { String(data: $0, encoding: .utf8) } ?? "\"\""
+        return #"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"#
+            + quoted + "}]}]}}"
     }
 }

@@ -7,6 +7,8 @@ enum TelegramArguments: Equatable {
     /// `bighead` overrides `bigheadPath`, so the agent's restrictions can be checked against a
     /// scratch folder instead of the real BigHead.
     case reply(text: String, bighead: URL?)
+    /// The reply agent's PreToolUse hook: reads its input on stdin, see `BashGate`.
+    case bashHook
 
     enum ParseError: Error, Equatable {
         case message(String)
@@ -15,6 +17,10 @@ enum TelegramArguments: Equatable {
     static let usageLine = "Использование: nohands telegram send <файл.md> | nohands telegram reply \"<текст>\" [--bighead <папка>]"
 
     static func parse(_ arguments: [String]) throws -> TelegramArguments {
+        if arguments.count >= 2, arguments[1] == "bash-hook" {
+            guard arguments.count == 2 else { throw ParseError.message("bash-hook не принимает аргументов") }
+            return .bashHook
+        }
         guard arguments.count >= 3 else { throw ParseError.message(usageLine) }
         switch arguments[1] {
         case "send":

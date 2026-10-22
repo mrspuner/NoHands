@@ -52,13 +52,22 @@ func runTelegramReply(_ text: String, bighead override: URL?) async throws {
     let file = replies.appendingPathComponent("reply.md")
     try Data(ReplyAgent.render([Reply(text: text, at: Date(), ref: nil, quoted: nil)]).utf8).write(to: file)
 
+    // This very binary is the hook, through `telegram bash-hook`. Resolved, so the hook still
+    // runs when the command was started through a symlink or a relative path.
+    let binary = URL(fileURLWithPath: Bundle.main.executablePath ?? CommandLine.arguments[0])
+        .resolvingSymlinksInPath().path
+    let hook = [binary, "telegram", "bash-hook"]
+    guard FileManager.default.isExecutableFile(atPath: binary) else {
+        fail("Фильтр команд не найден: \(binary)")
+    }
+
     let agent = BigHeadAgent(runner: SystemProcessRunner(), pidFile: nil)
     note("запускаю агента ответа в \(bighead.path)")
     let report = await agent.run(
         executable: URL(fileURLWithPath: todoist.claudePath),
         arguments: ReplyAgent.arguments(replyFile: file, session: .new(UUID()), bighead: bighead,
                                         outbox: Outbox.defaultURL, meetings: MeetingFolder.archiveURL,
-                                        replies: replies),
+                                        replies: replies, hook: hook),
         directory: bighead,
         timeout: telegram.replyTimeoutSeconds
     )
