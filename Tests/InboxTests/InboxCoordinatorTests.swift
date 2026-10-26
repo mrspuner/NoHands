@@ -28,6 +28,11 @@ private final class Harness {
     /// flight when a second `captureRequested()` supersedes it.
     var captureDelay: Duration = .zero
     private(set) var shown: [InboxPanelState] = []
+    /// When each entry of `shown` arrived, by the real clock. `announce()` shows the row and arms
+    /// the drop window in one synchronous step, so the moment a `.captured` row was shown is the
+    /// moment its window started — which a test cannot otherwise see, because `settle()` returns
+    /// whenever the main actor next gets round to it, not when the capture finished.
+    private(set) var shownAt: [ContinuousClock.Instant] = []
     private(set) var hidden: [TimeInterval] = []
     private(set) var sounds: [InboxCoordinator.Sound] = []
     /// Records "capture" and "source" in the order the coordinator actually calls them, so a
@@ -59,7 +64,10 @@ private final class Harness {
             now: { noon },
             dropWindow: dropWindow,
             failureDwell: failureDwell,
-            showPanel: { [weak self] in self?.shown.append($0) },
+            showPanel: { [weak self] in
+                self?.shown.append($0)
+                self?.shownAt.append(.now)
+            },
             hidePanel: { [weak self] in self?.hidden.append($0) },
             play: { [weak self] in self?.sounds.append($0) }
         )
@@ -238,33 +246,39 @@ private final class Harness {
 // A drop is a promise of more time, not just of a copied file: the design lets a file dropped at
 // the end of the window buy another one for the next file beside it.
 //
-// Margins are wide (a 500 ms window, not the 50 ms other tests use) because this one, unlike
-// `aDropAfterTheTargetClosedIsRefused`, has to land the second drop inside a narrow band — past
-// the original window's expiry, short of the re-armed one — rather than merely after both. The
-// first drop sits near the end of the original window (400 of 500 ms) rather than in its middle,
-// so the band the second drop must land in is (500, 900) around a 650 ms target: 150 ms of margin
-// below, 250 ms above. Only the upper margin is fragile — a `Task.sleep` overshoot under load
-// pushes the second drop past the re-armed expiry — so that is the number that may not shrink;
-// the lower bound is self-correcting, since a late first sleep delays the re-arm by the same
-// amount it delays the first drop.
+// Every wait here is measured from a moment the coordinator actually acted, never from when the
+// test got the main actor back. In a full `swift test` every `@MainActor` test shares one main
+// thread, and `await harness.capture()` was measured returning 90–240 ms after the window had
+// already been armed inside it. Counting the first drop's 400 ms from there, as this test once
+// did, put it past a 500 ms window that had started long before — so the first drop was refused,
+// and the second with it, in seven full runs out of ten while never failing alone.
+//
+// So the first drop is scheduled from when the `.captured` row was shown (`shownAt`), which is
+// when the window started: 500 ms into a 1 s window, half the window to spare against a stalled
+// main actor. The second is scheduled from the first drop's own moment — the re-arm's start —
+// 600 ms later: always at least 100 ms past the original expiry, since the first drop cannot
+// come early, and 400 ms short of the re-armed one. Only that upper margin depends on how late
+// the main actor wakes, so it is the number that may not shrink.
 @MainActor
 @Test func aSuccessfulDropRearmsTheTargetsOwnExpiry() async throws {
     let root = try temporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }
-    let harness = Harness(root: root, dropWindow: 0.5)
+    let harness = Harness(root: root, dropWindow: 1.0)
     await harness.capture()
+    let armedAt = try #require(harness.shownAt.last)
 
     let elsewhere = try temporaryRoot()
     defer { try? FileManager.default.removeItem(at: elsewhere) }
 
-    try await Task.sleep(for: .milliseconds(400))
+    try await Task.sleep(until: armedAt + .milliseconds(500))
     let first = elsewhere.appendingPathComponent("первый.txt")
     try "данные".write(to: first, atomically: true, encoding: .utf8)
+    let firstDropAt = ContinuousClock.now
     #expect(harness.coordinator.drop([first]))
 
-    // Cumulative 650 ms: past the original 500 ms window, but the drop above re-armed it for
-    // another 500 ms starting from its own moment (400 + 500 = 900 ms).
-    try await Task.sleep(for: .milliseconds(250))
+    // Past the original window (it ran out 1 s after `armedAt`), but the drop above re-armed it
+    // for another second starting from its own moment.
+    try await Task.sleep(until: firstDropAt + .milliseconds(600))
     let second = elsewhere.appendingPathComponent("второй.txt")
     try "данные".write(to: second, atomically: true, encoding: .utf8)
     #expect(harness.coordinator.drop([second]))
