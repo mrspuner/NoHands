@@ -8,6 +8,7 @@ import Telegram
 import TodoistSync
 
 private let telegramLogger = Logger(subsystem: "com.nohands.app", category: "telegram")
+private let buildLogger = Logger(subsystem: "com.nohands.app", category: "build")
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -170,9 +171,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // "Загружаю модель…" so a click that did nothing cannot be mistaken for one that worked.
     private func startBuild(menu: StatusMenu) {
         guard buildTask == nil else {
+            buildLogger.info("reload ignored: build in progress")
             menu.setStatus("Уже перезагружаюсь, подождите…")
             return
         }
+        buildLogger.info("build started")
         buildTask = Task { [weak self] in
             // An agent the previous session left running would edit `~/BigHead` alongside ours, so
             // it is stopped before anything here can launch one. Off the main actor because it can
@@ -183,6 +186,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.leftoverAgentStopped = true
             }
             await self?.startTodoistSync()
+            buildLogger.info("build: todoist done")
             // Not awaited, for the same reason as the Todoist token's warm-up: the Keychain dialog
             // for the bot token must not hold up dictation and meetings.
             self?.startTelegram()
@@ -193,8 +197,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // meetings are ready long before `buildCoordinator` finishes — the property this
             // ordering exists to keep.
             self?.meetingsNote = await self?.rebuildMeetings() ?? nil
+            buildLogger.info("build: meetings done")
             await self?.buildCoordinator(menu: menu)
             self?.buildTask = nil
+            buildLogger.info("build finished")
         }
     }
 
@@ -687,7 +693,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // that dialog where waiting costs nothing — rather than in the middle of the first
             // dictation, after the owner has already spoken. It cannot fail the launch: see
             // `warmUp()`.
-            await cleaner.warmUp()
+            //
+            // Not awaited, like the Todoist and bot tokens: the build task is what keeps a second
+            // «Перечитать конфиг» out, and a dialog left open while the menu already reads
+            // "Готов" swallowed the next reload without a trace.
+            Task { await cleaner.warmUp() }
         } catch {
             dictationStatus = error.localizedDescription
             refreshStatus()
