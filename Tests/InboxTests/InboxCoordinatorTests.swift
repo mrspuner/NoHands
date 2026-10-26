@@ -337,18 +337,27 @@ private final class Harness {
 // `target` still agrees; only the panel disagreed, and the owner could no longer see anywhere to
 // drop a file even though `target` was still open. Once the failure has been read, the row has
 // to come back with whatever is left of its own window.
+//
+// Timed the way `aSuccessfulDropRearmsTheTargetsOwnExpiry` is, and for the same reason: the check
+// is scheduled from when the failure row was actually shown (`shownAt`), not from when
+// `await harness.capture()` handed the main actor back. The window, by contrast, has no reason to
+// be tight — the test never waits for it to run out, so its length costs nothing. It once was
+// 400 ms, and a full run in which the whole test process stalled for about a second and a half
+// let it expire before the check: the row never came back and the drop was refused. Five seconds
+// covers any stall seen so far; the dwell stays short because the test does wait for that one.
 @MainActor
 @Test func aFailureDuringTheDropWindowLeavesTheTargetReachableAfterItsDwell() async throws {
     let root = try temporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }
-    let harness = Harness(root: root, dropWindow: 0.4, failureDwell: 0.05)
+    let harness = Harness(root: root, dropWindow: 5, failureDwell: 0.05)
     await harness.capture()
 
     harness.text = .failure(InboxCapture.Failure.nothingCopied)
     await harness.capture()
+    let failureShownAt = try #require(harness.shownAt.last)
 
-    // Past the failure's own dwell, short of the drop window's.
-    try await Task.sleep(for: .milliseconds(120))
+    // Past the failure's own 50 ms dwell by 200 ms, far short of the drop window's.
+    try await Task.sleep(until: failureShownAt + .milliseconds(250))
 
     #expect(harness.shown.last == .captured(app: "Telegram", lines: 2, attachments: 0))
 
